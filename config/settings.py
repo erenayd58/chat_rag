@@ -42,6 +42,7 @@ class Settings:
         self.hnsw_ef_search = int(os.getenv("HNSW_EF_SEARCH", "100"))
         
         # Chunking Settings (word-level limits; sentence boundaries preserved)
+        self.chunker_type = os.getenv("CHUNKER_TYPE", "legacy")
         self.chunk_size = int(os.getenv("CHUNK_SIZE", "300"))
         self.chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "60"))
         self.min_chunk_size = int(os.getenv("MIN_CHUNK_SIZE", "50"))

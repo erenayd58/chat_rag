@@ -9,7 +9,7 @@ from config import Settings
 from components.llm import BaseLLM, AzureOpenAILLM, OllamaLLM
 from components.embedding import BaseEmbedding, SentenceTransformerEmbedding
 from components.vectordb import BaseVectorDB, ChromaVectorDB, FaissVectorDB
-from components.chunker import BaseChunker, SemanticChunker
+from components.chunker import BaseChunker, create_chunker
 from components.contextual_enhancer import ContextualRAGEnhancer
 from components.query_processor import QueryEnhancer
 from components.retriever import HybridRetriever
@@ -125,41 +125,7 @@ class RAGPipeline:
     
     def _create_chunker(self) -> BaseChunker:
         """Create chunker instance from settings"""
-        # Check if KB-specific chunker config exists
-        kb_chunker_config = getattr(self.settings, 'kb_chunker_config', None)
-        if kb_chunker_config:
-            chunker_type = kb_chunker_config.get('type', 'SemanticChunker')
-            chunker_params = kb_chunker_config.get('params', {})
-            
-            # Use KB chunker params, falling back to settings defaults
-            chunk_size = chunker_params.get('chunk_size', self.settings.chunk_size)
-            chunk_overlap = chunker_params.get('chunk_overlap', self.settings.chunk_overlap)
-            min_chunk_size = chunker_params.get('min_chunk_size', self.settings.min_chunk_size)
-            
-            # Additional semantic chunker params
-            use_semantic_segmentation = chunker_params.get('use_semantic_segmentation', True)
-            use_embedding_segmentation = chunker_params.get('use_embedding_segmentation', False)
-            semantic_threshold = chunker_params.get('semantic_threshold', 0.6)
-            semantic_window = chunker_params.get('semantic_window', 1)
-            
-            # For now, only SemanticChunker is supported
-            if chunker_type == 'SemanticChunker':
-                return SemanticChunker(
-                    chunk_size=chunk_size,
-                    chunk_overlap=chunk_overlap,
-                    min_chunk_size=min_chunk_size,
-                    use_semantic_segmentation=use_semantic_segmentation,
-                    use_embedding_segmentation=use_embedding_segmentation,
-                    semantic_threshold=semantic_threshold,
-                    semantic_window=semantic_window
-                )
-        
-        # Default to settings-based chunker
-        return SemanticChunker(
-            chunk_size=self.settings.chunk_size,
-            chunk_overlap=self.settings.chunk_overlap,
-            min_chunk_size=self.settings.min_chunk_size
-        )
+        return create_chunker(self.settings)
     
     def _create_reranker(self) -> BaseReranker:
         """Create reranker instance from settings"""
@@ -344,7 +310,8 @@ class RAGPipeline:
             print("  - Creating semantic chunks...")
             chunks = self.chunker.chunk_text(
                 document_text, doc_id, doc_title, doc_summary,
-                embedding_model=self.embedding_model
+                embedding_model=self.embedding_model,
+                parser_metadata=additional_metadata
             )
             
             if not chunks:

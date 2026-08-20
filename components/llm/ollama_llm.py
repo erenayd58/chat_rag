@@ -3,7 +3,7 @@
 Ollama LLM implementation for local models
 """
 from typing import List, Dict, Any
-import os
+import httpx
 import ollama
 from .base import BaseLLM
 from core.exceptions import LLMException
@@ -32,9 +32,7 @@ class OllamaLLM(BaseLLM):
         self.model = model
         self.base_url = base_url
         self.timeout = timeout
-        
-        # Configure Ollama host for python client
-        os.environ["OLLAMA_HOST"] = base_url
+        self.client = ollama.Client(host=base_url, timeout=timeout)
         
         # Verify connection to Ollama
         self._verify_connection()
@@ -42,7 +40,7 @@ class OllamaLLM(BaseLLM):
     def _verify_connection(self):
         """Verify connection to Ollama server"""
         try:
-            _ = ollama.list()
+            _ = self.client.list()
         except Exception as e:
             raise LLMException(f"Failed to connect to Ollama at {self.base_url}: {e}")
     
@@ -75,7 +73,9 @@ class OllamaLLM(BaseLLM):
                 logger.debug(f"Additional options: {kwargs}")
 
             # Make request to Ollama
-            resp = ollama.chat(model=self.model, messages=messages, options=options, format=fmt)
+            resp = self.client.chat(
+                model=self.model, messages=messages, options=options, format=fmt
+            )
             generated_text = (resp.get("message", {}) or {}).get("content", "").strip()
             
             # Log response stats
@@ -88,7 +88,12 @@ class OllamaLLM(BaseLLM):
                 retry_options["num_predict"] = retry_options.get("num_predict", adjusted_max_tokens) + 200
                 retry_options["temperature"] = min(temperature, 0.3)
                 try:
-                    resp = ollama.chat(model=self.model, messages=messages, options=retry_options, format=fmt)
+                    resp = self.client.chat(
+                        model=self.model,
+                        messages=messages,
+                        options=retry_options,
+                        format=fmt,
+                    )
                     generated_text = (resp.get("message", {}) or {}).get("content", "").strip()
                     logger.debug(f"Retry response length: {len(generated_text)} chars")
                 except Exception as re:
@@ -104,7 +109,7 @@ class OllamaLLM(BaseLLM):
             
             return generated_text
             
-        except self.requests.exceptions.Timeout:
+        except httpx.TimeoutException:
             error_msg = f"Request timeout after {self.timeout}s. Try increasing timeout or using a smaller model."
             logger.error(error_msg)
             RAGLogger.log_llm_response(logger, error_msg, success=False)
@@ -158,7 +163,7 @@ class OllamaLLM(BaseLLM):
             List of model names
         """
         try:
-            data = ollama.list()
+            data = self.client.list()
             models = data.get("models", [])
             return [model.get("name", "") for model in models]
         except Exception as e:

@@ -1,0 +1,12 @@
+{
+  "source_repository": "https://github.com/erenayd58/chunk",
+  "source_tag": "phase5-holdout-validation",
+  "source_commit": "1e7f7186c13729c739ccb3170da0892f7350cb27",
+  "config_hash": "f29f805deee9189c",
+  "files": {
+    "kkb-2024.units.jsonl": "2776742d5bddad7dcf2a03320dca36e6b384e2ba042ab99ccdecce61612720d5",
+    "authoritative-a4-chunks.jsonl": "90c2c69126d7c55a834d12ab09710bc1b3681dd361637633c68cc95569c6f53e",
+    "authoritative-a4-boundaries.jsonl": "8287f3916031e737bf6632869db75e06a66b6f7f2df63c5ebff8d1bd2ee7af32",
+    "boundary-embeddings.npz": "d2705bf65857830cc1d07fd673910daa958fc6136720d842d734a1f430e9d57a"
+  }
+}

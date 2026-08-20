@@ -85,6 +85,12 @@ class ChromaVectorDB(BaseVectorDB):
                     for key, value in chunk.metadata.items():
                         if key not in metadata:
                             metadata[key] = value
+                # Chroma metadata values cannot be None. Preserve known values
+                # and omit unavailable parser/boundary metadata rather than
+                # inventing placeholders.
+                metadata = {
+                    key: value for key, value in metadata.items() if value is not None
+                }
                 
                 metadatas.append(metadata)
             

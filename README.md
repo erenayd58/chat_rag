@@ -181,6 +181,7 @@ VECTOR_DB_PROVIDER=chroma
 VECTOR_DB_PATH=./chroma_db
 
 # Chunking
+CHUNKER_TYPE=legacy  # legacy or v4
 CHUNK_SIZE=512
 CHUNK_OVERLAP=128
 MIN_CHUNK_SIZE=50
@@ -208,6 +209,33 @@ LOG_TOKEN_USAGE=true
 ```
 
 For complete configuration options, see `env.example`.
+
+### Frozen V4/A4 chunking
+
+`CHUNKER_TYPE=legacy` preserves the existing `SemanticChunker`. Setting
+`CHUNKER_TYPE=v4`, or selecting `v4` while creating a knowledge base in the
+web UI, uses the Phase-5 AMSC V4/A4 implementation. The dependency is pinned to
+`erenayd58/chunk` commit
+`1e7f7186c13729c739ccb3170da0892f7350cb27`; the integration rejects any V4
+config whose semantic hash differs from `f29f805deee9189c`. V4 does not accept
+runtime chunk-size or threshold parameters.
+
+The current parsers return flat text. The normalization adapter therefore maps
+blank-line-delimited parser blocks to ordered canonical paragraphs and does not
+guess headings, pages, tables, lists, or visuals. If a parser supplies structured
+unit metadata, the same adapter preserves those fields directly.
+
+To run the minimal product demo:
+
+1. Install `requirements.txt` and start `python app.py`.
+2. Create one knowledge base with chunker `legacy` and another with `v4`.
+3. Upload a document to either knowledge base and ask a question from the chat.
+4. Open `/documents` to inspect the stored chunks and retrieval results.
+5. To compare the same query, select each knowledge base in turn in Retrieval
+   Experimentation and run the identical query.
+
+The first V4 ingestion may download `intfloat/multilingual-e5-base`; subsequent
+boundary embeddings use `.cache/boundary-embeddings`.
 
 ## Quick Start
 

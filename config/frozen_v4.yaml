@@ -1,0 +1,77 @@
+algorithm:
+  version: v4
+  tuning_status: poc_initial_not_optimized
+
+token_counter:
+  provider: tiktoken
+  encoding: cl100k_base
+  # This cap is guaranteed only according to this configured PoC counter.
+  cap_semantics: configured_poc_counter_only
+
+boundary_embedding:
+  model: intfloat/multilingual-e5-base
+  revision: null
+  device: auto
+  prefix_policy: symmetric_query
+  prefix: "query: "
+  max_input_tokens_override: null
+  overlength_strategy: sentence_fragment_token_weighted_pooling
+  normalize_embeddings: true
+  cache_dir: .cache/boundary-embeddings
+
+semantic:
+  strategy: hierarchical_adaptive
+  # Frozen V3 PoC starting values; not optimized parameters.
+  mad_lambda: 1.5
+  quantile_floor: 0.75
+  quantile_ceiling: 0.90
+  min_section_boundaries: 20
+  min_document_boundaries: 8
+  short_document_fallback_threshold: 0.20
+  dispersion_epsilon: 1.0e-8
+
+multi_scale:
+  # Frozen V3 PoC starting weights; not optimized values.
+  shift_1_weight: 0.35
+  shift_2_weight: 0.26
+  shift_3_weight: 0.39
+  unit_weighting: configured_token_counter_sqrt
+  window_pooling: weighted_mean_l2_normalized
+  edge_policy: full_symmetric_available_scales
+
+tokens:
+  min_tokens: 160
+  target_tokens: 700
+  soft_max_tokens: 900
+  hard_max_tokens: 1126
+
+structure:
+  enabled: true
+  mode: soft
+  heading_support: true
+  section_transition_support: true
+  atomic_type_support: true
+  # PoC initial values; not optimized.
+  max_threshold_relaxation: 0.04
+  semantic_floor: 0.12
+
+selection:
+  strategy: threshold_relative
+  semantic_weight: 0.80
+  size_weight: 0.20
+  strength_epsilon: 1.0e-8
+
+merge:
+  enabled: true
+  small_chunk_threshold: null
+  # PoC initial value; not optimized.
+  high_confidence_strength_threshold: 0.50
+  semantic_cohesion_required: true
+  pass_policy: single_non_overlapping
+
+contextualization:
+  enabled: false
+  role: optional_ablation_not_implemented
+
+ablation:
+  composition: a4
