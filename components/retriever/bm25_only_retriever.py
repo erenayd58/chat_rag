@@ -70,6 +70,11 @@ class NullEmbedding:
 class BM25OnlyRetriever:
     """Lexical-only retriever over the stored chunks."""
 
+    #: This retriever has no dense leg, so ingestion must not compute or store
+    #: document vectors for it. Callers branch on this capability rather than
+    #: on the profile name.
+    requires_document_embeddings = False
+
     def __init__(self, embedding_model: Any, vector_db: Any) -> None:
         self.embedding_model = embedding_model
         self.vector_db = vector_db

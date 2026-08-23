@@ -377,10 +377,22 @@ class RAGPipeline:
             print(f"  - Created {len(chunks)} chunks")
             
             # Step 3: Generate embeddings
-            print("  - Generating embeddings...")
             embeddings = []
+            needs_embeddings = getattr(
+                self.hybrid_retriever, "requires_document_embeddings", True
+            )
 
-            if self.retrieval_profile == 'benchmark_aligned':
+            if not needs_embeddings:
+                # Lexical-only retrieval: no dense leg exists, so no vectors are
+                # computed and none are stored. Metadata still has to be applied
+                # because the chunk rows carry it into the store.
+                print("  - Skipping embeddings (lexical-only retrieval)")
+                if additional_metadata:
+                    for chunk in chunks:
+                        if chunk.metadata:
+                            chunk.metadata.update(additional_metadata)
+            elif self.retrieval_profile == 'benchmark_aligned':
+                print("  - Generating embeddings...")
                 matrix = self.embedding_model.encode_documents(
                     [chunk.content for chunk in chunks]
                 )
@@ -390,6 +402,7 @@ class RAGPipeline:
                     if additional_metadata and chunk.metadata:
                         chunk.metadata.update(additional_metadata)
             else:
+                print("  - Generating embeddings...")
                 for chunk in chunks:
                     # Create contextual representation for embedding
                     contextual_text = self.contextual_enhancer.enrich_chunk_with_context(chunk)
@@ -405,7 +418,7 @@ class RAGPipeline:
             
             # Step 4: Store in vector database
             print("  - Storing in vector database...")
-            if chunks and embeddings:  # Only store if we have chunks and embeddings
+            if chunks and (embeddings or not needs_embeddings):
                 self.vector_db.add_chunks(chunks, embeddings)
             else:
                 print(f"  ⚠️  Warning: No chunks to store")

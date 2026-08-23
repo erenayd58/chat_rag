@@ -129,8 +129,13 @@ class FaissVectorDB(BaseVectorDB):
         **kwargs
     ) -> None:
         try:
-            if not chunks or not embeddings:
+            if not chunks:
                 return
+            if not embeddings:
+                raise VectorDBException(
+                    "FAISS stores vectors only; a lexical-only retrieval profile "
+                    "needs a document store such as chroma"
+                )
             # Prepare data
             chunk_ids = [c.chunk_id for c in chunks]
             int_ids = self._assign_int_ids(chunk_ids)

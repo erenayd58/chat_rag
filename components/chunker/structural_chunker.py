@@ -8,6 +8,7 @@ parser speed with zero model cost.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any, Sequence
 
@@ -114,7 +115,12 @@ class StructuralChunker(BaseChunker):
                         "unit_ids": list(row["unit_ids"]),
                         "pages": list(row.get("pages") or []),
                         "token_count": int(row["token_count"]),
-                        "section_paths": section_paths,
+                        # Chroma metadata values must be scalars or flat lists,
+                        # and section_paths is a list of paths. Serialised the
+                        # same way FrozenV4Chunker serialises its structures.
+                        "section_paths_json": json.dumps(
+                            section_paths, ensure_ascii=False
+                        ),
                         "split_strategies": row.get("split_strategies") or [],
                     },
                 )

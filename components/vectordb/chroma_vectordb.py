@@ -94,12 +94,21 @@ class ChromaVectorDB(BaseVectorDB):
                 
                 metadatas.append(metadata)
             
-            self.collection.add(
-                ids=chunk_ids,
-                documents=documents,
-                embeddings=embeddings,
-                metadatas=metadatas
-            )
+            if embeddings:
+                self.collection.add(
+                    ids=chunk_ids,
+                    documents=documents,
+                    embeddings=embeddings,
+                    metadatas=metadatas
+                )
+            else:
+                # Lexical-only ingestion: store the text and metadata without a
+                # vector. No placeholder embedding is fabricated.
+                self.collection.add(
+                    ids=chunk_ids,
+                    documents=documents,
+                    metadatas=metadatas
+                )
         except Exception as e:
             raise VectorDBException(f"Failed to add chunks: {e}")
     
