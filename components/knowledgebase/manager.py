@@ -11,6 +11,13 @@ from typing import Dict, Any, List, Optional
 
 _LEGACY_CHUNKER_NAMES = {"legacy", "semanticchunker", "semantic_chunker"}
 _V4_CHUNKER_NAMES = {"v4", "frozenv4chunker", "frozen_v4_chunker"}
+_STRUCTURAL_CHUNKER_NAMES = {
+    "structure_first",
+    "structurefirst",
+    "structural",
+    "structuralchunker",
+    "structural_chunker",
+}
 
 
 def normalize_chunker_config(chunker: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -25,8 +32,12 @@ def normalize_chunker_config(chunker: Optional[Dict[str, Any]]) -> Dict[str, Any
         chunker_type = "legacy"
     elif raw_type in _V4_CHUNKER_NAMES:
         chunker_type = "v4"
+    elif raw_type in _STRUCTURAL_CHUNKER_NAMES:
+        chunker_type = "structure_first"
     else:
-        raise ValueError("chunker.type must be 'legacy' or 'v4'")
+        raise ValueError(
+            "chunker.type must be 'legacy', 'v4' or 'structure_first'"
+        )
 
     params = chunker.get("params", {})
     if params is None:
@@ -35,6 +46,8 @@ def normalize_chunker_config(chunker: Optional[Dict[str, Any]]) -> Dict[str, Any
         raise ValueError("chunker.params must be an object")
     if chunker_type == "v4" and params:
         raise ValueError("Frozen V4 accepts no runtime chunker params")
+    if chunker_type == "structure_first" and params:
+        raise ValueError("Structure-first accepts no runtime chunker params")
     return {"type": chunker_type, "params": dict(params)}
 
 

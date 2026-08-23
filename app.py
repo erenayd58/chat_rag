@@ -664,20 +664,7 @@ def list_kb():
 def create_kb():
     try:
         data = request.json or {}
-        name = data.get('name', '').strip() or 'Knowledge Base'
-        chunker = data.get('chunker')
-        embedding_model_name = data.get('embedding_model_name')
-        vector_db_provider = data.get('vector_db_provider', 'chroma')
-        vector_db_path = data.get('vector_db_path')
-        retrieval_method = data.get('retrieval_method', 'hybrid')
-        kb = kb_manager.create(
-            name=name,
-            chunker=chunker,
-            embedding_model_name=embedding_model_name,
-            vector_db_provider=vector_db_provider,
-            vector_db_path=vector_db_path,
-            retrieval_method=retrieval_method
-        )
+        kb = kb_manager.create_from_payload(data)
         return jsonify({'success': True, 'kb': kb})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -704,6 +691,8 @@ def get_kb_options():
         chunkers = [
             {'name': 'legacy', 'description': 'Existing SemanticChunker behavior'},
             {'name': 'v4', 'description': 'Frozen AMSC V4/A4 at Phase 5'},
+            {'name': 'structure_first',
+             'description': 'Structure-first chunking (no embeddings) - default demo profile'},
         ]
 
         retrieval_methods = [
