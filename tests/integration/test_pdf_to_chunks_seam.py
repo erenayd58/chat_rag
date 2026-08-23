@@ -206,13 +206,14 @@ def test_pipeline_forwards_parsed_units_to_the_chunker():
     )
 
 
-def test_structured_parser_does_not_extract_twice_per_file():
+def test_structured_parser_does_not_extract_twice_per_file(tmp_path):
     """Ingestion asks for text then units; layout extraction must run once.
 
     Without this cache a large report is extracted twice per upload, which on
     the KKB annual report is several extra minutes of wall clock.
     """
     parser = _structured_parser()
+    parser._disk_cache = tmp_path / "canonical-units"
 
     calls = {"n": 0}
     inner = parser._extract_full_canonical_units

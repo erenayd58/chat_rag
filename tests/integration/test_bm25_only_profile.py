@@ -98,3 +98,61 @@ def test_chunk_metadata_is_json_serialisable():
     )[0]
     assert isinstance(chunk, DocumentChunk)
     json.dumps(chunk.metadata, ensure_ascii=False)
+
+
+def test_turkish_fold_makes_ascii_and_diacritic_queries_agree():
+    from components.retriever.bm25_only_retriever import fold_turkish
+
+    assert fold_turkish("Çalışan Sayısı") == "calisan sayisi"
+    assert fold_turkish("YÜRÜRLÜĞE") == "yururluge"
+
+    rows = _parser().parse_units(str(FIXTURE))
+    chunks = StructuralChunker().chunk_text(
+        text="", doc_id="demo", doc_title="t", parsed_units=rows
+    )
+    retriever = BM25OnlyRetriever(NullEmbedding(), vector_db=None)
+    retriever.build_index(chunks)
+
+    for diacritic, ascii_form in [
+        ("Kredi Risk Yönetimi", "Kredi Risk Yonetimi"),
+        ("Takipteki alacak oranı", "Takipteki alacak orani"),
+    ]:
+        a = retriever.hybrid_search(diacritic, top_k=1)
+        b = retriever.hybrid_search(ascii_form, top_k=1)
+        assert a and b
+        assert a[0].chunk.chunk_id == b[0].chunk.chunk_id
+
+    # The fold is a search representation only: stored text is untouched.
+    # (The fixture is deliberately ASCII, so assert the invariant directly.)
+    sample = "Çalışan sayısı %12,5 arttı"
+    assert fold_turkish(sample) != sample
+    assert all(c.content == c.content for c in chunks)
+    from components.chunker.structural_chunker import StructuralChunker as _SC
+
+    turkish = _SC().chunk_text(text=sample, doc_id="d", doc_title="t")[0]
+    assert turkish.content == sample
+
+
+def test_extraction_cache_round_trips(tmp_path):
+    from components.parsers.structured_pdf_parser import StructuredPDFParser
+
+    parser = _parser()
+    parser._disk_cache = tmp_path / "canonical-units"
+    first = parser._canonical_units(str(FIXTURE))
+
+    fresh = StructuredPDFParser()
+    fresh._disk_cache = tmp_path / "canonical-units"
+    calls = {"n": 0}
+    inner = fresh._extract_full_canonical_units
+
+    def counting(**kwargs):
+        calls["n"] += 1
+        return inner(**kwargs)
+
+    fresh._extract_full_canonical_units = counting
+    second = fresh._canonical_units(str(FIXTURE))
+
+    assert calls["n"] == 0, "disk cache miss: layout extraction re-ran"
+    assert [u.model_dump(mode="json") for u in first] == [
+        u.model_dump(mode="json") for u in second
+    ]

@@ -23,6 +23,25 @@ from core.models import DocumentChunk, RetrievalResult
 BM25_K1 = 1.5
 BM25_B = 0.75
 
+# Search-representation only. Stored chunk text is never modified; the same
+# fold is applied to documents at index time and to the query at search time,
+# so a query typed without Turkish diacritics still matches. Deliberately not
+# stemming: this is a reversible character fold, nothing morphological.
+_TURKISH_FOLD = str.maketrans({
+    "ç": "c", "Ç": "c",
+    "ğ": "g", "Ğ": "g",
+    "ı": "i", "I": "i", "İ": "i", "i": "i",
+    "ö": "o", "Ö": "o",
+    "ş": "s", "Ş": "s",
+    "ü": "u", "Ü": "u",
+    "â": "a", "Â": "a", "î": "i", "Î": "i", "û": "u", "Û": "u",
+})
+
+
+def fold_turkish(text: str) -> str:
+    """Diacritic-insensitive search representation for Turkish text."""
+    return text.translate(_TURKISH_FOLD).lower()
+
 
 class NullEmbedding:
     """Placeholder embedding that must never be used.
@@ -60,7 +79,10 @@ class BM25OnlyRetriever:
 
     @property
     def config(self) -> dict:
-        return {"bm25": {"k1": BM25_K1, "b": BM25_B}, "dense": None}
+        return {
+            "bm25": {"k1": BM25_K1, "b": BM25_B, "fold": "turkish_diacritics_v1"},
+            "dense": None,
+        }
 
     def build_index(self, chunks: List[DocumentChunk], *args, **kwargs) -> None:
         ordered = sorted(chunks, key=lambda chunk: chunk.chunk_id)
@@ -70,7 +92,9 @@ class BM25OnlyRetriever:
             self._bm25 = None
             return
         self._bm25 = DeterministicBM25(
-            [chunk.content for chunk in ordered], k1=BM25_K1, b=BM25_B
+            [fold_turkish(chunk.content) for chunk in ordered],
+            k1=BM25_K1,
+            b=BM25_B,
         )
 
     def build_keyword_index(self, chunks: List[DocumentChunk]) -> None:
@@ -85,7 +109,7 @@ class BM25OnlyRetriever:
             self.ensure_index()
             if self._bm25 is None:
                 return []
-            scores = self._bm25.scores(query)
+            scores = self._bm25.scores(fold_turkish(query))
             order = sorted(
                 range(len(self.chunks_list)),
                 key=lambda i: (-float(scores[i]), self.chunks_list[i].chunk_id),
