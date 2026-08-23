@@ -12,7 +12,13 @@ from components.vectordb import BaseVectorDB, ChromaVectorDB, FaissVectorDB
 from components.chunker import BaseChunker, create_chunker
 from components.contextual_enhancer import ContextualRAGEnhancer
 from components.query_processor import QueryEnhancer
-from components.retriever import HybridRetriever
+from components.retriever import (
+    BM25OnlyRetriever,
+    NullEmbedding,
+    BenchmarkAlignedEmbedding,
+    BenchmarkAlignedRetriever,
+    HybridRetriever,
+)
 from components.reranker import BaseReranker, LLMReranker, CrossEncoderReranker
 from components.conversation import ConversationManager
 from components.parsers import ParserFactory
@@ -48,6 +54,11 @@ class RAGPipeline:
         """
         # Load settings
         self.settings = settings or Settings()
+        self.retrieval_profile = getattr(self.settings, 'retrieval_profile', 'legacy')
+        if self.retrieval_profile not in {'legacy', 'benchmark_aligned', 'bm25_only'}:
+            raise ValueError(
+                "retrieval_profile must be 'legacy', 'benchmark_aligned' or 'bm25_only'"
+            )
         
         # Initialize components
         self.llm_model = llm_model or self._create_llm()
@@ -58,12 +69,31 @@ class RAGPipeline:
         # Initialize supporting components
         self.contextual_enhancer = ContextualRAGEnhancer(self.llm_model)
         self.query_enhancer = QueryEnhancer(self.llm_model)
-        self.hybrid_retriever = HybridRetriever(
-            self.embedding_model,
-            self.vector_db,
-            self.contextual_enhancer
+        if self.retrieval_profile == 'bm25_only':
+            self.hybrid_retriever = BM25OnlyRetriever(
+                self.embedding_model,
+                self.vector_db,
+            )
+        elif self.retrieval_profile == 'benchmark_aligned':
+            if not isinstance(self.embedding_model, BenchmarkAlignedEmbedding):
+                raise ValueError(
+                    "benchmark_aligned requires BenchmarkAlignedEmbedding"
+                )
+            self.hybrid_retriever = BenchmarkAlignedRetriever(
+                self.embedding_model,
+                self.vector_db,
+            )
+        else:
+            self.hybrid_retriever = HybridRetriever(
+                self.embedding_model,
+                self.vector_db,
+                self.contextual_enhancer
+            )
+        self.reranker = (
+            reranker
+            if self.retrieval_profile in {'benchmark_aligned', 'bm25_only'}
+            else (reranker or self._create_reranker())
         )
-        self.reranker = reranker or self._create_reranker()
         
         # Initialize conversation manager
         self.enable_conversation = self.settings.enable_conversation
@@ -101,6 +131,11 @@ class RAGPipeline:
     
     def _create_embedding(self) -> BaseEmbedding:
         """Create embedding instance from settings"""
+        if self.retrieval_profile == 'bm25_only':
+            # No dense leg in this profile: never load an embedding model.
+            return NullEmbedding()
+        if self.retrieval_profile == 'benchmark_aligned':
+            return BenchmarkAlignedEmbedding()
         return SentenceTransformerEmbedding(
             model_name=self.settings.embedding_model_name
         )
@@ -171,7 +206,17 @@ class RAGPipeline:
             
             # Parse the file
             document_text = self.parser_factory.parse_file(file_path)
-            
+
+            # Parse structured canonical units when the parser supports it.
+            # Structure-aware chunkers need typed units (heading/list/table)
+            # with section_path and page provenance; without them every
+            # structural setting silently degrades to token-budget cutting.
+            try:
+                parsed_units = self.parser_factory.parse_units(file_path)
+            except Exception as exc:
+                print(f"  - Structured unit extraction unavailable: {exc}")
+                parsed_units = None
+
             # Get metadata from parser
             parser_metadata = self.parser_factory.get_metadata(file_path)
             
@@ -181,13 +226,18 @@ class RAGPipeline:
             
             print(f"  - Extracted {len(document_text)} characters")
             print(f"  - Parser used: {parser_metadata.get('parser', 'unknown')}")
-            
+            if parsed_units is not None:
+                print(f"  - Structured canonical units: {len(parsed_units)}")
+            else:
+                print("  - Structured canonical units: none (flat text fallback)")
+
             # Ingest the parsed document
             return self.ingest_document(
                 document_text=document_text,
                 doc_id=doc_id,
                 doc_title=doc_title,
-                additional_metadata=merged_metadata
+                additional_metadata=merged_metadata,
+                parsed_units=parsed_units
             )
             
         except Exception as e:
@@ -283,7 +333,8 @@ class RAGPipeline:
         document_text: str,
         doc_id: str,
         doc_title: str,
-        additional_metadata: Dict[str, Any] = None
+        additional_metadata: Dict[str, Any] = None,
+        parsed_units: Optional[List[Dict[str, Any]]] = None
     ) -> List[DocumentChunk]:
         """
         Ingest a document through the complete processing pipeline
@@ -302,16 +353,20 @@ class RAGPipeline:
             
             # Step 1: Generate document summary
             print("  - Generating document summary...")
-            doc_summary = self.contextual_enhancer.generate_document_summary(
-                document_text, doc_title
-            )
+            if self.retrieval_profile == 'benchmark_aligned':
+                doc_summary = ""
+            else:
+                doc_summary = self.contextual_enhancer.generate_document_summary(
+                    document_text, doc_title
+                )
             
             # Step 2: Create semantic chunks with context
             print("  - Creating semantic chunks...")
             chunks = self.chunker.chunk_text(
                 document_text, doc_id, doc_title, doc_summary,
                 embedding_model=self.embedding_model,
-                parser_metadata=additional_metadata
+                parser_metadata=additional_metadata,
+                parsed_units=parsed_units
             )
             
             if not chunks:
@@ -324,19 +379,29 @@ class RAGPipeline:
             # Step 3: Generate embeddings
             print("  - Generating embeddings...")
             embeddings = []
-            
-            for chunk in chunks:
-                # Create contextual representation for embedding
-                contextual_text = self.contextual_enhancer.enrich_chunk_with_context(chunk)
-                
-                # Generate embedding
-                embedding = self.embedding_model.encode(contextual_text, convert_to_tensor=False)
-                chunk.embedding = embedding
-                embeddings.append(embedding.tolist())
-                
-                # Add additional metadata
-                if additional_metadata and chunk.metadata:
-                    chunk.metadata.update(additional_metadata)
+
+            if self.retrieval_profile == 'benchmark_aligned':
+                matrix = self.embedding_model.encode_documents(
+                    [chunk.content for chunk in chunks]
+                )
+                for chunk, embedding in zip(chunks, matrix, strict=True):
+                    chunk.embedding = embedding
+                    embeddings.append(embedding.tolist())
+                    if additional_metadata and chunk.metadata:
+                        chunk.metadata.update(additional_metadata)
+            else:
+                for chunk in chunks:
+                    # Create contextual representation for embedding
+                    contextual_text = self.contextual_enhancer.enrich_chunk_with_context(chunk)
+
+                    # Generate embedding
+                    embedding = self.embedding_model.encode(contextual_text, convert_to_tensor=False)
+                    chunk.embedding = embedding
+                    embeddings.append(embedding.tolist())
+
+                    # Add additional metadata
+                    if additional_metadata and chunk.metadata:
+                        chunk.metadata.update(additional_metadata)
             
             # Step 4: Store in vector database
             print("  - Storing in vector database...")
@@ -381,6 +446,9 @@ class RAGPipeline:
         Returns:
             Tuple of (retrieval_results, metadata_dict)
         """
+        if self.retrieval_profile in {'benchmark_aligned', 'bm25_only'}:
+            return self._retrieve_benchmark_aligned(query, top_k)
+
         try:
             print(f"\n{'='*80}")
             print(f"PROCESSING QUERY: '{query}'")
@@ -589,6 +657,32 @@ class RAGPipeline:
             
         except Exception as e:
             raise RAGException(f"Retrieval failed: {e}")
+
+    def _retrieve_benchmark_aligned(
+        self, query: str, top_k: int = None
+    ) -> Tuple[List[RetrievalResult], Dict[str, Any]]:
+        """Run the original query through the frozen Phase 4/5 profile only."""
+        try:
+            final_top_k = top_k if top_k is not None else self.settings.default_top_k
+            results = self.hybrid_retriever.hybrid_search(query, top_k=final_top_k)
+            rrf = self.hybrid_retriever.config.get("rrf")
+            metadata = {
+                "original_query": query,
+                "refined_query": query,
+                "timestamp": datetime.now().isoformat(),
+                "retrieval_profile": self.retrieval_profile,
+                "retrieval_method": (
+                    "bm25_only" if rrf is None else "equal_weight_rrf"
+                ),
+                "query_expansion": False,
+                "reranking": False,
+                "contextualization": False,
+                "candidate_pool_size": rrf["candidate_pool_size"] if rrf else None,
+                "rrf_rank_constant": rrf["rank_constant"] if rrf else None,
+            }
+            return results, metadata
+        except Exception as e:
+            raise RAGException(f"Retrieval failed: {e}") from e
     
     def _select_queries_for_method(
         self,

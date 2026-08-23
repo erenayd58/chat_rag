@@ -9,6 +9,35 @@ import uuid
 from typing import Dict, Any, List, Optional
 
 
+_LEGACY_CHUNKER_NAMES = {"legacy", "semanticchunker", "semantic_chunker"}
+_V4_CHUNKER_NAMES = {"v4", "frozenv4chunker", "frozen_v4_chunker"}
+
+
+def normalize_chunker_config(chunker: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return the canonical persisted chunker selection."""
+    if chunker is None:
+        return {"type": "legacy", "params": {}}
+    if not isinstance(chunker, dict):
+        raise ValueError("chunker must be an object")
+
+    raw_type = str(chunker.get("type") or "").strip().lower()
+    if raw_type in _LEGACY_CHUNKER_NAMES:
+        chunker_type = "legacy"
+    elif raw_type in _V4_CHUNKER_NAMES:
+        chunker_type = "v4"
+    else:
+        raise ValueError("chunker.type must be 'legacy' or 'v4'")
+
+    params = chunker.get("params", {})
+    if params is None:
+        params = {}
+    if not isinstance(params, dict):
+        raise ValueError("chunker.params must be an object")
+    if chunker_type == "v4" and params:
+        raise ValueError("Frozen V4 accepts no runtime chunker params")
+    return {"type": chunker_type, "params": dict(params)}
+
+
 class KnowledgeBaseManager:
     def __init__(self, store_path: str = "./.knowledge_bases.json"):
         self.store_path = store_path
@@ -21,7 +50,14 @@ class KnowledgeBaseManager:
                 with open(self.store_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 if isinstance(data, dict):
-                    self.kbs = data
+                    self.kbs = {
+                        kb_id: {
+                            **cfg,
+                            "chunker": normalize_chunker_config(cfg.get("chunker")),
+                        }
+                        for kb_id, cfg in data.items()
+                        if isinstance(cfg, dict)
+                    }
             except Exception:
                 self.kbs = {}
 
@@ -54,7 +90,7 @@ class KnowledgeBaseManager:
         kb_id = str(uuid.uuid4())[:8]
         cfg = {
             "name": name,
-            "chunker": chunker or {"type": "SemanticChunker", "params": {}},
+            "chunker": normalize_chunker_config(chunker),
             "embedding_model_name": embedding_model_name,
             "vector_db_provider": vector_db_provider,
             "vector_db_path": vector_db_path,
@@ -65,9 +101,26 @@ class KnowledgeBaseManager:
         self._save()
         return {"kb_id": kb_id, **cfg}
 
+    def create_from_payload(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a KB from the exact JSON contract accepted by POST /api/kb."""
+        if not isinstance(data, dict):
+            raise ValueError("Knowledge-base payload must be an object")
+        return self.create(
+            name=str(data.get("name") or "").strip() or "Knowledge Base",
+            chunker=data.get("chunker"),
+            embedding_model_name=data.get("embedding_model_name"),
+            vector_db_provider=data.get("vector_db_provider") or "chroma",
+            vector_db_path=data.get("vector_db_path"),
+            retrieval_method=data.get("retrieval_method") or "hybrid",
+            extra=data.get("extra"),
+        )
+
     def update(self, kb_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if kb_id not in self.kbs:
             return None
+        updates = dict(updates)
+        if "chunker" in updates:
+            updates["chunker"] = normalize_chunker_config(updates["chunker"])
         self.kbs[kb_id].update(updates)
         self._save()
         return {"kb_id": kb_id, **self.kbs[kb_id]}

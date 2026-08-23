@@ -12,13 +12,18 @@ from components.chunker import FrozenV4Chunker, SemanticChunker
 from components.embedding import BaseEmbedding
 from components.llm import BaseLLM
 from components.reranker import BaseReranker
+from components.retriever import BenchmarkAlignedEmbedding
 from components.vectordb import FaissVectorDB
 from core.models import RetrievalResult
 from pipeline import RAGPipeline
 
 
 class FakeLLM(BaseLLM):
+    def __init__(self):
+        self.calls = 0
+
     def generate(self, messages, temperature=0.3, max_tokens=200, **kwargs):
+        self.calls += 1
         return "Deterministic document summary."
 
     def get_name(self):
@@ -89,6 +94,27 @@ def _settings():
     )
 
 
+class FakeFrozenRetrievalEmbedder:
+    model_id = "fake-e5@frozen"
+
+    @staticmethod
+    def _encode(texts):
+        vectors = []
+        for text in texts:
+            digest = hashlib.sha256(text.encode("utf-8")).digest()
+            vector = np.asarray(
+                [digest[0] + 1, digest[1] + 1, digest[2] + 1], dtype=np.float32
+            )
+            vectors.append(vector / np.linalg.norm(vector))
+        return np.vstack(vectors)
+
+    def embed_documents(self, texts):
+        return self._encode(texts), None
+
+    def embed_queries(self, texts):
+        return self._encode(texts), None
+
+
 @pytest.mark.parametrize("chunker_type", ["legacy", "v4"])
 def test_document_ingestion_vector_index_and_retrieval_smoke(chunker_type, tmp_path):
     if chunker_type == "legacy":
@@ -130,3 +156,53 @@ def test_document_ingestion_vector_index_and_retrieval_smoke(chunker_type, tmp_p
     assert results
     assert all(isinstance(item, RetrievalResult) for item in results)
     assert results[0].chunk.doc_id == f"smoke-{chunker_type}"
+
+
+@pytest.mark.parametrize("chunker_type", ["legacy", "v4"])
+def test_benchmark_aligned_profile_ingests_and_retrieves_without_context_or_rerank(
+    chunker_type, tmp_path
+):
+    if chunker_type == "legacy":
+        chunker = SemanticChunker(
+            chunk_size=300,
+            chunk_overlap=60,
+            min_chunk_size=1,
+            use_semantic_segmentation=False,
+        )
+    else:
+        chunker = FrozenV4Chunker(
+            boundary_embedder=DeterministicBoundaryEmbedder()
+        )
+    fake_llm = FakeLLM()
+    embedding = BenchmarkAlignedEmbedding(embedder=FakeFrozenRetrievalEmbedder())
+    settings = _settings()
+    settings.retrieval_profile = "benchmark_aligned"
+    settings.default_top_k = 5
+    vector_db = FaissVectorDB(
+        path=str(tmp_path / f"benchmark-{chunker_type}"),
+        rebuild_bm25_on_load=False,
+    )
+    pipeline = RAGPipeline(
+        llm_model=fake_llm,
+        embedding_model=embedding,
+        vector_db=vector_db,
+        chunker=chunker,
+        settings=settings,
+    )
+
+    chunks = pipeline.ingest_document(
+        "Revenue increased during the year. Customer growth remained strong.",
+        doc_id=f"benchmark-{chunker_type}",
+        doc_title="Benchmark Smoke",
+        additional_metadata={"parser": "TextParser"},
+    )
+    results, metadata = pipeline.retrieve("revenue growth", top_k=3)
+
+    assert chunks
+    assert results
+    assert fake_llm.calls == 0
+    assert all(chunk.document_summary == "" for chunk in chunks)
+    assert metadata["retrieval_profile"] == "benchmark_aligned"
+    assert metadata["query_expansion"] is False
+    assert metadata["reranking"] is False
+    assert metadata["contextualization"] is False

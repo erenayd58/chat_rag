@@ -10,10 +10,15 @@ from core.exceptions import ConfigurationException
 from .base import BaseChunker
 from .frozen_v4_chunker import FrozenV4Chunker
 from .semantic_chunker import SemanticChunker
+from .structural_chunker import StructuralChunker
 
 
 _LEGACY_NAMES = {"legacy", "semanticchunker", "semantic_chunker"}
 _V4_NAMES = {"v4", "frozenv4chunker", "frozen_v4_chunker"}
+_STRUCTURAL_NAMES = {
+    "structure_first", "structurefirst", "structural",
+    "structuralchunker", "structural_chunker",
+}
 
 
 def create_chunker(
@@ -50,6 +55,14 @@ def create_chunker(
             )
         return FrozenV4Chunker()
 
+    if normalized in _STRUCTURAL_NAMES:
+        if params:
+            raise ConfigurationException(
+                "Structure-first accepts no runtime tuning params"
+            )
+        return StructuralChunker()
+
     raise ConfigurationException(
-        f"Unsupported chunker type {chunker_type!r}; expected 'legacy' or 'v4'"
+        f"Unsupported chunker type {chunker_type!r}; "
+        "expected 'legacy', 'v4' or 'structure_first'"
     )

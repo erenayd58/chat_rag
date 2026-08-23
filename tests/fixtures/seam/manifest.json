@@ -1,0 +1,14 @@
+{
+  "bytes": 6706,
+  "expected_units": {
+    "heading": 4,
+    "list": 3,
+    "paragraph": 3,
+    "table": 1,
+    "total": 11
+  },
+  "file": "mini-report.pdf",
+  "generated_by": "tests/fixtures/seam/build_mini_report.py",
+  "purpose": "Synthetic 2-page PDF covering heading/paragraph/table/list so the real parser -> adapter -> chunker seam can be tested without shipping a customer document.",
+  "sha256": "7c129e4bc41849fa94169c7e4d38f494ecde840216a96bea61c758f12376f49e"
+}

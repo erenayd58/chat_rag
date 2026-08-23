@@ -7,6 +7,7 @@ from typing import Optional, List
 from .base import BaseParser
 from .text_parser import TextParser
 from .pdf_parser import PDFParser
+from .structured_pdf_parser import StructuredPDFParser
 from .docx_parser import DOCXParser
 from .markdown_parser import MarkdownParser
 from .image_parser import ImageParser
@@ -24,9 +25,15 @@ class ParserFactory:
     def _register_default_parsers(self):
         """Register default parsers"""
         # Try to register each parser (may fail if dependencies not installed)
+        # StructuredPDFParser is registered before PDFParser so that PDFs are
+        # parsed into canonical units (headings/lists/tables/pages) whenever the
+        # pinned pymupdf4llm layout backend is installed.  If it is missing, its
+        # constructor raises RAGException and registration falls through to the
+        # existing plain-text PDFParser, preserving current behaviour exactly.
         parsers_to_register = [
             (TextParser, {}),
             (MarkdownParser, {}),
+            (StructuredPDFParser, {}),
             (PDFParser, {'use_unstructured': False}),  # Try PyMuPDF first
             (DOCXParser, {}),
             (ImageParser, {}),
@@ -99,6 +106,35 @@ class ParserFactory:
         
         return parser.parse(file_path, **kwargs)
     
+    def parse_units(self, file_path: str, **kwargs) -> Optional[List[dict]]:
+        """
+        Parse a file into structured canonical units, when the selected parser
+        supports it.
+
+        Args:
+            file_path: Path to the file
+            **kwargs: Additional parser parameters
+
+        Returns:
+            List of canonical unit dicts, or None when the parser can only
+            produce flat text (the caller then falls back to text blocks).
+
+        Raises:
+            RAGException: If the file does not exist or no parser is available.
+        """
+        if not os.path.exists(file_path):
+            raise RAGException(f"File not found: {file_path}")
+
+        parser = self.get_parser(file_path)
+        if parser is None:
+            ext = os.path.splitext(file_path)[1]
+            raise RAGException(
+                f"No parser available for file type: {ext}. "
+                f"Supported parsers: {[p.get_name() for p in self._parsers]}"
+            )
+
+        return parser.parse_units(file_path, **kwargs)
+
     def get_metadata(self, file_path: str, **kwargs) -> dict:
         """
         Get metadata from a file

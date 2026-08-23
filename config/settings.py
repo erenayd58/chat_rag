@@ -48,6 +48,11 @@ class Settings:
         self.min_chunk_size = int(os.getenv("MIN_CHUNK_SIZE", "50"))
         
         # Retrieval Settings
+        self.retrieval_profile = os.getenv("RETRIEVAL_PROFILE", "legacy").strip().lower()
+        if self.retrieval_profile not in {"legacy", "benchmark_aligned", "bm25_only"}:
+            raise ValueError(
+                "RETRIEVAL_PROFILE must be 'legacy', 'benchmark_aligned' or 'bm25_only'"
+            )
         self.default_top_k = int(os.getenv("DEFAULT_TOP_K", "5"))
         self.vector_weight = float(os.getenv("VECTOR_WEIGHT", "0.7"))
         self.bm25_weight = float(os.getenv("BM25_WEIGHT", "0.3"))
