@@ -63,4 +63,7 @@ chroma_db/*
 documents/*
 archive/*
 docs/*
-
+# Regenerable caches: canonical units from the structured PDF parser,
+# plus the embedding caches used by the comparison profiles.
+.cache/
+*.bak

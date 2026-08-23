@@ -130,6 +130,32 @@ cp env.example .env
 # For Ollama: Set LLM_PROVIDER=ollama and OLLAMA_MODEL
 ```
 
+### Default demo profile
+
+The low-cost profile validated on the KKB documents:
+
+```env
+CHUNKER_TYPE=structure_first
+RETRIEVAL_PROFILE=bm25_only
+```
+
+Structure-first chunking lets document structure decide chunk boundaries
+(a chunk opens at every heading and section change, oversized units split at
+table row / list item / sentence seams) and BM25-only retrieval loads no
+embedding model at all: no dense vectors are computed or stored in this
+profile. The legacy and V4 chunkers and the `legacy` / `benchmark_aligned`
+retrieval profiles remain selectable for comparison.
+
+**First upload of a PDF is slow.** Parsing runs layout inference over every
+logical page, which is a few seconds per page on CPU -- an 85-page report takes
+roughly ten minutes, and essentially all of it is layout model inference rather
+than anything in this repository. The resulting canonical units are cached on
+disk under `.cache/canonical-units/`, keyed by the PDF content hash, so
+re-ingesting the same document afterwards takes well under a second. For a
+demo, upload the document once beforehand. Deleting the cache directory is
+safe; it is regenerated on the next ingest. Set `STRUCTURED_PARSER_CACHE` to
+move it elsewhere.
+
 ### LLM Provider Setup
 
 **Option 1: Azure OpenAI (Cloud-based)**
@@ -187,6 +213,7 @@ CHUNK_OVERLAP=128
 MIN_CHUNK_SIZE=50
 
 # Retrieval
+RETRIEVAL_PROFILE=legacy  # legacy or benchmark_aligned
 DEFAULT_TOP_K=5
 VECTOR_WEIGHT=0.7
 BM25_WEIGHT=0.3
@@ -236,6 +263,20 @@ To run the minimal product demo:
 
 The first V4 ingestion may download `intfloat/multilingual-e5-base`; subsequent
 boundary embeddings use `.cache/boundary-embeddings`.
+
+### Retrieval profiles
+
+`RETRIEVAL_PROFILE=legacy` preserves the existing chat_rag retrieval behavior.
+`RETRIEVAL_PROFILE=benchmark_aligned` selects the Phase 4/5 profile pinned at
+commit `1e7f7186c13729c739ccb3170da0892f7350cb27`: multilingual E5 role prefixes,
+normalized deterministic long-text pooling, Unicode BM25, and equal-weight RRF
+with a 100-result pool and `k=60`. Query expansion, contextualization, and
+reranking are disabled in this profile. Its E5 model is loaded with
+`local_files_only=true`, matching the frozen benchmark configuration.
+
+Indexes are profile-specific because the embedding models and dimensions differ.
+Use a new vector-database path/collection and re-ingest documents when changing
+profiles; do not point `benchmark_aligned` at an index created by `legacy`.
 
 ## Quick Start
 

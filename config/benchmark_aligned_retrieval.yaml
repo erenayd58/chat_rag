@@ -1,0 +1,31 @@
+profile: benchmark_aligned
+source:
+  repository: https://github.com/erenayd58/chunk.git
+  commit: 1e7f7186c13729c739ccb3170da0892f7350cb27
+  tag: phase5-holdout-validation
+retrieval_embedding:
+  model: intfloat/multilingual-e5-base
+  revision: null
+  device: auto
+  local_files_only: true
+  query_prefix: "query: "
+  document_prefix: "passage: "
+  model_input_limit: 512
+  overlength_strategy: sentence_fragment_token_weighted_pooling
+  normalize_embeddings: true
+  cache_queries: false
+  batch_size: 16
+  cache_dir: .cache/retrieval-benchmark-v1
+bm25:
+  tokenizer: unicode_word_casefold_v1
+  k1: 1.5
+  b: 0.75
+rrf:
+  rank_constant: 60
+  dense_weight: 1.0
+  bm25_weight: 1.0
+  candidate_pool_size: 100
+pipeline:
+  query_expansion: false
+  reranking: false
+  contextualization: false
