@@ -1,6 +1,6 @@
 python-dotenv
 sentence-transformers
-amsc-poc @ git+https://github.com/erenayd58/chunk.git@1e7f7186c13729c739ccb3170da0892f7350cb27
+amsc-poc @ git+https://github.com/erenayd58/chunk.git@e01fc78b58e0bad7705486464e44f96b714c3180
 openai
 chromadb
 rank-bm25
@@ -10,6 +10,8 @@ ollama  # Official Ollama Python client
 
 # Document Parsing
 pymupdf  # PDF parsing (recommended)
+pymupdf4llm[layout]==0.3.4  # layout-aware parsing for CHUNKER_TYPE=structure_first
+faiss-cpu  # components.vectordb imports faiss unconditionally
 # unstructured[pdf]  # Alternative PDF parsing (uncomment if needed)
 python-docx  # DOCX parsing
 Pillow  # Image handling
