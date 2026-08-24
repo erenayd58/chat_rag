@@ -29,6 +29,16 @@ class StructuredPDFParser(BaseParser):
 
     SUPPORTED_EXTENSIONS = (".pdf",)
 
+    #: Two fixes to the canonical stream are applied here; bump this marker
+    #: whenever they change so a cache written by an older, wronger version is
+    #: never reused.
+    NORMALIZATION_VERSION = "v2-column-order+running-headers"
+
+    #: A heading whose text leads a logical page on this many distinct physical
+    #: pages is running furniture, not a section start. Positional and
+    #: text-agnostic.
+    RUNNING_HEADER_MIN_PAGES = 3
+
     def __init__(self, layout_profile_path: Optional[str] = None) -> None:
         """
         Args:
@@ -48,6 +58,7 @@ class StructuredPDFParser(BaseParser):
                 CheckpointLayoutUnavailableError,
                 load_layout_backend,
             )
+            from amsc.checkpoint_layout import CheckpointLayoutProfile
             from amsc.prepare_full_checkpoint import extract_full_canonical_units
         except ImportError as exc:
             raise RAGException(
@@ -64,6 +75,18 @@ class StructuredPDFParser(BaseParser):
 
         self._extract_full_canonical_units = extract_full_canonical_units
         self.layout_profile_path = layout_profile_path
+        # The extractor already treats a landscape physical page as a
+        # left/right spread. Without an ordering policy the layout model reads
+        # each horizontal band left to right, which interleaves the two columns
+        # and detaches a heading from the body below it. Applying column-major
+        # order to those logical pages follows the spread assumption the
+        # extractor already makes; it is geometry, not a per-document rule.
+        self._spread_profile = CheckpointLayoutProfile(
+            profile_id="landscape-spread-two-column",
+            spread_mode="left-right",
+            logical_columns=2,
+            reading_order="column-major-left-to-right",
+        )
         self.parser_backend = "pymupdf4llm-layout"
         # Layout extraction is the expensive step (minutes on a large report)
         # and the ingestion path asks for text and units back to back, so cache
@@ -141,8 +164,9 @@ class StructuredPDFParser(BaseParser):
         try:
             extraction = self._extract_full_canonical_units(
                 input_path=file_path,
-                layout_profile_path=profile,
+                layout_profile_path=profile or self._spread_profile,
                 document_id="document",
+                running_header_min_pages=self.RUNNING_HEADER_MIN_PAGES,
             )
         except Exception as exc:
             raise RAGException(f"Structured PDF parsing failed: {exc}") from exc
@@ -161,7 +185,8 @@ class StructuredPDFParser(BaseParser):
                 digest.update(block)
         digest.update(b"|")
         digest.update((profile or "").encode("utf-8"))
-        digest.update(b"|pymupdf4llm-layout-v1")
+        digest.update(b"|pymupdf4llm-layout-v1|")
+        digest.update(self.NORMALIZATION_VERSION.encode("utf-8"))
         return self._disk_cache / f"{digest.hexdigest()}.jsonl"
 
     @staticmethod
