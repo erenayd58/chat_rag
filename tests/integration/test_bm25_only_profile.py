@@ -61,8 +61,10 @@ def test_pdf_to_chunks_to_bm25_search_end_to_end():
     for chunk in chunks:
         assert chunk.metadata["chunker_type"] == "structure_first"
         assert chunk.metadata["token_count"] <= 1126
-        assert chunk.metadata["unit_ids"]
-        assert chunk.metadata["pages"]
+        # Provenance is JSON-serialised because the vector store keeps scalar
+        # metadata only and silently drops list values.
+        assert json.loads(chunk.metadata["unit_ids_json"])
+        assert json.loads(chunk.metadata["pages_json"])
 
     retriever = BM25OnlyRetriever(NullEmbedding(), vector_db=None)
     retriever.build_index(chunks)

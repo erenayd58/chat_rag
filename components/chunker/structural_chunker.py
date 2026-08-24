@@ -112,8 +112,11 @@ class StructuralChunker(BaseChunker):
                         "chunker_type": CHUNKER_ID,
                         "created_at": created_at,
                         "word_count": len(row["text"].split()),
-                        "unit_ids": list(row["unit_ids"]),
-                        "pages": list(row.get("pages") or []),
+                        # Chroma keeps scalar metadata only and silently drops
+                        # list values, so provenance is serialised the same way
+                        # FrozenV4Chunker serialises its own.
+                        "unit_ids_json": json.dumps(list(row["unit_ids"])),
+                        "pages_json": json.dumps(list(row.get("pages") or [])),
                         "token_count": int(row["token_count"]),
                         # Chroma metadata values must be scalars or flat lists,
                         # and section_paths is a list of paths. Serialised the
@@ -121,7 +124,9 @@ class StructuralChunker(BaseChunker):
                         "section_paths_json": json.dumps(
                             section_paths, ensure_ascii=False
                         ),
-                        "split_strategies": row.get("split_strategies") or [],
+                        "split_strategies_json": json.dumps(
+                            row.get("split_strategies") or []
+                        ),
                     },
                 )
             )

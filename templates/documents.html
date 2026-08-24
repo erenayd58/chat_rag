@@ -787,6 +787,40 @@
                 </div>
                 <div id="chunksContainer" class="chunks-list"></div>
             </div>
+
+            <div id="parserView" class="chunks-view">
+                <div class="chunks-header">
+                    <div>
+                        <div class="chunks-title">Parser Output &middot; Canonical Units</div>
+                        <div style="font-size: 13px; color: #666; margin-top: 5px;" id="parserSubtitle"></div>
+                    </div>
+                    <button class="btn-back" onclick="showDocuments()">&larr; Back to Documents</button>
+                </div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:14px;">
+                    <label style="font-size:13px; color:#555;">Page from</label>
+                    <input id="puPageFrom" type="number" min="1" style="width:90px; padding:8px; border:2px solid #e0e0e0; border-radius:8px;">
+                    <label style="font-size:13px; color:#555;">to</label>
+                    <input id="puPageTo" type="number" min="1" style="width:90px; padding:8px; border:2px solid #e0e0e0; border-radius:8px;">
+                    <select id="puType" style="padding:8px; border:2px solid #e0e0e0; border-radius:8px;">
+                        <option value="">all types</option>
+                        <option value="heading">heading</option>
+                        <option value="paragraph">paragraph</option>
+                        <option value="list">list</option>
+                        <option value="table">table</option>
+                    </select>
+                    <label style="font-size:13px; color:#555;">per page</label>
+                    <select id="puLimit" style="padding:8px; border:2px solid #e0e0e0; border-radius:8px;">
+                        <option>50</option><option selected>100</option><option>200</option>
+                    </select>
+                    <button class="btn-small btn-view" onclick="loadParserUnits(0)">Apply</button>
+                    <button class="btn-small" onclick="resetParserFilters()">Reset</button>
+                    <span style="flex:1"></span>
+                    <button class="btn-small" onclick="parserPage(-1)">&larr; Prev</button>
+                    <span id="puRange" style="font-size:13px; color:#555;"></span>
+                    <button class="btn-small" onclick="parserPage(1)">Next &rarr;</button>
+                </div>
+                <div id="parserContainer" class="chunks-list"></div>
+            </div>
         </div>
     </div>
 
@@ -845,7 +879,7 @@
                 </select>
             </div>
             <div class="form-group">
-                <label class="form-label">Chunker (optional)</label>
+                <label class="form-label">Chunker</label>
                 <select id="kbChunkerType" style="width:100%; padding:10px; border:2px solid #e0e0e0; border-radius:8px;">
                     <option value="">Loading...</option>
                 </select>
@@ -1017,6 +1051,7 @@
                             <div class="document-title">${escapeHtml(doc.file_name)}</div>
                             <div class="document-actions" onclick="event.stopPropagation()">
                                 <button class="btn-small btn-view" onclick="viewDocument('${doc.doc_id}', '${doc.kb_id || ''}')">View</button>
+                                <button class="btn-small" onclick="viewParserOutput('${doc.doc_id}', '${doc.kb_id || ''}')">Parser</button>
                                 <button class="btn-small btn-delete" onclick="deleteDocument('${doc.doc_id}', '${escapeHtml(doc.file_name)}', '${doc.kb_id || ''}')">Delete</button>
                             </div>
                         </div>
@@ -1144,7 +1179,109 @@
             container.innerHTML = chunksHTML;
         }
 
+        let parserOffset = 0;
+        let parserTotal = 0;
+
+        async function viewParserOutput(docId, docKbId) {
+            currentDocId = docId;
+            currentDocKbId = docKbId || null;
+            document.getElementById('documentsView').classList.remove('active');
+            document.getElementById('chunksView').classList.remove('active');
+            document.getElementById('parserView').classList.add('active');
+            await loadParserUnits(0);
+        }
+
+        function resetParserFilters() {
+            document.getElementById('puPageFrom').value = '';
+            document.getElementById('puPageTo').value = '';
+            document.getElementById('puType').value = '';
+            loadParserUnits(0);
+        }
+
+        function parserPage(direction) {
+            const limit = parseInt(document.getElementById('puLimit').value, 10) || 100;
+            let next = parserOffset + direction * limit;
+            if (next < 0) next = 0;
+            if (next >= parserTotal) return;
+            loadParserUnits(next);
+        }
+
+        async function loadParserUnits(offset) {
+            const container = document.getElementById('parserContainer');
+            container.innerHTML = '<div class="loading"><div class="loading-spinner"></div><p>Loading canonical units...</p></div>';
+            const limit = parseInt(document.getElementById('puLimit').value, 10) || 100;
+            const params = new URLSearchParams({ offset: offset, limit: limit });
+            const kbSelect = document.getElementById('kbSelectDocs');
+            const kbId = currentDocKbId || (kbSelect ? kbSelect.value : '');
+            if (kbId) params.set('kb_id', kbId);
+            const from = document.getElementById('puPageFrom').value;
+            const to = document.getElementById('puPageTo').value;
+            const type = document.getElementById('puType').value;
+            if (from) params.set('page_from', from);
+            if (to) params.set('page_to', to);
+            if (type) params.set('unit_type', type);
+
+            try {
+                const res = await fetch('/api/documents/' + currentDocId + '/canonical-units?' + params);
+                const data = await res.json();
+                if (!data.success) {
+                    container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(data.error || 'Failed to load') + '</p></div>';
+                    document.getElementById('puRange').textContent = '';
+                    return;
+                }
+                parserOffset = data.offset;
+                parserTotal = data.total;
+                const docPages = data.pages_in_document || [];
+                const pageRange = docPages.length ? (docPages[0] + '-' + docPages[docPages.length - 1]) : 'n/a';
+                document.getElementById('parserSubtitle').textContent =
+                    data.total_units_in_document + ' canonical units in document \u00b7 '
+                    + data.total + ' match the filter \u00b7 pages ' + pageRange;
+                document.getElementById('puRange').textContent =
+                    (data.offset + 1) + '-' + (data.offset + data.returned) + ' / ' + data.total;
+                container.innerHTML = data.units.map(renderCanonicalUnit).join('');
+            } catch (err) {
+                container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(String(err)) + '</p></div>';
+            }
+        }
+
+        function renderCanonicalUnit(u) {
+            const src = u.source || {};
+            const bits = [];
+            const push = function (label, value) {
+                if (value !== undefined && value !== null && value !== '') {
+                    bits.push('<span style="margin-right:14px;"><b>' + label + '</b> ' + escapeHtml(String(value)) + '</span>');
+                }
+            };
+            push('order', u.order);
+            push('id', u.unit_id);
+            push('type', u.type);
+            push('h-level', u.heading_level);
+            push('page', src.page);
+            push('logical', src.logical_page_side);
+            push('block', src.block);
+            push('column', src.logical_column);
+            push('band', src.layout_band);
+            push('reading-order', src.layout_reading_order_index);
+            push('layout-class', src.raw_layout_class);
+            push('origin', src.content_origin);
+            const bbox = src.layout_bbox_physical || src.layout_bbox_logical || src.picture_bbox;
+            if (bbox) { push('bbox', JSON.stringify(bbox)); }
+            const section = (u.section_path || []).join(' > ');
+            const text = u.text || '';
+            const sectionHtml = section
+                ? '<div style="font-size:12px; color:#7a5af5; margin-bottom:6px;">&sect; ' + escapeHtml(section) + '</div>'
+                : '';
+            return '<div class="chunk-card">'
+                + '<div style="font-size:12px; color:#555; margin-bottom:6px; line-height:1.9;">' + bits.join('') + '</div>'
+                + sectionHtml
+                + '<details><summary style="cursor:pointer; font-size:12px; color:#666;">text (' + text.length + ' chars)</summary>'
+                + '<pre style="white-space:pre-wrap; word-break:break-word; margin:8px 0 0; font-family:inherit; font-size:14px;">'
+                + escapeHtml(text) + '</pre></details>'
+                + '</div>';
+        }
+
         function showDocuments() {
+            document.getElementById('parserView').classList.remove('active');
             document.getElementById('chunksView').classList.remove('active');
             document.getElementById('documentsView').classList.add('active');
             currentDocId = null;
@@ -1733,13 +1870,14 @@
             
             // Populate chunkers
             const chunkerSelect = document.getElementById('kbChunkerType');
-            chunkerSelect.innerHTML = '<option value="">None (use default)</option>';
+            chunkerSelect.innerHTML = '';
             kbOptions.chunkers.forEach(chunker => {
                 const option = document.createElement('option');
                 option.value = chunker.name;
                 option.textContent = `${chunker.name} - ${chunker.description}`;
                 chunkerSelect.appendChild(option);
             });
+            chunkerSelect.value = 'legacy';
         }
         
         function showCreateKB() {
@@ -1762,16 +1900,15 @@
             const provider = document.getElementById('kbVDB').value || null;
             const path = document.getElementById('kbVDBPath').value.trim() || null;
             const retrieval = document.getElementById('kbRetrieval').value || null;
-            const chunkerType = document.getElementById('kbChunkerType').value.trim();
+            const chunkerType = document.getElementById('kbChunkerType').value.trim() || 'legacy';
             const chunkerParamsRaw = document.getElementById('kbChunkerParams').value.trim();
-            let chunker = null;
-            if (chunkerType) {
-                let params = {};
-                if (chunkerParamsRaw) {
-                    try { params = JSON.parse(chunkerParamsRaw); } catch (e) {}
-                }
-                chunker = { type: chunkerType, params };
+            let params = {};
+            if (chunkerParamsRaw) {
+                try { params = JSON.parse(chunkerParamsRaw); }
+                catch (e) { alert('Chunker params must be valid JSON.'); return; }
             }
+            if (chunkerType === 'v4') params = {};
+            const chunker = { type: chunkerType, params };
             try {
                 const res = await fetch('/api/kb', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1786,6 +1923,9 @@
                 });
                 const data = await res.json();
                 if (!data.success) throw new Error(data.error || 'Create failed');
+                if (data.kb?.chunker?.type !== chunkerType) {
+                    throw new Error('Persisted chunker selection does not match the form');
+                }
                 hideCreateKB();
                 await loadKBsDocs();
             } catch (e) {

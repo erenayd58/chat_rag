@@ -2,6 +2,7 @@
 """
 Flask web application for RAG Chat
 """
+import json
 import os
 # Set OpenMP environment variables BEFORE importing any ML libraries
 # This prevents OMP errors when multiple embedding models are instantiated
@@ -739,6 +740,117 @@ def get_document_chunks(doc_id):
             'success': False,
             'error': str(e)
         }), 500
+
+
+@app.route('/api/documents/<doc_id>/canonical-units', methods=['GET'])
+def get_document_canonical_units(doc_id):
+    """Inspect the parser's canonical units for a document, before chunking.
+
+    Read-only and cache-backed: the PDF is never re-parsed and nothing is
+    reordered, merged or cleaned here. Use it side by side with the chunk view
+    to tell a parser reading-order problem from a chunker one.
+    """
+    try:
+        from components.parsers.canonical_units_store import (
+            find_cache_file,
+            load_units,
+            select_units,
+            summarize_source,
+        )
+
+        kb_id = request.args.get('kb_id')
+        page_from = request.args.get('page_from', type=int)
+        page_to = request.args.get('page_to', type=int)
+        unit_type = request.args.get('unit_type') or None
+        offset = request.args.get('offset', default=0, type=int)
+        limit = request.args.get('limit', default=100, type=int)
+
+        user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
+        stored = user_pipeline.vector_db.get_chunks_paginated(
+            offset=0, limit=10000, filter_dict={'doc_id': doc_id}
+        )
+        chunk_rows = stored.get('chunks') or []
+
+        wanted = []
+        for chunk in chunk_rows:
+            metadata = chunk.get('metadata') or {}
+            ids = metadata.get('unit_ids')
+            if not ids:
+                for key in ('unit_ids_json', 'amsc_unit_ids_json'):
+                    raw = metadata.get(key)
+                    if raw:
+                        try:
+                            ids = json.loads(raw)
+                        except Exception:
+                            ids = None
+                        if ids:
+                            break
+            if ids:
+                wanted.extend(ids)
+
+        if not wanted:
+            return jsonify({
+                'success': False,
+                'error': ('No canonical unit ids on the chunks of this document. '
+                          'Only documents ingested through the structured parser '
+                          'expose a parser view.'),
+            }), 404
+
+        cache_file = find_cache_file(wanted)
+        if cache_file is None:
+            return jsonify({
+                'success': False,
+                'error': ('No canonical unit cache found for this document. '
+                          'Re-upload it with the structured parser available.'),
+            }), 404
+
+        units = load_units(cache_file)
+        window, total, pages = select_units(
+            units,
+            page_from=page_from,
+            page_to=page_to,
+            unit_type=unit_type,
+            offset=offset,
+            limit=limit,
+        )
+
+        payload = []
+        for index, row in enumerate(window, start=offset + 1):
+            payload.append({
+                'index': index,
+                'order': row.get('order'),
+                'unit_id': row.get('unit_id'),
+                'type': row.get('type'),
+                'heading_level': row.get('heading_level'),
+                'section_path': row.get('section_path') or [],
+                'text': row.get('text') or '',
+                'source': summarize_source(row),
+            })
+
+        all_pages = sorted({
+            (r.get('source') or {}).get('page')
+            for r in units
+            if (r.get('source') or {}).get('page') is not None
+        })
+        return jsonify({
+            'success': True,
+            'doc_id': doc_id,
+            'source': str(cache_file),
+            'total_units_in_document': len(units),
+            'total': total,
+            'returned': len(payload),
+            'offset': offset,
+            'limit': limit,
+            'pages_in_selection': pages,
+            'pages_in_document': all_pages,
+            'units': payload,
+        })
+
+    except Exception as e:
+        logger.error(
+            f"Failed to get canonical units for document {doc_id}: {e}", exc_info=True
+        )
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/documents/<doc_id>', methods=['DELETE'])
