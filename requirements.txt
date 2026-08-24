@@ -1,6 +1,6 @@
 python-dotenv
 sentence-transformers
-amsc-poc @ git+https://github.com/erenayd58/chunk.git@27bc68891405434b4f7198600607050ae554cc48
+amsc-poc @ git+https://github.com/erenayd58/chunk.git@17a5637e7c038d7532e5749bc3e0c7469ca0959b
 openai
 chromadb
 rank-bm25

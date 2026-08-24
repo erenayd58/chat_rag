@@ -29,10 +29,13 @@ class StructuredPDFParser(BaseParser):
 
     SUPPORTED_EXTENSIONS = (".pdf",)
 
-    #: Three fixes to the canonical stream are applied here; bump this marker
+    #: Eight fixes to the canonical stream are applied here; bump this marker
     #: whenever they change so a cache written by an older, wronger version is
     #: never reused.
-    NORMALIZATION_VERSION = "v3-column-order+running-headers+visual-grid"
+    NORMALIZATION_VERSION = (
+        "v7-column-order+running-headers+visual-grid+lead-ins"
+        "+numbered-headings+table-captions+split-headings+sentence-headings"
+    )
 
     #: A heading whose text leads a logical page on this many distinct physical
     #: pages is running furniture, not a section start. Positional and
@@ -45,6 +48,33 @@ class StructuredPDFParser(BaseParser):
     #: use different font sizes. Production only: the research canonical is
     #: frozen and must stay byte-identical.
     RECONSTRUCT_VISUAL_GRIDS = True
+
+    #: A sentence that introduces the bullets under it ("Uygulamayla;") is set
+    #: apart typographically, so the layout model reports it as a section
+    #: header and it opens a section named after a sentence fragment. Demoting
+    #: it to body text keeps those bullets in the section they belong to.
+    #: Production only: the research canonical is frozen.
+    DEMOTE_LEAD_IN_HEADINGS = True
+
+    #: The layout model reports a few numbered section titles as body text, so
+    #: the section they open never starts and the tables under them are filed
+    #: against the previous note. Production only: the research canonical is
+    #: frozen.
+    PROMOTE_MISSED_HEADINGS = True
+
+    #: A period label printed above its table is reported as a section header,
+    #: so a section named after a table caption swallows the notes below it.
+    #: Production only: the research canonical is frozen.
+    DEMOTE_CAPTION_HEADINGS = True
+
+    #: One printed heading line can arrive as two layout boxes, the section
+    #: number split away from its own title.
+    REJOIN_SPLIT_HEADINGS = True
+
+    #: A standfirst set in display type is reported as a section header, so a
+    #: whole sentence opens a section. Production only: the research canonical
+    #: is frozen.
+    DEMOTE_SENTENCE_HEADINGS = True
 
     def __init__(self, layout_profile_path: Optional[str] = None) -> None:
         """
@@ -175,6 +205,11 @@ class StructuredPDFParser(BaseParser):
                 document_id="document",
                 running_header_min_pages=self.RUNNING_HEADER_MIN_PAGES,
                 reconstruct_visual_grids=self.RECONSTRUCT_VISUAL_GRIDS,
+                demote_lead_in_headings=self.DEMOTE_LEAD_IN_HEADINGS,
+                promote_missed_headings=self.PROMOTE_MISSED_HEADINGS,
+                demote_caption_headings=self.DEMOTE_CAPTION_HEADINGS,
+                rejoin_split_headings_enabled=self.REJOIN_SPLIT_HEADINGS,
+                demote_sentence_headings_enabled=self.DEMOTE_SENTENCE_HEADINGS,
             )
         except Exception as exc:
             raise RAGException(f"Structured PDF parsing failed: {exc}") from exc
