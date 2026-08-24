@@ -29,15 +29,22 @@ class StructuredPDFParser(BaseParser):
 
     SUPPORTED_EXTENSIONS = (".pdf",)
 
-    #: Two fixes to the canonical stream are applied here; bump this marker
+    #: Three fixes to the canonical stream are applied here; bump this marker
     #: whenever they change so a cache written by an older, wronger version is
     #: never reused.
-    NORMALIZATION_VERSION = "v2-column-order+running-headers"
+    NORMALIZATION_VERSION = "v3-column-order+running-headers+visual-grid"
 
     #: A heading whose text leads a logical page on this many distinct physical
     #: pages is running furniture, not a section start. Positional and
     #: text-agnostic.
     RUNNING_HEADER_MIN_PAGES = 3
+
+    #: Rebuild label -> value pairs inside KPI card grids from page geometry.
+    #: The extractor otherwise serializes a picture's text by vertical
+    #: position, which silently swaps two values whenever the cards of one row
+    #: use different font sizes. Production only: the research canonical is
+    #: frozen and must stay byte-identical.
+    RECONSTRUCT_VISUAL_GRIDS = True
 
     def __init__(self, layout_profile_path: Optional[str] = None) -> None:
         """
@@ -167,6 +174,7 @@ class StructuredPDFParser(BaseParser):
                 layout_profile_path=profile or self._spread_profile,
                 document_id="document",
                 running_header_min_pages=self.RUNNING_HEADER_MIN_PAGES,
+                reconstruct_visual_grids=self.RECONSTRUCT_VISUAL_GRIDS,
             )
         except Exception as exc:
             raise RAGException(f"Structured PDF parsing failed: {exc}") from exc
