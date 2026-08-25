@@ -239,3 +239,111 @@ def test_the_rendered_comparison_shows_both_metrics_and_moves():
     assert "hit@1  0.80 -> 0.75  REGRESSION" in text
     assert "mrr    0.88 -> 0.84  REGRESSION" in text
     assert "#1 rank 1 -> rank 4" in text
+
+
+# ------------------------------------------------------- document identity
+
+
+def identity(**by_document):
+    return ev.DocumentIdentity(dict(by_document))
+
+
+HASHED = {**ENTRY, "document_sha256": "0058e0af7460"}
+
+
+def test_the_hash_decides_which_document_a_chunk_belongs_to():
+    """A new ingest renames everything except the bytes."""
+    chunks = [chunk("newdoc:s-chunk-0009", doc="new-doc", units=["v-00808"])]
+    result = ev.evaluate_entry(
+        HASHED, chunks, check_sha=False,
+        identity=identity(**{"new-doc": "0058e0af7460"}),
+    )
+    assert result.rank == 1
+    assert result.rule == "unit_ids"
+
+
+def test_a_document_with_other_bytes_is_refused_however_it_is_named():
+    chunks = [chunk("c", doc="doc-1", units=["v-00808"])]
+    result = ev.evaluate_entry(
+        HASHED, chunks, check_sha=False,
+        identity=identity(**{"doc-1": "9999999999ff"}),
+    )
+    assert result.rank is None, "the same id but different bytes must not match"
+
+
+def test_the_frozen_document_id_no_longer_gates_when_a_hash_is_known():
+    """kb_id and document_id are audit metadata once the hash is there."""
+    entry = {**HASHED, "document_id": "upload_LONG_GONE_pdf",
+             "kb_id": "kb-LONG-GONE"}
+    chunks = [chunk("c", doc="upload_new_pdf", units=["v-00808"])]
+    result = ev.evaluate_entry(
+        entry, chunks, check_sha=False,
+        identity=identity(**{"upload_new_pdf": "0058e0af7460"}),
+    )
+    assert result.rank == 1
+
+
+def test_a_document_the_tracker_cannot_resolve_falls_back_to_the_id():
+    """Nothing to compare hashes against, so the frozen id is all there is."""
+    chunks = [chunk("c", doc="doc-1", units=["v-00808"])]
+    assert ev.evaluate_entry(
+        HASHED, chunks, check_sha=False, identity=identity(**{"other": "x"})
+    ).rank == 1
+    assert ev.evaluate_entry(
+        {**HASHED, "document_id": "somewhere-else"}, chunks,
+        check_sha=False, identity=identity(**{"other": "x"}),
+    ).rank is None
+
+
+def test_an_entry_without_a_hash_keeps_the_old_behaviour():
+    chunks = [chunk("c", doc="doc-1", units=["v-00808"])]
+    assert ev.evaluate_entry(ENTRY, chunks, check_sha=False).rank == 1
+    other = [chunk("c", doc="another", units=["v-00808"])]
+    assert ev.evaluate_entry(ENTRY, other, check_sha=False).rank is None
+
+
+# ------------------------------------------------------------ mismatch
+
+
+def test_a_knowledge_base_without_those_bytes_is_reported():
+    chunks = [chunk("c", doc="doc-1", units=["v-00808"])]
+    result = ev.evaluate_entry(
+        HASHED, chunks, check_sha=True, identity=identity(**{"doc-1": "ffffffffffff"})
+    )
+    assert result.warnings
+    assert "holds no document with the bytes" in result.warnings[0]
+    assert "0058e0af7460" in result.warnings[0]
+
+
+def test_matching_bytes_raise_nothing():
+    chunks = [chunk("c", doc="doc-1", units=["v-00808"])]
+    result = ev.evaluate_entry(
+        HASHED, chunks, check_sha=True, identity=identity(**{"doc-1": "0058e0af7460"})
+    )
+    assert result.warnings == []
+
+
+def test_an_unresolvable_knowledge_base_says_so_rather_than_passing():
+    result = ev.evaluate_entry(
+        HASHED, [chunk("c", units=["v-00808"])], check_sha=True,
+        identity=ev.DocumentIdentity({}),
+    )
+    assert result.warnings and "could not be checked" in result.warnings[0]
+
+
+# --------------------------------------------------------------- the ladder
+
+
+def test_chunk_id_is_the_last_resort_not_an_early_one():
+    """Section+page is tried before the id, because the id moves and it does not."""
+    names = [name for name, _ in ev.RULES]
+    assert names == ["unit_ids", "evidence", "section+page", "chunk_id"]
+
+
+def test_a_stale_chunk_id_never_outranks_a_real_locator():
+    entry = {**ENTRY, "correct_chunk_id": "doc:s-chunk-0172"}
+    chunks = [chunk("doc:s-chunk-0172"), chunk("other", units=["v-00808"])]
+    result = ev.evaluate_entry(entry, chunks, check_sha=False)
+    # The id still wins at rank 1 -- it is the earlier chunk -- but the rule
+    # that fired is reported so a reader can see how weak the match was.
+    assert (result.rank, result.rule) == (1, "chunk_id")

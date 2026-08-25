@@ -113,6 +113,12 @@ def workspace(tmp_path, monkeypatch):
         })(),
     )
     monkeypatch.setattr(runtime, "document_sha", lambda doc_id: "abc123")
+    # A document is identified by its bytes, so the evaluator resolves the
+    # knowledge base's documents to their hashes.
+    monkeypatch.setattr(runtime, "documents_for", lambda kb: [
+        {"doc_id": "doc-1", "file_hash": "abc123", "file_name": "rapor.pdf",
+         "chunk_count": 3}
+    ])
     return tmp_path
 
 
@@ -187,20 +193,24 @@ def test_the_run_record_says_what_produced_the_numbers(workspace, monkeypatch):
     assert run["retrieval"]["method"] == "bm25"
 
 
-def test_a_changed_document_is_reported_not_swallowed(workspace, monkeypatch, capsys):
+def test_a_different_document_is_reported_not_swallowed(workspace, monkeypatch, capsys):
+    """The knowledge base holds other bytes than the answer was confirmed on."""
     use_order(monkeypatch, ["c-answer"])
-    monkeypatch.setattr(runtime, "document_sha", lambda doc_id: "DIFFERENT")
+    monkeypatch.setattr(runtime, "documents_for", lambda kb: [
+        {"doc_id": "doc-1", "file_hash": "DIFFERENTHASH", "file_name": "other.pdf"}
+    ])
     gold = write_gold(workspace, [{**GOLD_ENTRY, "document_sha256": "abc123"}])
     out = str(workspace / "run.json")
 
     code = main(["eval", "--kb", "kb-1", "--gold", gold, "--out", out, "--strict"])
 
     printed = capsys.readouterr().out
-    assert "WARNING" in printed and "document changed" in printed
+    assert "WARNING" in printed and "holds no document with the bytes" in printed
     assert code == 1
     run = json.loads((workspace / "run.json").read_text(encoding="utf-8"))
     assert run["document_sha_mismatch"] is True
     assert run["questions"][0]["warnings"]
+    assert run["questions"][0]["rank"] is None, "a different corpus must not score"
 
 
 def test_a_matching_document_hash_raises_no_warning(workspace, monkeypatch, capsys):
@@ -208,6 +218,55 @@ def test_a_matching_document_hash_raises_no_warning(workspace, monkeypatch, caps
     gold = write_gold(workspace, [{**GOLD_ENTRY, "document_sha256": "abc123"}])
     main(["eval", "--kb", "kb-1", "--gold", gold, "--out", str(workspace / "r.json")])
     assert "WARNING" not in capsys.readouterr().out
+
+
+def test_a_gold_set_still_scores_after_the_corpus_was_re_ingested(
+    workspace, monkeypatch
+):
+    """Same bytes, new ids: the answer is found and the run is unremarkable.
+
+    This is the whole point of hashing the document rather than naming it.
+    A re-ingest hands out a new knowledge base id, a new document id and new
+    chunk ids while the content is untouched.
+    """
+    use_order(monkeypatch, ["c-first", "c-answer"])
+    monkeypatch.setattr(runtime, "documents_for", lambda kb: [
+        {"doc_id": "doc-1", "file_hash": "abc123", "file_name": "rapor.pdf"}
+    ])
+    stale = {
+        **GOLD_ENTRY,
+        "document_sha256": "abc123",
+        "kb_id": "kb-FROM-AN-OLDER-INGEST",
+        "document_id": "upload_FROM_AN_OLDER_INGEST_pdf",
+        "correct_chunk_id": "upload_FROM_AN_OLDER_INGEST_pdf:s-chunk-0001",
+    }
+    gold = write_gold(workspace, [stale])
+    out = str(workspace / "run.json")
+
+    assert main(["eval", "--kb", "kb-1", "--gold", gold, "--out", out]) == 0
+
+    run = json.loads((workspace / "run.json").read_text(encoding="utf-8"))
+    question = run["questions"][0]
+    assert question["rank"] == 2
+    assert question["matched_by"] == "unit_ids"
+    assert "warnings" not in question, "matching bytes are not a mismatch"
+    assert run["document_sha_mismatch"] is False
+    # The run records the documents it measured, not the ones the set names.
+    assert run["documents"] == [{"document_id": "doc-1", "sha256": "abc123"}]
+
+
+def test_an_older_gold_set_without_a_hash_still_uses_the_document_id(
+    workspace, monkeypatch
+):
+    """Backward compatibility: sets frozen before hashes were recorded."""
+    use_order(monkeypatch, ["c-answer"])
+    entry = {k: v for k, v in GOLD_ENTRY.items() if k != "document_sha256"}
+    gold = write_gold(workspace, [{**entry, "document_id": "doc-1"}])
+    out = str(workspace / "run.json")
+
+    assert main(["eval", "--kb", "kb-1", "--gold", gold, "--out", out]) == 0
+    assert json.loads((workspace / "run.json").read_text(encoding="utf-8"))[
+        "questions"][0]["rank"] == 1
 
 
 def test_an_older_bare_list_gold_file_still_loads(workspace, monkeypatch):

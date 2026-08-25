@@ -5,10 +5,22 @@ one corpus at one moment; the whole point of a regression run is to find out
 whether it is still true, so every rank here is measured again.
 
 Matching a retrieved chunk against a gold entry is deliberately a short ladder
-of exact checks rather than a similarity score. Chunk ids move whenever the
-parser or the chunker changes -- this corpus has been re-chunked repeatedly --
-so the id is the weakest signal, not the strongest, and every match reports
-which rule fired.
+of exact checks rather than a similarity score, and every match reports which
+rule fired.
+
+A document is identified by the bytes it contains, not by the id one ingest
+gave it. Loading the same PDF into a new knowledge base produces a new
+document id and new chunk ids while the content, its canonical units and the
+confirmed evidence are unchanged; gating on ids would report that as every
+question failing at once. So the hash is the gate, and below it the locators
+run in order of how well they survive a rebuild:
+
+    document_sha256  (gate)  ->  unit_ids  ->  evidence  ->  section+page
+                                                          ->  chunk_id
+
+Knowledge base and document ids stay in the record as audit metadata. A gold
+set naming bytes the knowledge base does not hold is reported as a mismatch
+rather than measured.
 """
 
 from __future__ import annotations
@@ -90,10 +102,57 @@ class QuestionResult:
 # --------------------------------------------------------------- the locator
 
 
-def _same_document(entry: Dict[str, Any], chunk: ChunkView) -> bool:
-    """A chunk from another document can never be the confirmed answer."""
-    wanted = entry.get("document_id")
-    return not wanted or not chunk.doc_id or chunk.doc_id == wanted
+@dataclass(frozen=True)
+class DocumentIdentity:
+    """Which bytes each document in one knowledge base actually holds.
+
+    Ids are per-ingest. Loading the same PDF into a new knowledge base gives
+    it a new document id and new chunk ids, so an identity built on ids
+    reports a reloaded corpus as a total retrieval failure. The hash is what
+    identifies a document; the ids are how this deployment happens to refer
+    to it.
+    """
+
+    by_document: Dict[str, Optional[str]]
+
+    @classmethod
+    def of(cls, kb: Dict[str, Any]) -> "DocumentIdentity":
+        return cls({
+            document.get("doc_id"): document.get("file_hash") or None
+            for document in runtime.documents_for(kb)
+            if document.get("doc_id")
+        })
+
+    def sha_of(self, document_id: Optional[str]) -> Optional[str]:
+        return self.by_document.get(document_id or "")
+
+    def holds(self, sha256: str) -> bool:
+        return sha256 in set(self.by_document.values())
+
+    def summary(self) -> str:
+        present = sorted({s[:12] for s in self.by_document.values() if s})
+        return ", ".join(present) or "none"
+
+
+def _document_matches(
+    entry: Dict[str, Any], chunk: ChunkView, identity: Optional[DocumentIdentity]
+) -> bool:
+    """Whether this chunk belongs to the document the answer was confirmed on.
+
+    The hash decides whenever the gold entry records one and the knowledge
+    base can resolve the chunk's document to a hash. Only when neither is
+    available -- an older gold set, or a document the ingest tracker no longer
+    has -- does this fall back to comparing the ids that were frozen with the
+    entry.
+    """
+    wanted_sha = entry.get("document_sha256")
+    if wanted_sha and identity is not None:
+        found = identity.sha_of(chunk.doc_id)
+        if found:
+            return found == wanted_sha
+
+    wanted_id = entry.get("document_id")
+    return not wanted_id or not chunk.doc_id or chunk.doc_id == wanted_id
 
 
 def _unit_overlap(entry: Dict[str, Any], chunk: ChunkView) -> bool:
@@ -126,20 +185,30 @@ def _section_and_page(entry: Dict[str, Any], chunk: ChunkView) -> bool:
 
 
 #: Tried in order; the first that fires decides, and its name is reported.
-#: ``chunk_id`` sits below the locators that survive re-chunking on purpose.
+#: Ordered by how well each survives the corpus being rebuilt. ``chunk_id`` is
+#: last because it survives least: it changes on every re-ingest, and by the
+#: time it is the only thing left the answer is barely identified at all.
 RULES = (
     ("unit_ids", _unit_overlap),
     ("evidence", _evidence_present),
+    ("section+page", _section_and_page),
     ("chunk_id", lambda entry, chunk: bool(
         entry.get("correct_chunk_id")) and chunk.chunk_id == entry["correct_chunk_id"]),
-    ("section+page", _section_and_page),
 )
 
 
-def match_entry(entry: Dict[str, Any], chunks: Sequence[ChunkView]) -> Optional[Match]:
-    """First retrieved chunk that satisfies any locator rule."""
+def match_entry(
+    entry: Dict[str, Any],
+    chunks: Sequence[ChunkView],
+    identity: Optional[DocumentIdentity] = None,
+) -> Optional[Match]:
+    """First retrieved chunk that satisfies any locator rule.
+
+    The document gate comes first and is absolute; the rules below it are
+    tried in order, most durable first.
+    """
     for position, chunk in enumerate(chunks, start=1):
-        if not _same_document(entry, chunk):
+        if not _document_matches(entry, chunk, identity):
             continue
         for name, rule in RULES:
             if rule(entry, chunk):
@@ -155,22 +224,27 @@ def evaluate_entry(
     chunks: Sequence[ChunkView],
     *,
     check_sha: bool = True,
+    identity: Optional[DocumentIdentity] = None,
 ) -> QuestionResult:
     warnings: List[str] = []
-    if check_sha and entry.get("document_sha256") and entry.get("document_id"):
-        current = runtime.document_sha(entry["document_id"])
-        if current and current != entry["document_sha256"]:
+    wanted_sha = entry.get("document_sha256")
+    if check_sha and wanted_sha:
+        if identity is None or not identity.by_document:
             warnings.append(
-                "document changed since this answer was confirmed: gold "
-                f"{entry['document_sha256'][:12]} != ingested {current[:12]}"
+                "no ingested document could be resolved, so the bytes this "
+                "answer was confirmed against could not be checked"
             )
-        elif not current:
+        elif not identity.holds(wanted_sha):
+            # The gold set names bytes this knowledge base does not hold. That
+            # is a different corpus, not a worse one, and reporting it as a
+            # retrieval result would be wrong either way.
             warnings.append(
-                f"document {entry['document_id']} is not in the ingest tracker; "
-                "its hash could not be checked"
+                "this knowledge base holds no document with the bytes this "
+                f"answer was confirmed against: gold {wanted_sha[:12]}, "
+                f"present {identity.summary()}"
             )
 
-    match = match_entry(entry, chunks)
+    match = match_entry(entry, chunks, identity)
     return QuestionResult(
         question=entry.get("question", ""),
         entry_id=entry.get("entry_id"),
@@ -229,11 +303,16 @@ def execute(
         raise runtime.CliError(f"{gold_path} has no entries")
 
     method = method or runtime.default_method(kb)
+    # Resolved once: every question is judged against the same knowledge base.
+    identity = DocumentIdentity.of(kb)
+
     results: List[QuestionResult] = []
     for entry in entries:
         hits = runtime.search(kb, entry["question"], top_k, method)
         chunks = [ChunkView.of(hit.chunk) for hit in hits]
-        results.append(evaluate_entry(entry, chunks, check_sha=check_sha))
+        results.append(
+            evaluate_entry(entry, chunks, check_sha=check_sha, identity=identity)
+        )
 
     run = {
         "kind": "retrieval-eval",
@@ -246,11 +325,12 @@ def execute(
         },
         "retrieval": {"method": method, "top_k": top_k},
         "environment": runtime.run_environment(kb),
+        # The documents this run was measured against, not the ones the gold
+        # set was frozen against: those ids belong to whichever ingest
+        # produced the set and may name nothing here.
         "documents": [
-            {"document_id": doc_id, "sha256": runtime.document_sha(doc_id)}
-            for doc_id in sorted({
-                e["document_id"] for e in entries if e.get("document_id")
-            })
+            {"document_id": doc_id, "sha256": sha}
+            for doc_id, sha in sorted(identity.by_document.items())
         ],
         "metrics": summarize(results),
         "questions": [result.as_dict() for result in results],

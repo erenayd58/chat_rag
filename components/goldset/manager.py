@@ -37,9 +37,23 @@ def normalize_question(question: str) -> str:
     return " ".join(str(question or "").split()).casefold()
 
 
-def entry_id_for(kb_id: str, question: str) -> str:
+def entry_id_for(
+    kb_id: str, question: str, document_sha256: Optional[str] = None
+) -> str:
+    """Identity of one confirmed answer.
+
+    Scoped to the document's bytes when they are known, so the same question
+    about the same document keeps its id after the corpus is re-ingested --
+    which is what a frozen set needs to stay readable across knowledge bases.
+    Without a hash it falls back to the knowledge base id, which is how the
+    runtime store has always keyed marks and how every entry written before
+    this one is keyed.
+    """
+    # The knowledge-base scope is the bare id, unprefixed: every entry already
+    # in a runtime store was keyed that way and must keep the same id.
+    scope = f"sha256:{document_sha256}" if document_sha256 else str(kb_id or "")
     digest = hashlib.sha256()
-    digest.update(str(kb_id or "").encode("utf-8"))
+    digest.update(scope.encode("utf-8"))
     digest.update(b"\n")
     digest.update(normalize_question(question).encode("utf-8"))
     return digest.hexdigest()[:16]

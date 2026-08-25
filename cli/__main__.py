@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Optional
 from . import evaluate as ev
 from . import report as reporting
 from . import runtime
+from components.goldset.manager import entry_id_for as gold_entry_id
+
 from .manifest import build_manifest
 from .runtime import (
     ChunkView,
@@ -371,6 +373,14 @@ def cmd_gold_export(args: argparse.Namespace) -> int:
             if found:
                 row["document_sha256"] = found
                 backfilled += 1
+        # A frozen set is about a document, not about the knowledge base that
+        # happened to hold it, so its entries are keyed by the document's
+        # bytes. The same question about the same document then keeps its id
+        # after a re-ingest. Runtime marks stay keyed by knowledge base.
+        if row.get("document_sha256"):
+            row["entry_id"] = gold_entry_id(
+                kb["kb_id"], row["question"], row["document_sha256"]
+            )
         frozen.append(row)
 
     payload = {
