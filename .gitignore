@@ -26,8 +26,10 @@ venv/
 env/
 ENV/
 
-# Environment variables
-#.env
+# Environment variables. .env holds whichever provider keys this machine
+# uses; env.example is the tracked template and .env.docker the tracked,
+# secret-free container configuration.
+.env
 
 # Vector database
 chroma_db/
@@ -87,3 +89,8 @@ artifacts/reports/
 # Private container configuration; .env.docker holds the tracked, secret-free
 # defaults.
 .env.docker.local
+
+# Knowledge base records: runtime state written by the application, not
+# configuration. Committing it publishes whichever knowledge bases happen to
+# exist on one machine; the file is recreated on demand when absent.
+.knowledge_bases.json
