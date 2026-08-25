@@ -64,4 +64,11 @@ services:
       start_period: 60s
       retries: 3
 
+    # Werkzeug's server handles SIGINT and ignores SIGTERM, so the default
+    # stop sequence waited out the grace period and then killed it -- a clean
+    # `docker compose down` still ended in exit code 137. Asking for SIGINT
+    # lets it shut itself down.
+    stop_signal: SIGINT
+    stop_grace_period: 15s
+
     restart: unless-stopped

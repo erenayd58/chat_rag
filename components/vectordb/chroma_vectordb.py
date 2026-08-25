@@ -47,15 +47,56 @@ class ChromaVectorDB(BaseVectorDB):
             )
             # Configure collection; many Chroma versions only accept hnsw:space here
             # Index params like M/ef are server-level, not per-collection, in most releases
+            #
+            # embedding_function is passed explicitly because Chroma's default
+            # for it is not None but an ONNX all-MiniLM-L6-v2 instance. Left
+            # alone it silently embeds anything added without vectors, which on
+            # a lexical-only profile meant an 80 MB model download and a dense
+            # index nothing would ever read. Every caller here supplies its own
+            # vectors, so Chroma needs no model of its own.
             self.collection = self.client.get_or_create_collection(
                 name=collection_name,
                 metadata={
                     "hnsw:space": self.space
-                }
+                },
+                embedding_function=None
             )
         except Exception as e:
             raise VectorDBException(f"Failed to initialize ChromaDB: {e}")
     
+    #: Width of the placeholder a lexical-only ingestion stores. The number is
+    #: arbitrary -- nothing reads these vectors -- and deliberately small so a
+    #: store that holds them is obviously not a dense index. A collection that
+    #: already holds real vectors keeps its own width instead; see
+    #: ``_stored_dimension``.
+    LEXICAL_PLACEHOLDER_DIMENSION = 1
+
+    def _stored_dimension(self) -> Optional[int]:
+        """Vector width this collection already uses, if it holds anything.
+
+        Chroma fixes a collection's width at its first record, so a store
+        written before this profile existed -- or by a dense profile -- has to
+        keep being written at that width.
+        """
+        try:
+            found = self.collection.get(limit=1, include=['embeddings'])
+        except Exception:
+            return None
+        existing = found.get('embeddings')
+        if existing is None or len(existing) == 0 or existing[0] is None:
+            return None
+        return len(existing[0])
+
+    def _placeholder_vectors(self, count: int) -> List[List[float]]:
+        """``count`` copies of one constant vector, derived from no content.
+
+        A unit basis vector rather than zeros: cosine distance is undefined for
+        a zero-length vector.
+        """
+        width = self._stored_dimension() or self.LEXICAL_PLACEHOLDER_DIMENSION
+        vector = [1.0] + [0.0] * (width - 1)
+        return [list(vector) for _ in range(count)]
+
     def add_chunks(
         self,
         chunks: List[DocumentChunk],
@@ -103,11 +144,19 @@ class ChromaVectorDB(BaseVectorDB):
                     metadatas=metadatas
                 )
             else:
-                # Lexical-only ingestion: store the text and metadata without a
-                # vector. No placeholder embedding is fabricated.
+                # Lexical-only ingestion: the text and its metadata are what
+                # this profile stores, and no model computes anything from it.
+                #
+                # Chroma has no storage-only mode -- every record carries a
+                # vector, and omitting one makes it compute one itself. So a
+                # constant placeholder is supplied instead. It is the same for
+                # every chunk and derived from nothing, which is the point: no
+                # content is embedded, no model is loaded, and the collection
+                # cannot be mistaken for a searchable dense index.
                 self.collection.add(
                     ids=chunk_ids,
                     documents=documents,
+                    embeddings=self._placeholder_vectors(len(chunk_ids)),
                     metadatas=metadatas
                 )
         except Exception as e:
