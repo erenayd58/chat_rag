@@ -112,6 +112,15 @@ class StructuralChunker(BaseChunker):
                         "chunker_type": CHUNKER_ID,
                         "created_at": created_at,
                         "word_count": len(row["text"].split()),
+                        # The chunker's own heading, verbatim. ``section_title``
+                        # above is a display string derived from the section
+                        # path and loses the accumulated heading lines, so
+                        # anything that needs the real heading -- structural QA,
+                        # the retrieval review screen -- had to rebuild it from
+                        # the canonical units. Persist it instead. Omitted when
+                        # the chunk has no heading: Chroma rejects None and a
+                        # missing key reads the same as an older record.
+                        "heading": row.get("heading"),
                         # Chroma keeps scalar metadata only and silently drops
                         # list values, so provenance is serialised the same way
                         # FrozenV4Chunker serialises its own.

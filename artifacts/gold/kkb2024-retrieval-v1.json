@@ -1,0 +1,34 @@
+{
+  "entries": [
+    {
+      "correct_chunk_id": "upload_6cb2dc37_pdf:s-chunk-0172",
+      "created_at": "2026-08-25T09:47:21.101860",
+      "document_id": "upload_6cb2dc37_pdf",
+      "document_sha256": "0058e0af74609e66cbf628adb7b14c6d4f42b286ae24a0b5bdbe7713b6b629c1",
+      "document_title": "kkbfaaliyetraporu2024.pdf",
+      "entry_id": "af236c8c711d361c",
+      "evidence": "KOSGEB İŞLETME DEĞERLENDİRME RAPORU (İDR)\n\nKOSGEB – Findeks iş birliği kapsamında, Küçük ve Orta Ölçekli İşletmeleri Geliştirme ve Destekleme İdaresi (KOSGEB), işletmelerin sektördeki konumlarını, son 5 yıla ait mali gelişim ve performanslarını, finansal sağlık durumlarını detaylı bir şekilde inceleyip değerlendirmelerine olanak tanıyan İşletme Değerlendirme Raporu’nu (İDR), 1 Mart 2023 itibarıyla Findeks internet şubesi üzerinden sunmaya başlamıştır.\n\nKOSGEB İşletme Değerlendirme Raporu ile kullanıcılar, işletmelerini birçok farklı açıdan analiz edebilmekte ve sektördeki benzer firmalarla kar",
+      "kb_id": "73c4443e",
+      "pages": [
+        36
+      ],
+      "question": "2024 Findeks Risk Raporu sorgu adedi kac?",
+      "retrieval_method": "bm25_only",
+      "schema_version": 1,
+      "section": "KOSGEB İŞLETME DEĞERLENDİRME RAPORU (İDR)",
+      "unit_ids": [
+        "p-00801",
+        "p-00802",
+        "p-00803",
+        "v-00804",
+        "p-00805"
+      ],
+      "updated_at": "2026-08-25T09:47:21.106476"
+    }
+  ],
+  "frozen_at": "2026-08-25T10:50:03",
+  "kb_id": "73c4443e",
+  "kb_name": "kkb-final",
+  "kind": "retrieval-gold",
+  "schema_version": 1
+}

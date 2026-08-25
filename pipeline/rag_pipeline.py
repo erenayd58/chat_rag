@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from config import Settings
-from components.llm import BaseLLM, AzureOpenAILLM, OllamaLLM
+from components.llm import BaseLLM, AzureOpenAILLM, OllamaLLM, UnavailableLLM
 from components.embedding import BaseEmbedding, SentenceTransformerEmbedding
 from components.vectordb import BaseVectorDB, ChromaVectorDB, FaissVectorDB
 from components.chunker import BaseChunker, create_chunker
@@ -114,20 +114,35 @@ class RAGPipeline:
             pass
     
     def _create_llm(self) -> BaseLLM:
-        """Create LLM instance from settings"""
-        if self.settings.llm_provider == "ollama":
-            return OllamaLLM(
-                model=self.settings.ollama_model,
-                base_url=self.settings.ollama_base_url,
-                timeout=self.settings.ollama_timeout
-            )
-        else:  # Default to Azure OpenAI
-            return AzureOpenAILLM(
+        """Create LLM instance from settings.
+
+        A provider that cannot be reached does not stop the pipeline from
+        being built. Ollama runs outside this process -- on the host, when the
+        application runs in a container -- and ingestion, chunking, structural
+        QA and lexical retrieval need no language model at all. The failure is
+        carried by UnavailableLLM and raised, with its cause, only when
+        something asks for generated text.
+        """
+        provider = self.settings.llm_provider
+        try:
+            if provider == "ollama":
+                return OllamaLLM(
+                    model=self.settings.ollama_model,
+                    base_url=self.settings.ollama_base_url,
+                    timeout=self.settings.ollama_timeout
+                )
+            return AzureOpenAILLM(  # Default to Azure OpenAI
                 endpoint=self.settings.azure_endpoint,
                 api_key=self.settings.azure_api_key,
                 deployment=self.settings.azure_deployment,
                 api_version=self.settings.azure_api_version
             )
+        except Exception as exc:
+            endpoint = (
+                self.settings.ollama_base_url if provider == "ollama"
+                else self.settings.azure_endpoint
+            )
+            return UnavailableLLM(provider, str(exc), endpoint)
     
     def _create_embedding(self) -> BaseEmbedding:
         """Create embedding instance from settings"""

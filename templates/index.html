@@ -373,7 +373,7 @@
                 </select>
             </div>
             <div class="form-group">
-                <label class="form-label">Chunker (optional)</label>
+                <label class="form-label">Chunker</label>
                 <select id="kbChunkerType" style="width:100%; padding:10px; border:2px solid #e0e0e0; border-radius:8px;">
                     <option value="">Loading...</option>
                 </select>
@@ -622,13 +622,14 @@
             
             // Populate chunkers
             const chunkerSelect = document.getElementById('kbChunkerType');
-            chunkerSelect.innerHTML = '<option value="">None (use default)</option>';
+            chunkerSelect.innerHTML = '';
             kbOptions.chunkers.forEach(chunker => {
                 const option = document.createElement('option');
                 option.value = chunker.name;
                 option.textContent = `${chunker.name} - ${chunker.description}`;
                 chunkerSelect.appendChild(option);
             });
+            chunkerSelect.value = 'legacy';
         }
         
         function showCreateKB() {
@@ -649,16 +650,15 @@
             const provider = document.getElementById('kbVDB').value || null;
             const path = document.getElementById('kbVDBPath').value.trim() || null;
             const retrieval = document.getElementById('kbRetrieval').value || null;
-            const chunkerType = document.getElementById('kbChunkerType').value.trim();
+            const chunkerType = document.getElementById('kbChunkerType').value.trim() || 'legacy';
             const chunkerParamsRaw = document.getElementById('kbChunkerParams').value.trim();
-            let chunker = null;
-            if (chunkerType) {
-                let params = {};
-                if (chunkerParamsRaw) {
-                    try { params = JSON.parse(chunkerParamsRaw); } catch (e) {}
-                }
-                chunker = { type: chunkerType, params };
+            let params = {};
+            if (chunkerParamsRaw) {
+                try { params = JSON.parse(chunkerParamsRaw); }
+                catch (e) { alert('Chunker params must be valid JSON.'); return; }
             }
+            if (chunkerType === 'v4') params = {};
+            const chunker = { type: chunkerType, params };
             try {
                 const res = await fetch('/api/kb', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -673,6 +673,9 @@
                 });
                 const data = await res.json();
                 if (!data.success) throw new Error(data.error || 'Create failed');
+                if (data.kb?.chunker?.type !== chunkerType) {
+                    throw new Error('Persisted chunker selection does not match the form');
+                }
                 hideCreateKB();
                 await loadKBs();
             } catch (e) {

@@ -2,6 +2,7 @@
 """
 ChromaDB vector database implementation
 """
+import gc
 from typing import List, Dict, Any, Optional
 import chromadb
 from chromadb.config import Settings
@@ -180,6 +181,31 @@ class ChromaVectorDB(BaseVectorDB):
         except Exception as e:
             raise VectorDBException(f"Failed to delete document: {e}")
     
+    def close(self) -> None:
+        """Release the store's files so the directory can be removed.
+
+        Chroma keeps the sqlite database and the hnswlib index open for the
+        lifetime of the client, and on Windows that is enough to make the
+        directory undeletable. Forgetting the object is not sufficient: the
+        client is also held in a process-wide system cache, so the cache is
+        cleared and a collection is forced before dropping the references.
+        """
+        try:
+            self.client._system.stop()
+        except Exception:
+            # Already stopped, or a Chroma build without that internal. The
+            # reference drop below is what actually frees the handles.
+            pass
+        self.collection = None
+        self.client = None
+        try:
+            from chromadb.api.client import SharedSystemClient
+
+            SharedSystemClient.clear_system_cache()
+        except Exception:
+            pass
+        gc.collect()
+
     def get_name(self) -> str:
         """Get the vector database name"""
         return "ChromaDB"

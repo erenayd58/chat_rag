@@ -1,0 +1,67 @@
+# One application container. No database service, no queue, no model server:
+# Ollama stays on the host, and everything else this application needs already
+# runs in-process.
+services:
+  app:
+    build:
+      context: .
+      args:
+        # Stamps the commit into the image so `cli report` can name it.
+        # Optional: unset, the manifest honestly reports it as unknown.
+        CHAT_RAG_GIT_SHA: ${CHAT_RAG_GIT_SHA:-}
+    image: chat-rag:local
+    container_name: chat-rag
+    ports:
+      - "5005:5005"
+
+    env_file:
+      # Tracked defaults, then optional private overrides. Later files win, so
+      # .env.docker.local can replace anything above without being tracked.
+      - path: .env.docker
+        required: true
+      - path: .env.docker.local
+        required: false
+
+    environment:
+      # Structural, not configuration: these say where state lives inside the
+      # container and must match the mounts below.
+      CHAT_RAG_DATA_DIR: /data
+      STRUCTURED_PARSER_CACHE: /data/cache/canonical-units
+
+    volumes:
+      # Everything the application persists -- knowledge base records, the
+      # ingest ledger, the runtime gold set, the vector stores, the parser's
+      # canonical-unit cache and the logs -- lives under one directory, so a
+      # rebuilt container finds its data where it left it.
+      #
+      # This is a fresh directory, separate from the checkout's own
+      # chroma_db/, .knowledge_bases.json and .cache/: running the container
+      # never touches local development state.
+      - ./.docker-data:/data
+      # Evaluation output written by `python -m cli`. Mounted per
+      # subdirectory so artifacts/gold/ keeps coming from the image, where
+      # frozen gold sets are read-only inputs rather than runtime state.
+      - ./.docker-data/artifacts/runs:/app/artifacts/runs
+      - ./.docker-data/artifacts/reports:/app/artifacts/reports
+
+    extra_hosts:
+      # Docker Desktop provides this name already; declaring it means the same
+      # OLLAMA_BASE_URL also works on plain Linux Docker.
+      - "host.docker.internal:host-gateway"
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request,sys;
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5005/api/health', timeout=4).status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      # Building the pipeline and reading an existing store takes a moment on
+      # first boot; the container is not called unhealthy while that happens.
+      start_period: 60s
+      retries: 3
+
+    restart: unless-stopped

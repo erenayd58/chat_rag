@@ -83,6 +83,110 @@ chat_rag/
 └── env.example          # Environment variables template
 ```
 
+## Running with Docker
+
+One container runs the whole application. There is no separate database,
+queue or model service: Ollama stays on the host, and everything else runs
+in-process.
+
+### Prerequisites
+
+- Docker Desktop (Windows/macOS) or Docker Engine with Compose v2
+- Ollama on the host **only if you want generated answers**. Uploading,
+  parsing, structure-first chunking, structural QA and BM25 search all work
+  with Ollama stopped; generation then returns an explanatory error instead of
+  taking the application down.
+
+### Start
+
+```bash
+docker compose up --build
+```
+
+To have the QA report name the commit the image was built from -- the image
+does not ship `.git`, so it otherwise reports it as unknown:
+
+```bash
+CHAT_RAG_GIT_SHA=$(git rev-parse HEAD) docker compose up --build
+# PowerShell: $env:CHAT_RAG_GIT_SHA = (git rev-parse HEAD); docker compose up --build
+```
+
+Then open <http://localhost:5005> (the documents screen is at
+<http://localhost:5005/documents>).
+
+### Stop
+
+```bash
+docker compose down
+```
+
+### Configuration
+
+`.env.docker` holds the container's settings and contains no secrets. Put
+anything private in `.env.docker.local`, which is git-ignored and overrides
+it. The local `.env` is deliberately not used by the container: it points at
+`localhost`, which inside a container means the container itself.
+
+Ollama is reached at `http://host.docker.internal:11434`. That address lives
+in `.env.docker`, not in the code; the compose file maps the name explicitly
+so it also works on plain Linux Docker.
+
+### Where the data lives
+
+Everything the container persists is under `./.docker-data`, which is a
+different place from the paths a local checkout uses. Running the container
+never reads or writes your local `chroma_db/`, `.knowledge_bases.json`,
+`.ingested_documents.json` or `.cache/`.
+
+```
+.docker-data/
+  state/      knowledge_bases.json, ingested_documents.json, gold_set.json
+  chroma/     one vector store per knowledge base
+  faiss/      the same, for knowledge bases using the FAISS provider
+  cache/      the parser's canonical-unit cache
+  logs/       application logs
+  artifacts/  evaluation runs and QA reports written by the CLI
+```
+
+Frozen gold sets under `artifacts/gold/` are inputs, not state: they travel
+inside the image and are never written to.
+
+### Reset the container's data
+
+Stop the container first, then delete the one directory:
+
+```bash
+docker compose down
+rm -rf ./.docker-data          # PowerShell: Remove-Item -Recurse -Force .docker-data
+```
+
+This removes only the container's knowledge bases, stores and logs. Your local
+development data is untouched.
+
+### The CLI, inside the container
+
+The same commands, no separate image:
+
+```bash
+docker compose exec app python -m cli inspect --kb <name>
+docker compose exec app python -m cli search  --kb <name> --query "..."
+docker compose exec app python -m cli qa      --kb <name>
+docker compose exec app python -m cli report  --kb <name> --gold artifacts/gold/<set>.json
+docker compose exec app python -m cli eval    --kb <name> --gold artifacts/gold/<set>.json
+```
+
+Reports and runs land in `./.docker-data/artifacts/` on the host.
+
+### Health
+
+`GET /api/health` answers from the Flask app alone -- it loads no model, parses
+nothing and does not touch the vector store. That is what the container's
+healthcheck calls.
+
+```bash
+docker compose ps          # STATUS shows (healthy)
+```
+
 ## Installation
 
 ### Prerequisites

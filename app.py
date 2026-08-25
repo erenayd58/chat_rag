@@ -2,6 +2,7 @@
 """
 Flask web application for RAG Chat
 """
+import gc
 import json
 import os
 # Set OpenMP environment variables BEFORE importing any ML libraries
@@ -18,7 +19,16 @@ from datetime import datetime
 
 from config import Settings
 from pipeline import RAGPipeline
+from components.goldset import GoldSetManager
 from components.knowledgebase.manager import KnowledgeBaseManager
+from components.provenance import capture as capture_pipeline_snapshot
+from core.exceptions import LLMException
+from config import paths
+from components.retriever import (
+    method_is_available,
+    retrieval_capabilities,
+    unavailable_reason,
+)
 from utils import DocumentTracker, get_logger
 
 # Initialize logger
@@ -35,6 +45,7 @@ logger.info("Initializing Flask application...")
 settings = Settings()
 pipeline = RAGPipeline(settings=settings)
 kb_manager = KnowledgeBaseManager()
+gold_manager = GoldSetManager()
 
 # Store pipeline instances per session (for multi-user support)
 pipelines = {}
@@ -55,16 +66,9 @@ def build_settings_for_kb(kb_cfg: dict, kb_id: str = None) -> Settings:
         # Use provider-specific default if not provided
         # Make path unique per KB to avoid conflicts
         provider = kb_cfg.get('vector_db_provider', 'chroma')
-        if provider == 'faiss':
-            if kb_id:
-                s.vector_db_path = f'./faiss_db/{kb_id}'
-            else:
-                s.vector_db_path = './faiss_db'
-        else:
-            if kb_id:
-                s.vector_db_path = f'./chroma_db/{kb_id}'
-            else:
-                s.vector_db_path = './chroma_db'
+        # Resolved in one place, shared with KnowledgeBaseManager.storage_path:
+        # if the two ever disagree, deleting a knowledge base orphans its store.
+        s.vector_db_path = paths.vector_store(provider, kb_id)
     
     # Store chunker config from KB
     if kb_cfg.get('chunker'):
@@ -139,6 +143,15 @@ def query():
             'metadata': result['metadata']
         })
         
+    except LLMException as e:
+        # Retrieval and ingestion do not need a language model, so a missing
+        # one is a temporarily unavailable feature rather than a broken app.
+        logger.warning(f"Generation unavailable: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'generation_unavailable': True
+        }), 503
     except Exception as e:
         logger.error(f"Query processing failed: {e}", exc_info=True)
         return jsonify({
@@ -667,7 +680,126 @@ def create_kb():
         data = request.json or {}
         kb = kb_manager.create_from_payload(data)
         return jsonify({'success': True, 'kb': kb})
+    except ValueError as e:
+        # A rejected payload -- duplicate name, unknown chunker, bad provider --
+        # is the caller's problem, not a server fault.
+        return jsonify({'success': False, 'error': str(e)}), 400
     except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _release_vector_store_handles(kb_id: str) -> None:
+    """Close and forget every cached pipeline for this knowledge base.
+
+    Chroma holds the store's sqlite file and hnswlib index open, and on Windows
+    that is enough to make the directory undeletable. Dropping the pipeline
+    from the cache does not close anything, so each store is closed explicitly
+    first.
+    """
+    for key in [k for k in pipelines if k.endswith(f":{kb_id}")]:
+        pipeline = pipelines.pop(key, None)
+        store = getattr(pipeline, "vector_db", None)
+        closer = getattr(store, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                logger.warning("Could not close the vector store for %s", kb_id)
+    gc.collect()
+
+
+@app.route('/api/kb/<kb_id>', methods=['DELETE'])
+def delete_kb(kb_id):
+    """Delete a knowledge base: its config record and, when nothing else needs
+    it, its vector store.
+
+    Until now the store was left behind on disk with no record pointing at it.
+    Cached pipelines are dropped first, because a live ChromaDB client keeps
+    the store's sqlite file open and the directory could not be removed.
+    """
+    try:
+        if not kb_manager.get(kb_id):
+            return jsonify({'success': False, 'error': 'Knowledge base not found'}), 404
+
+        _release_vector_store_handles(kb_id)
+
+        result = kb_manager.delete_with_storage(kb_id)
+        if not result.get('deleted'):
+            reason = result.get('reason', 'delete failed')
+            status = 404 if reason == 'not found' else 409
+            return jsonify({'success': False, 'error': reason}), status
+        return jsonify({'success': True, **result})
+    except Exception as e:
+        logger.error(f"Failed to delete knowledge base {kb_id}: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/retrieval/capabilities', methods=['GET'])
+def retrieval_capabilities_api():
+    """Which retrieval methods the configured retriever can actually serve.
+
+    Reporting only: no search runs and no scoring changes. The review screen
+    uses this to stop offering Vector on a profile that computes no embeddings,
+    and to stop offering Hybrid where it is BM25 under another name.
+    """
+    try:
+        kb_id = request.args.get('kb_id') or None
+        user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
+        return jsonify({
+            'success': True,
+            **retrieval_capabilities(user_pipeline.hybrid_retriever),
+        })
+    except Exception as e:
+        logger.error(f"Failed to report retrieval capabilities: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ---- Gold set APIs ----
+@app.route('/api/goldset', methods=['GET'])
+def list_goldset():
+    try:
+        return jsonify({
+            'success': True,
+            'entries': gold_manager.list(request.args.get('kb_id') or None),
+        })
+    except Exception as e:
+        logger.error(f"Failed to list gold set: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/goldset', methods=['POST'])
+def upsert_goldset():
+    """Record the source a human confirmed answers a question.
+
+    One entry per (knowledge base, question): marking the same question again
+    replaces the entry rather than appending another.
+    """
+    try:
+        payload = dict(request.json or {})
+        # The ingest tracker already recorded the file's sha256; carry it over
+        # rather than hashing the document again. An entry that knows which
+        # bytes it was confirmed against can warn when the corpus is replaced.
+        if not payload.get('document_sha256') and payload.get('document_id'):
+            tracked = DocumentTracker().get_document_by_doc_id(payload['document_id'])
+            if tracked and tracked.get('file_hash'):
+                payload['document_sha256'] = tracked['file_hash']
+        entry = gold_manager.upsert(payload)
+        return jsonify({'success': True, 'entry': entry})
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Failed to save gold-set entry: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/goldset/<entry_id>', methods=['DELETE'])
+def delete_goldset(entry_id):
+    try:
+        if not gold_manager.delete(entry_id):
+            return jsonify({'success': False, 'error': 'Entry not found'}), 404
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Failed to delete gold-set entry {entry_id}: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -957,6 +1089,11 @@ def upload_document():
             if chunks and len(chunks) > 0:
                 doc_id = chunks[0].doc_id
 
+            # Capture the configuration that just produced this corpus. It is
+            # taken after ingestion succeeded and written in the same call that
+            # records the document, so a failed ingest leaves neither. Read
+            # back by `python -m cli report/inspect`, which otherwise can only
+            # describe today's configuration rather than the one that ran.
             tracker.mark_as_ingested(
                 file_path=temp_path,
                 doc_id=doc_id,
@@ -965,7 +1102,11 @@ def upload_document():
                     'original_filename': file.filename,
                     'upload_source': 'web_interface'
                 },
-                kb_id=kb_id
+                kb_id=kb_id,
+                pipeline_snapshot=capture_pipeline_snapshot(
+                    user_pipeline, kb, kb_id=kb_id,
+                    storage_path=kb_manager.storage_path(kb_id),
+                )
             )
 
             logger.info(f"Document processed successfully: {len(chunks)} chunks created")
@@ -1008,7 +1149,18 @@ def experiment_search_chunks():
         
         # Use KB-specific pipeline
         user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
-        
+
+        # Refuse a method this retriever cannot serve, with an explanation.
+        # Previously 'vector' on a lexical-only profile surfaced the raw
+        # RetrieverException text in the UI.
+        if not method_is_available(user_pipeline.hybrid_retriever, method):
+            return jsonify({
+                'success': False,
+                'unsupported_method': True,
+                'error': unavailable_reason(user_pipeline.hybrid_retriever, method),
+                'capabilities': retrieval_capabilities(user_pipeline.hybrid_retriever),
+            }), 400
+
         chunks = []
         if method == 'vector':
             query_embedding = user_pipeline.embedding_model.encode(query).tolist()
@@ -1161,9 +1313,16 @@ if __name__ == '__main__':
     print("🌐 Server starting at: http://localhost:5005")
     print("="*80 + "\n")
     
+    # Debug stays on for local development, which is how this has always run.
+    # A container sets FLASK_DEBUG=false: the reloader would otherwise build the
+    # pipeline twice and the interactive debugger has no place in an image.
+    debug = os.getenv('FLASK_DEBUG', 'true').strip().lower() not in {
+        '0', 'false', 'no', 'off'
+    }
+
     app.run(
-        host='0.0.0.0',
-        port=5005,
-        debug=True
+        host=os.getenv('FLASK_HOST', '0.0.0.0'),
+        port=int(os.getenv('FLASK_PORT', '5005')),
+        debug=debug
     )
 

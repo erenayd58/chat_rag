@@ -644,6 +644,216 @@
             padding: 2px 4px;
             border-radius: 3px;
         }
+
+        /* --- Retrieval quality review --- */
+        .rq-panel {
+            border: 2px solid #28a745;
+            margin-bottom: 20px;
+        }
+
+        .rq-controls {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: flex-end;
+            gap: 12px;
+        }
+
+        .rq-controls .rq-query {
+            flex: 1 1 320px;
+            min-width: 240px;
+        }
+
+        .rq-input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 15px;
+            font-family: inherit;
+            outline: none;
+        }
+
+        .rq-input:focus {
+            border-color: #28a745;
+        }
+
+        .rq-hint {
+            color: #777;
+            font-size: 13px;
+            margin-top: 10px;
+        }
+
+        .rq-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin: 18px 0 6px;
+            padding: 16px;
+            background: #f7f9fc;
+            border: 1px solid #e3e8ef;
+            border-radius: 12px;
+        }
+
+        .rq-summary-item {
+            min-width: 0;
+        }
+
+        .rq-summary-label {
+            display: block;
+            font-size: 12px;
+            letter-spacing: .03em;
+            text-transform: uppercase;
+            color: #6b7280;
+            margin-bottom: 4px;
+        }
+
+        .rq-summary-value {
+            display: block;
+            font-size: 16px;
+            font-weight: 600;
+            color: #222;
+            overflow-wrap: anywhere;
+        }
+
+        .rq-verdict-yes { color: #157347; }
+        .rq-verdict-no { color: #b02a37; }
+
+        .rq-card {
+            display: flex;
+            gap: 14px;
+            padding: 16px;
+            border: 1px solid #e6e6e6;
+            border-left: 4px solid #d6d6d6;
+            border-radius: 12px;
+            margin-bottom: 12px;
+            background: #fff;
+        }
+
+        .rq-card.rq-card-marked {
+            border-left-color: #28a745;
+            background: #f4fbf6;
+        }
+
+        .rq-rank {
+            flex: 0 0 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            font-weight: 700;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .rq-body {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .rq-section {
+            font-size: 16px;
+            font-weight: 600;
+            color: #222;
+            margin-bottom: 6px;
+            overflow-wrap: anywhere;
+        }
+
+        .rq-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .rq-chip {
+            font-size: 12px;
+            padding: 3px 10px;
+            border-radius: 999px;
+            background: #eef1f6;
+            color: #444;
+        }
+
+        .rq-chip-score {
+            background: #e8f0fe;
+            color: #1a4fa0;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .rq-preview {
+            color: #444;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            margin-bottom: 12px;
+        }
+
+        .rq-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .rq-btn {
+            padding: 7px 14px;
+            border: 1px solid #d5d9e0;
+            border-radius: 8px;
+            background: #fff;
+            color: #333;
+            font-size: 13px;
+            font-family: inherit;
+            cursor: pointer;
+        }
+
+        .rq-btn:hover { background: #f3f5f9; }
+
+        .rq-btn-mark {
+            border-color: #28a745;
+            color: #157347;
+            font-weight: 600;
+        }
+
+        .rq-btn-mark.rq-on {
+            background: #28a745;
+            border-color: #28a745;
+            color: #fff;
+        }
+
+        .rq-details {
+            margin-top: 12px;
+        }
+
+        .rq-details > summary {
+            cursor: pointer;
+            color: #667eea;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .rq-details-body {
+            margin-top: 10px;
+            padding: 12px;
+            background: #fafbfc;
+            border: 1px solid #eceff3;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #444;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            max-height: 260px;
+            overflow-y: auto;
+        }
+
+        .rq-modal-text {
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            line-height: 1.7;
+            color: #333;
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
@@ -718,35 +928,39 @@
                 </div>
             </div>
 
-            <!-- Retrieval Experimentation -->
-            <div class="upload-section" style="border: 2px solid #28a745; margin-bottom: 20px;">
-                <h3 style="margin-bottom: 15px; color: #333;">🧪 Retrieval Experimentation</h3>
-                <div class="upload-area" style="align-items: flex-end; gap: 10px;">
-                    <div class="file-input-wrapper">
-                        <label class="form-label">Experiment Query</label>
+            <!-- Retrieval Quality Review -->
+            <div class="upload-section rq-panel">
+                <h3 style="margin-bottom: 6px; color: #333;">🔍 Retrieval Kalite Testi</h3>
+                <p class="rq-hint" style="margin-top:0; margin-bottom:14px;">
+                    Bir soru sorun, dönen kaynakları gözle inceleyin ve doğru olanı işaretleyin.
+                    Cevap üretilmez; yalnızca retrieval sonucu değerlendirilir.
+                </p>
+                <div class="upload-area rq-controls">
+                    <div class="rq-query">
+                        <label class="form-label" for="expQueryInput">Soru</label>
                         <input
                             type="text"
                             id="expQueryInput"
-                            placeholder="Enter a test query to simulate retrieval..."
-                            style="width: 100%; padding: 12px 20px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 15px; outline: none;"
+                            class="rq-input"
+                            placeholder="Örn: 2024 Findeks Risk Raporu sorgu adedi kaç?"
+                            onkeydown="if (event.key === 'Enter') runExperimentSearch();"
                         >
                     </div>
                     <div>
-                        <label class="form-label">Method</label>
-                        <select id="expMethod" style="padding: 12px 20px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 15px; outline: none; cursor: pointer;">
-                            <option value="hybrid">Hybrid</option>
-                            <option value="vector">Vector</option>
+                        <label class="form-label" for="expMethod">Yöntem</label>
+                        <select id="expMethod" class="rq-input" style="cursor: pointer; width: auto;">
                             <option value="bm25">BM25</option>
                         </select>
                     </div>
                     <div>
-                        <label class="form-label">Top K</label>
-                        <input type="number" id="expTopK" value="20" min="1" max="200" style="width: 100px; padding: 12px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 15px; outline: none;">
+                        <label class="form-label" for="expTopK">Top K</label>
+                        <input type="number" id="expTopK" class="rq-input" value="5" min="1" max="200" style="width: 100px;">
                     </div>
-                    <button class="btn-upload" onclick="runExperimentRank()">Rank Selected Chunks</button>
-                    <button class="btn-upload" style="background:#17a2b8" onclick="runExperimentSearch()">Run Search</button>
+                    <button class="btn-upload" style="background:#28a745" onclick="runExperimentSearch()">Ara</button>
+                    <button class="btn-upload" onclick="runExperimentRank()">Seçili Chunk'ları Sırala</button>
                 </div>
-                <div class="supported-formats" id="expSelectionInfo">Selected Chunks: <span id="selectedCount">0</span></div>
+                <div class="rq-hint" id="expMethodNote"></div>
+                <div class="supported-formats" id="expSelectionInfo">Seçili Chunk: <span id="selectedCount">0</span></div>
                 <div id="expResults" style="margin-top: 15px;"></div>
             </div>
 
@@ -893,6 +1107,21 @@
         </div>
     </div>
 
+
+    <!-- Chunk viewer for the retrieval quality review -->
+    <div class="modal" id="expChunkModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="expChunkModalTitle">Chunk</h2>
+                <button class="btn-close" onclick="closeExpChunkModal()">&times;</button>
+            </div>
+            <div class="search-results-count" id="expChunkModalMeta" style="margin-bottom: 14px;"></div>
+            <div class="rq-modal-text" id="expChunkModalText"></div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-cancel" onclick="closeExpChunkModal()">Kapat</button>
+            </div>
+        </div>
+    </div>
     <script>
         let selectedFile = null;
         let currentDocId = null;
@@ -1672,54 +1901,311 @@
                 });
                 const data = await resp.json();
                 if (!data.success) throw new Error(data.error || 'Search failed');
-                renderSearchExperimentResults(data.chunks, query, method, topK);
+                await renderSearchExperimentResults(data.chunks, query, method, topK);
             } catch (e) {
                 resBox.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${e.message}</p></div>`;
             }
         }
 
-        function renderSearchExperimentResults(items, query, method, topK) {
+        // Last search, so the cards can be re-rendered when a source is marked
+        // without asking the backend again.
+        const expState = { items: [], query: '', method: '', topK: 0, correct: null, entryId: null };
+
+        // (kb_id, normalized question) -> confirmed entry, mirrored from the
+        // server's gold set. Marks used to live in localStorage and were lost
+        // with the browser profile.
+        const rqGold = { kbId: null, byQuestion: new Map() };
+
+        function rqKbId() {
+            const sel = document.getElementById('kbSelectDocs');
+            return (sel && sel.value) || '';
+        }
+
+        function rqNormalizeQuestion(question) {
+            // Must match the server's identity rule exactly, or a mark saved
+            // under one spelling is never found again. Python's casefold maps
+            // 'I' to 'i'; a Turkish-locale lowercase would map it to 'ı' and
+            // the two sides would disagree on the same question.
+            return String(question || '').split(/\s+/).filter(Boolean).join(' ').toLowerCase();
+        }
+
+        async function rqLoadGold(kbId) {
+            rqGold.kbId = kbId;
+            rqGold.byQuestion = new Map();
+            if (!kbId) return;
+            try {
+                const resp = await fetch('/api/goldset?kb_id=' + encodeURIComponent(kbId));
+                const data = await resp.json();
+                if (!data.success) return;
+                (data.entries || []).forEach(entry => {
+                    rqGold.byQuestion.set(rqNormalizeQuestion(entry.question), entry);
+                });
+            } catch (e) { /* the review screen still works without the gold set */ }
+        }
+
+        function rqGoldFor(query) {
+            return rqGold.byQuestion.get(rqNormalizeQuestion(query)) || null;
+        }
+
+        // --- retrieval method options ---------------------------------------
+        // The retriever declares what it can serve; the dropdown follows it.
+        // Nothing here knows about profile names.
+        async function rqRefreshMethods() {
+            const select = document.getElementById('expMethod');
+            if (!select) return;
+            const previous = select.value;
+            try {
+                const resp = await fetch('/api/retrieval/capabilities?kb_id=' + encodeURIComponent(rqKbId()));
+                const data = await resp.json();
+                if (!data.success) return;
+                select.innerHTML = (data.methods || []).map(m => {
+                    const label = m.available ? m.label : `${m.label} — kullanılamıyor`;
+                    return `<option value="${m.name}"${m.available ? '' : ' disabled'}${m.reason ? ` title="${escapeHtml(m.reason)}"` : ''}>${escapeHtml(label)}</option>`;
+                }).join('');
+                const stillOk = (data.methods || []).some(m => m.name === previous && m.available);
+                select.value = stillOk ? previous : (data.default || '');
+                const note = document.getElementById('expMethodNote');
+                if (note) {
+                    const blocked = (data.methods || []).filter(m => !m.available && m.reason);
+                    note.textContent = blocked.length ? blocked.map(m => `${m.label}: ${m.reason}`).join('  ') : '';
+                }
+            } catch (e) { /* leave the existing options in place */ }
+        }
+
+        function rqMeta(item) {
+            return (item && item.metadata) || {};
+        }
+
+        function rqSection(item) {
+            const md = rqMeta(item);
+            // The chunker's own heading, persisted since the metadata fix.
+            // Older records only carry the derived section_title.
+            if (md.heading) return md.heading;
+            if (md.section_title) return md.section_title;
+            try {
+                const paths = JSON.parse(md.section_paths_json || '[]');
+                if (paths.length && paths[0].length) return paths[0].join(' > ');
+            } catch (e) { /* fall through */ }
+            return null;
+        }
+
+        function rqPageList(item) {
+            const md = rqMeta(item);
+            try {
+                const pages = JSON.parse(md.pages_json || '[]');
+                if (pages.length) return pages;
+            } catch (e) { /* fall through */ }
+            for (const key of ['page', 'page_number', 'page_start']) {
+                if (md[key] !== undefined && md[key] !== null && md[key] !== '') return [md[key]];
+            }
+            return [];
+        }
+
+        function rqPages(item) {
+            const pages = rqPageList(item);
+            if (pages.length === 1) return String(pages[0]);
+            if (pages.length > 1) return pages[0] + '-' + pages[pages.length - 1];
+            return null;
+        }
+
+        function rqUnitIds(item) {
+            try { return JSON.parse(rqMeta(item).unit_ids_json || '[]'); } catch (e) { return []; }
+        }
+
+        function rqDocName(item) {
+            const md = rqMeta(item);
+            return md.doc_title || md.file_name || md.doc_id || 'doküman';
+        }
+
+        function rqScore(item) {
+            const score = item && item.score;
+            return (score === null || score === undefined) ? null : Number(score);
+        }
+
+        async function renderSearchExperimentResults(items, query, method, topK) {
+            expState.items = items || [];
+            expState.query = query;
+            expState.method = method;
+            expState.topK = topK;
+            if (rqGold.kbId !== rqKbId()) await rqLoadGold(rqKbId());
+            const entry = rqGoldFor(query);
+            expState.correct = entry ? entry.correct_chunk_id : null;
+            expState.entryId = entry ? entry.entry_id : null;
+            rqRender();
+        }
+
+        function rqRender() {
             const resBox = document.getElementById('expResults');
+            const { items, query, method, topK, correct } = expState;
             if (!items || items.length === 0) {
-                resBox.innerHTML = '<div class="empty-state"><h3>No results</h3></div>';
+                resBox.innerHTML = '<div class="empty-state"><h3>Sonuç yok</h3><p>Bu sorgu için kaynak dönmedi.</p></div>';
                 return;
             }
+
+            const top = items[0];
+            const markedIndex = correct ? items.findIndex(it => it.chunk_id === correct) : -1;
+            const topScore = rqScore(top);
+            let verdict;
+            if (markedIndex >= 0) {
+                verdict = `<span class="rq-verdict-yes">Evet — rank ${markedIndex + 1}</span>`;
+            } else if (correct) {
+                // Confirmed earlier, but this run did not return it.
+                verdict = '<span class="rq-verdict-no">Hayır — kayıtlı kaynak bu sonuçlarda yok</span>';
+            } else {
+                verdict = '<span class="rq-verdict-no">Hayır / işaretlenmedi</span>';
+            }
+
             let html = `
                 <div class="search-results-header">
                     <div>
-                        <div class="search-results-title">Experiment Search • ${method.toUpperCase()} • Top ${topK}</div>
-                        <div class="search-results-count">Query: "${escapeHtml(query)}" • ${items.length} result(s)</div>
+                        <div class="search-results-title">Sonuçlar • ${escapeHtml(method.toUpperCase())} • Top ${topK}</div>
+                        <div class="search-results-count">Soru: "${escapeHtml(query)}" • ${items.length} kaynak</div>
                     </div>
                 </div>
-                <div style="overflow:auto;">
-                <table style="width:100%; border-collapse: collapse;">
-                    <thead>
-                        <tr style="text-align:left; border-bottom:2px solid #eee;">
-                            <th style="padding:8px;">#</th>
-                            <th style="padding:8px;">Chunk ID</th>
-                            <th style="padding:8px;">Score</th>
-                            <th style="padding:8px;">Method</th>
-                            <th style="padding:8px;">Search term</th>
-                            <th style="padding:8px;">Preview</th>
-                        </tr>
-                    </thead>
-                    <tbody>
+                <div class="rq-summary">
+                    <div class="rq-summary-item">
+                        <span class="rq-summary-label">Top-1 Bölüm</span>
+                        <span class="rq-summary-value">${escapeHtml(rqSection(top) || '—')}</span>
+                    </div>
+                    <div class="rq-summary-item">
+                        <span class="rq-summary-label">Top-1 Sayfa</span>
+                        <span class="rq-summary-value">${escapeHtml(rqPages(top) || '—')}</span>
+                    </div>
+                    <div class="rq-summary-item">
+                        <span class="rq-summary-label">Top-1 Skor</span>
+                        <span class="rq-summary-value">${topScore === null ? '—' : topScore.toFixed(4)}</span>
+                    </div>
+                    <div class="rq-summary-item">
+                        <span class="rq-summary-label">Doğru kaynak bulundu mu?</span>
+                        <span class="rq-summary-value">${verdict}</span>
+                    </div>
+                </div>
             `;
+
             items.forEach((it, idx) => {
-                const preview = escapeHtml((it.content || '').slice(0, 200)) + ((it.content || '').length > 200 ? '...' : '');
+                const content = it.content || '';
+                const preview = content.length > 420 ? content.slice(0, 420) + '…' : content;
+                const section = rqSection(it);
+                const pages = rqPages(it);
+                const score = rqScore(it);
+                const isMarked = correct && it.chunk_id === correct;
+                const details = {
+                    chunk_id: it.chunk_id,
+                    retrieval_method: it.retrieval_method || null,
+                    search_term: it.search_term || null,
+                    score: score,
+                    metadata: rqMeta(it)
+                };
                 html += `
-                    <tr style="border-bottom:1px solid #f0f0f0;">
-                        <td style="padding:8px;">${idx+1}</td>
-                        <td style="padding:8px; font-family:monospace;">${it.chunk_id}</td>
-                        <td style="padding:8px;">${(it.score ?? 0).toFixed(4)}</td>
-                        <td style="padding:8px;">${it.retrieval_method || ''}</td>
-                        <td style="padding:8px;">${escapeHtml(it.search_term || '')}</td>
-                        <td style="padding:8px;">${preview}</td>
-                    </tr>
+                    <div class="rq-card${isMarked ? ' rq-card-marked' : ''}">
+                        <div class="rq-rank">${idx + 1}</div>
+                        <div class="rq-body">
+                            <div class="rq-section">${escapeHtml(section || '(bölüm başlığı yok)')}</div>
+                            <div class="rq-meta">
+                                <span class="rq-chip">📄 ${escapeHtml(rqDocName(it))}</span>
+                                <span class="rq-chip">Sayfa ${escapeHtml(pages || '—')}</span>
+                                <span class="rq-chip rq-chip-score">Skor ${score === null ? '—' : score.toFixed(4)}</span>
+                            </div>
+                            <div class="rq-preview">${escapeHtml(preview)}</div>
+                            <div class="rq-actions">
+                                <button class="rq-btn" onclick="rqOpenChunk(${idx})">Chunk'ı Aç</button>
+                                <button class="rq-btn" onclick="rqShowInPdf(${idx})">PDF'de Göster</button>
+                                <button class="rq-btn rq-btn-mark${isMarked ? ' rq-on' : ''}" onclick="rqToggleCorrect(${idx})">
+                                    ${isMarked ? '✓ Doğru Kaynak' : 'Doğru Kaynak'}
+                                </button>
+                            </div>
+                            <details class="rq-details">
+                                <summary>Details</summary>
+                                <div class="rq-details-body">${escapeHtml(JSON.stringify(details, null, 2))}</div>
+                            </details>
+                        </div>
+                    </div>
                 `;
             });
-            html += '</tbody></table></div>';
             resBox.innerHTML = html;
+        }
+
+        async function rqToggleCorrect(idx) {
+            const item = expState.items[idx];
+            if (!item) return;
+            const kbId = rqKbId();
+            if (!kbId) { showAlert('error', 'Önce bir Knowledge Base seçin.'); return; }
+
+            if (expState.correct === item.chunk_id) {
+                // Unmark: drop the recorded answer for this question.
+                const entry = rqGoldFor(expState.query);
+                if (entry) {
+                    try {
+                        await fetch('/api/goldset/' + encodeURIComponent(entry.entry_id), { method: 'DELETE' });
+                        rqGold.byQuestion.delete(rqNormalizeQuestion(expState.query));
+                    } catch (e) { showAlert('error', 'Kayıt silinemedi: ' + e.message); return; }
+                }
+                expState.correct = null;
+                expState.entryId = null;
+                rqRender();
+                return;
+            }
+
+            const md = rqMeta(item);
+            const payload = {
+                question: expState.query,
+                kb_id: kbId,
+                document_id: md.doc_id || null,
+                document_title: md.doc_title || md.file_name || null,
+                correct_chunk_id: item.chunk_id,
+                section: rqSection(item),
+                pages: rqPageList(item),
+                unit_ids: rqUnitIds(item),
+                evidence: item.content || '',
+                retrieval_method: item.retrieval_method || expState.method,
+                found_at_rank: idx + 1
+            };
+            try {
+                const resp = await fetch('/api/goldset', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.error || 'Kayıt başarısız');
+                rqGold.byQuestion.set(rqNormalizeQuestion(expState.query), data.entry);
+                expState.correct = data.entry.correct_chunk_id;
+                expState.entryId = data.entry.entry_id;
+                rqRender();
+                showAlert('success', `Rank ${idx + 1} doğru kaynak olarak kaydedildi.`);
+            } catch (e) {
+                showAlert('error', 'Kaydedilemedi: ' + e.message);
+            }
+        }
+
+        function rqOpenChunk(idx) {
+            const item = expState.items[idx];
+            if (!item) return;
+            const section = rqSection(item);
+            const pages = rqPages(item);
+            document.getElementById('expChunkModalTitle').textContent = section || 'Chunk';
+            document.getElementById('expChunkModalMeta').textContent =
+                `${rqDocName(item)} • Sayfa ${pages || '—'} • Rank ${idx + 1}`;
+            document.getElementById('expChunkModalText').textContent = item.content || '';
+            document.getElementById('expChunkModal').classList.add('active');
+        }
+
+        function closeExpChunkModal() {
+            document.getElementById('expChunkModal').classList.remove('active');
+        }
+
+        function rqShowInPdf(idx) {
+            const item = expState.items[idx];
+            if (!item) return;
+            const pages = rqPages(item);
+            const locator = `${rqDocName(item)} — sayfa ${pages || '?'}`;
+            // The app serves no PDF route, so the page reference is copied for
+            // the reader to open the source document themselves.
+            const done = () => showAlert('success', `Kopyalandı: ${locator}`);
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(locator).then(done).catch(() => showAlert('success', locator));
+            } else {
+                showAlert('success', locator);
+            }
         }
 
         async function runExperimentRank() {
@@ -1813,6 +2299,9 @@
                 checkUploadEnabled();
                 // Reload documents when KB selection changes
                 loadDocuments();
+                // The retriever differs per KB, so the offered methods do too.
+                rqRefreshMethods();
+                rqLoadGold(kbSelect.value || '');
             });
         }
         
@@ -1820,6 +2309,9 @@
         loadKBsDocs().then(() => {
             // Check upload state after KBs are loaded
             checkUploadEnabled();
+            // Offer only the retrieval methods the current retriever serves.
+            rqRefreshMethods();
+            rqLoadGold(rqKbId());
         });
         loadDocuments();
 

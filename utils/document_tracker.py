@@ -8,18 +8,21 @@ import hashlib
 from typing import Dict, Set, Optional, List
 from datetime import datetime
 
+from config import paths
+
 
 class DocumentTracker:
     """Tracks ingested documents to avoid re-processing"""
     
-    def __init__(self, tracking_file: str = ".ingested_documents.json"):
+    def __init__(self, tracking_file: Optional[str] = None):
         """
         Initialize document tracker
         
         Args:
             tracking_file: Path to the tracking file
         """
-        self.tracking_file = tracking_file
+        # Defaults to the historical file unless a data directory is set.
+        self.tracking_file = tracking_file or paths.ingested_documents()
         self.ingested_docs: Dict[str, Dict] = {}
         self._load_tracking_data()
     
@@ -38,6 +41,12 @@ class DocumentTracker:
     def _save_tracking_data(self):
         """Save tracking data to file"""
         try:
+            # Historically this file sat in the working directory, which always
+            # exists. A configured data directory does not, until something
+            # makes it.
+            parent = os.path.dirname(os.path.abspath(self.tracking_file))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             with open(self.tracking_file, 'w') as f:
                 json.dump(self.ingested_docs, f, indent=2)
         except Exception as e:
@@ -95,21 +104,33 @@ class DocumentTracker:
         doc_id: str,
         chunk_count: int,
         metadata: Optional[Dict] = None,
-        kb_id: Optional[str] = None
+        kb_id: Optional[str] = None,
+        pipeline_snapshot: Optional[Dict] = None
     ):
         """
         Mark a document as ingested
-        
+
         Args:
             file_path: Path to the document
             doc_id: Document ID
             chunk_count: Number of chunks created
             metadata: Additional metadata
             kb_id: Knowledge base ID this document belongs to
+            pipeline_snapshot: Immutable record of the configuration that
+                produced this corpus (see components.provenance). It is written
+                in the same call that records the document, so an ingest that
+                failed -- and therefore never reached this method -- cannot
+                leave a snapshot behind.
         """
         abs_path = os.path.abspath(file_path)
         file_hash = self._compute_file_hash(file_path)
-        
+
+        if pipeline_snapshot is not None:
+            # The snapshot has to name the bytes it describes, and the hash was
+            # just computed: stamping it here reads no file a second time and
+            # leaves no way for the two to disagree.
+            pipeline_snapshot = {**pipeline_snapshot, 'document_sha256': file_hash}
+
         self.ingested_docs[abs_path] = {
             'doc_id': doc_id,
             'file_hash': file_hash,
@@ -117,9 +138,10 @@ class DocumentTracker:
             'file_size': os.path.getsize(file_path),
             'ingested_at': datetime.now().isoformat(),
             'kb_id': kb_id,  # Store KB ID with document
-            'metadata': metadata or {}
+            'metadata': metadata or {},
+            'pipeline_snapshot': pipeline_snapshot
         }
-        
+
         self._save_tracking_data()
     
     def get_ingested_files(self) -> Set[str]:
@@ -221,7 +243,8 @@ class DocumentTracker:
                 'ingested_at': doc_data.get('ingested_at', ''),
                 'file_hash': doc_data.get('file_hash', ''),
                 'kb_id': doc_kb_id,
-                'metadata': doc_data.get('metadata', {})
+                'metadata': doc_data.get('metadata', {}),
+                'pipeline_snapshot': doc_data.get('pipeline_snapshot')
             })
 
         # Sort by ingestion date (newest first)
@@ -248,7 +271,8 @@ class DocumentTracker:
                     'file_size': doc_data.get('file_size', 0),
                     'ingested_at': doc_data.get('ingested_at', ''),
                     'file_hash': doc_data.get('file_hash', ''),
-                    'metadata': doc_data.get('metadata', {})
+                    'metadata': doc_data.get('metadata', {}),
+                    'pipeline_snapshot': doc_data.get('pipeline_snapshot')
                 }
         return None
 

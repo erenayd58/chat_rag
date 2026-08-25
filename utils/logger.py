@@ -7,6 +7,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from config import paths
+
 
 class RAGLogger:
     """Centralized logger for RAG system"""
@@ -26,8 +28,8 @@ class RAGLogger:
         self._initialized = True
         
         # Create logs directory
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
+        log_dir = Path(paths.logs())
+        log_dir.mkdir(parents=True, exist_ok=True)
         
         # Create log filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

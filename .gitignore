@@ -67,3 +67,23 @@ docs/*
 # plus the embedding caches used by the comparison profiles.
 .cache/
 *.bak
+
+# Runtime gold set: whatever the reviewer has marked in the UI so far. It is
+# mutable working state, not a regression set -- freeze one with
+# `python -m cli gold export` into artifacts/gold/ and commit that instead.
+.gold_set.json
+
+# Evaluation runs and QA report packages are regenerable from production
+# state, and a report carries the whole exported corpus. Frozen gold sets
+# under artifacts/gold/ are not regenerable, so they stay tracked.
+artifacts/runs/
+artifacts/reports/
+
+# Docker runtime data: the container's own knowledge bases, vector stores,
+# canonical-unit cache, logs and evaluation output. Never mixed with the local
+# development state above.
+.docker-data/
+
+# Private container configuration; .env.docker holds the tracked, secret-free
+# defaults.
+.env.docker.local

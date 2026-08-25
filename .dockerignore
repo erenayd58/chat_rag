@@ -1,0 +1,35 @@
+# Runtime state belongs in a mounted directory, never in an image layer.
+.docker-data/
+chroma_db/
+faiss_db/
+.cache/
+logs/
+.pytest-tmp/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Local runtime state: the container starts with its own, empty copies.
+.knowledge_bases.json
+.ingested_documents.json
+.gold_set.json
+*.bak
+*.json.*.bak
+
+# Secrets. The compose file supplies configuration through env_file instead.
+.env
+.env.*
+!.env.docker
+
+# Generated evaluation output. artifacts/gold/ is deliberately not excluded:
+# frozen gold sets are inputs and travel with the image, read-only.
+artifacts/runs/
+artifacts/reports/
+
+# Not needed to run the application.
+.git/
+.gitignore
+.vscode/
+.idea/
+documents/
+examples/
