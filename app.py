@@ -22,7 +22,7 @@ from pipeline import RAGPipeline
 from components.goldset import GoldSetManager
 from components.knowledgebase.manager import KnowledgeBaseManager
 from components.provenance import capture as capture_pipeline_snapshot
-from core.exceptions import LLMException
+from core.exceptions import ConfigurationException, LLMException
 from config import paths
 from components.retriever import (
     method_is_available,
@@ -1149,25 +1149,41 @@ def upload_document():
 
             # Ingest-time chunking mode. Deep Analysis (structure candidates
             # judged by a backend LLM Boundary Judge) is a per-document,
-            # ingest-only decision — never a query-time toggle. The judge is
-            # not integrated yet, so the flag is refused honestly instead of
-            # silently falling back to Standard.
+            # ingest-only decision — never a query-time toggle and never
+            # written into the KB's chunker config.
             deep_raw = (request.form.get('deep_analysis') or 'false').strip().lower()
             deep_analysis = deep_raw in {'1', 'true', 'yes', 'on'}
-            if deep_analysis:
-                return jsonify({
-                    'success': False,
-                    'deep_analysis_unavailable': True,
-                    'error': ('Deep Analysis is not available yet: the LLM '
-                              'Boundary Judge integration is pending. Upload '
-                              'the document with the Standard mode.')
-                }), 501
-            chunking_mode = 'standard'
+            chunking_mode = 'deep_analysis' if deep_analysis else 'standard'
 
             user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
+
+            if deep_analysis:
+                # Refuse a misconfigured or unsupported request before any
+                # document work starts — never silently fall back to Standard.
+                from components.chunker.boundary_judge import (
+                    boundary_judge_config_error,
+                )
+                config_error = boundary_judge_config_error(user_pipeline.settings)
+                if config_error:
+                    return jsonify({
+                        'success': False,
+                        'deep_analysis_unavailable': True,
+                        'configuration_missing': True,
+                        'error': config_error,
+                    }), 503
+                if not hasattr(user_pipeline.chunker, 'chunk_text_deep'):
+                    return jsonify({
+                        'success': False,
+                        'deep_analysis_unavailable': True,
+                        'error': ('Deep Analysis requires the structure-first '
+                                  'chunker; this knowledge base uses '
+                                  f'{user_pipeline.chunker.get_name()}.'),
+                    }), 400
+
             chunks = user_pipeline.ingest_document_from_file(
                 file_path=temp_path,
-                doc_title=file.filename
+                doc_title=file.filename,
+                deep_analysis=deep_analysis
             )
 
             # Track the document
@@ -1183,6 +1199,10 @@ def upload_document():
             # records the document, so a failed ingest leaves neither. Read
             # back by `python -m cli report/inspect`, which otherwise can only
             # describe today's configuration rather than the one that ran.
+            # The judge's report for this ingest (None on the Standard path).
+            # Counts and the model id only — never prompts, never keys.
+            judge_report = getattr(user_pipeline, 'last_deep_analysis_report', None)
+
             pipeline_snapshot = capture_pipeline_snapshot(
                 user_pipeline, kb, kb_id=kb_id,
                 storage_path=kb_manager.storage_path(kb_id),
@@ -1194,17 +1214,22 @@ def upload_document():
                 pipeline_snapshot['ingest_options'] = {
                     'chunking_mode': chunking_mode,
                     'deep_analysis': deep_analysis,
+                    'boundary_judge': judge_report,
                 }
+
+            doc_metadata = {
+                'original_filename': file.filename,
+                'upload_source': 'web_interface',
+                'chunking_mode': chunking_mode,
+            }
+            if judge_report is not None:
+                doc_metadata['boundary_judge'] = judge_report
 
             tracker.mark_as_ingested(
                 file_path=temp_path,
                 doc_id=doc_id,
                 chunk_count=len(chunks),
-                metadata={
-                    'original_filename': file.filename,
-                    'upload_source': 'web_interface',
-                    'chunking_mode': chunking_mode,
-                },
+                metadata=doc_metadata,
                 kb_id=kb_id,
                 pipeline_snapshot=pipeline_snapshot,
                 status='indexed',
@@ -1218,7 +1243,9 @@ def upload_document():
                 'message': f'Document uploaded and processed successfully',
                 'doc_id': doc_id,
                 'chunks_created': len(chunks),
-                'filename': file.filename
+                'filename': file.filename,
+                'chunking_mode': chunking_mode,
+                'boundary_judge': judge_report
             })
 
         except Exception as e:
@@ -1227,6 +1254,17 @@ def upload_document():
                 os.remove(temp_path)
             raise e
 
+    except ConfigurationException as e:
+        # A Deep Analysis request the backend cannot honour: unsupported
+        # chunker or missing judge configuration. Refused explicitly —
+        # never a silent fall back to Standard.
+        logger.warning(f"Deep Analysis refused: {e}")
+        return jsonify({
+            'success': False,
+            'deep_analysis_unavailable': True,
+            'configuration_missing': True,
+            'error': str(e)
+        }), 503
     except Exception as e:
         logger.error(f"Failed to upload document: {e}", exc_info=True)
         return jsonify({

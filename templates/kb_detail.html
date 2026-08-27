@@ -102,11 +102,11 @@
                         <div class="option-desc">Structure-only chunking. Fast and deterministic — boundaries follow the document's own structure.</div>
                     </div>
                 </label>
-                <label class="option-card disabled" id="optDeep" title="LLM Boundary Judge integration is pending">
-                    <input type="radio" name="chunkMode" value="deep_analysis" disabled>
+                <label class="option-card" id="optDeep">
+                    <input type="radio" name="chunkMode" value="deep_analysis">
                     <div>
-                        <div class="option-title">Deep Analysis <span class="badge badge-warn">Integration pending</span></div>
-                        <div class="option-desc">Structure plus a backend LLM Boundary Judge that resolves hard chunk boundaries at ingest time. Not available in this build.</div>
+                        <div class="option-title">Deep Analysis <span class="badge badge-accent">LLM-assisted</span></div>
+                        <div class="option-desc">Structure plus a backend LLM boundary judge: on important documents, hard chunk boundaries are evaluated by a generative model during ingest. Slower; falls back to the structural cut on any judge error.</div>
                     </div>
                 </label>
                 <div class="field-hint">Chunking mode is chosen per document at upload. It cannot be changed at query time.</div>

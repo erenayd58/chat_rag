@@ -93,6 +93,94 @@ class StructuralChunker(BaseChunker):
         except Exception as exc:
             raise ChunkerException(f"Structure-first chunking failed: {exc}") from exc
 
+        return self._rows_to_chunks(
+            rows,
+            doc_id=doc_id,
+            doc_title=doc_title,
+            document_summary=document_summary,
+        )
+
+    def chunk_text_deep(
+        self,
+        text: str,
+        doc_id: str,
+        doc_title: str,
+        document_summary: str = None,
+        *,
+        judge: Any,
+        **kwargs: Any,
+    ) -> tuple[list[DocumentChunk], dict[str, Any]]:
+        """Deep Analysis: the same structural walk, with the LLM boundary
+        judge consulted at plain budget cuts that offer a real choice.
+
+        Returns the chunks plus a document-level report (judge model, call
+        and decision counts, per-step fallbacks). ``chunk_text`` above stays
+        the untouched Standard path; with an all-KEEP judge or none at all
+        the amsc walk is pinned byte-identical to ``chunk_units``.
+        """
+        from amsc.llm_boundary_judge import (
+            JudgeConfig,
+            ProductChunkingMode,
+            chunk_with_product_mode,
+        )
+
+        units = self._adapter.normalize(
+            text=text,
+            document_id=doc_id,
+            parsed_units=kwargs.get("parsed_units"),
+            parser_metadata=kwargs.get("parser_metadata"),
+        )
+        try:
+            result = chunk_with_product_mode(
+                units,
+                counter=self._counter,
+                mode=ProductChunkingMode.DEEP_ANALYSIS,
+                judge=judge,
+                config=JudgeConfig(
+                    min_tokens=MIN_TOKENS,
+                    target_tokens=TARGET_TOKENS,
+                    soft_max_tokens=SOFT_MAX_TOKENS,
+                    hard_max_tokens=HARD_MAX_TOKENS,
+                ),
+            )
+        except (ValueError, TypeError, AssertionError):
+            raise
+        except Exception as exc:
+            raise ChunkerException(f"Deep Analysis chunking failed: {exc}") from exc
+
+        diagnostics = result.diagnostics
+        report = {
+            "mode": "deep_analysis",
+            "boundary_judge_model": getattr(judge, "model_id", None),
+            "consulted_boundary_count": diagnostics.get("consulted_boundary_count"),
+            "judge_call_count": diagnostics.get("llm_call_count"),
+            "split_votes": diagnostics.get("split_votes"),
+            "keep_votes": diagnostics.get("keep_votes"),
+            "fallback_count": diagnostics.get("fallback_count"),
+            "changed_from_greedy_count": diagnostics.get("changed_from_greedy_count"),
+            "tuning_status": diagnostics.get("tuning_status"),
+        }
+        chunks = self._rows_to_chunks(
+            result.chunks,
+            doc_id=doc_id,
+            doc_title=doc_title,
+            document_summary=document_summary,
+            extra_metadata={
+                "chunking_mode": "deep_analysis",
+                "judge_model": getattr(judge, "model_id", None),
+            },
+        )
+        return chunks, report
+
+    def _rows_to_chunks(
+        self,
+        rows: list[dict],
+        *,
+        doc_id: str,
+        doc_title: str,
+        document_summary: str | None,
+        extra_metadata: dict[str, Any] | None = None,
+    ) -> list[DocumentChunk]:
         created_at = datetime.now().isoformat()
         chunks: list[DocumentChunk] = []
         for index, row in enumerate(rows):
@@ -136,6 +224,7 @@ class StructuralChunker(BaseChunker):
                         "split_strategies_json": json.dumps(
                             row.get("split_strategies") or []
                         ),
+                        **(extra_metadata or {}),
                     },
                 )
             )

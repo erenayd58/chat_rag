@@ -158,6 +158,16 @@ function openUploadModal() {
   openModal('uploadModal');
 }
 
+// Reflect the chosen chunking mode on the option cards.
+$all('input[name="chunkMode"]').forEach((radio) => {
+  radio.addEventListener('change', () => {
+    $('#optStandard').classList.toggle('selected', radio.value === 'standard' && radio.checked);
+    $('#optDeep').classList.toggle('selected', radio.value === 'deep_analysis' && radio.checked);
+    if (radio.checked && radio.value === 'standard') $('#optDeep').classList.remove('selected');
+    if (radio.checked && radio.value === 'deep_analysis') $('#optStandard').classList.remove('selected');
+  });
+});
+
 $('#uploadBtn').addEventListener('click', openUploadModal);
 $('#chooseFileBtn').addEventListener('click', () => $('#fileInput').click());
 
@@ -187,7 +197,14 @@ $('#uploadSubmit').addEventListener('click', async () => {
   try {
     const data = await api('/api/documents/upload', { method: 'POST', form: form });
     closeModal('uploadModal');
-    toast(data.filename + ' indexed — ' + data.chunks_created + ' chunks created', 'success');
+    let note = data.filename + ' indexed — ' + data.chunks_created + ' chunks created';
+    if (data.chunking_mode === 'deep_analysis' && data.boundary_judge) {
+      const j = data.boundary_judge;
+      note += ' (Deep Analysis: ' + (j.judge_call_count || 0) + ' judge calls, ' +
+        (j.split_votes || 0) + ' split / ' + (j.keep_votes || 0) + ' keep' +
+        (j.fallback_count ? ', ' + j.fallback_count + ' fallback' : '') + ')';
+    }
+    toast(note, 'success');
     loadDocuments();
     loadStats();
   } catch (e) {

@@ -296,7 +296,7 @@ class IngestingPipeline:
         self._chunks = chunks or []
         self._error = error
 
-    def ingest_document_from_file(self, file_path, doc_title):
+    def ingest_document_from_file(self, file_path, doc_title, deep_analysis=False):
         if self._error:
             raise self._error
         return self._chunks

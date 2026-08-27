@@ -24,7 +24,7 @@ from components.reranker import BaseReranker, LLMReranker, CrossEncoderReranker
 from components.conversation import ConversationManager
 from components.parsers import ParserFactory
 from core.models import DocumentChunk, RetrievalResult, SearchQuery
-from core.exceptions import RAGException
+from core.exceptions import ConfigurationException, RAGException
 from utils.logger import get_logger, RAGLogger
 
 logger = get_logger("RAGPipeline")
@@ -212,17 +212,21 @@ class RAGPipeline:
         file_path: str,
         doc_id: Optional[str] = None,
         doc_title: Optional[str] = None,
-        additional_metadata: Dict[str, Any] = None
+        additional_metadata: Dict[str, Any] = None,
+        deep_analysis: bool = False
     ) -> List[DocumentChunk]:
         """
         Ingest a document from a file (PDF, DOCX, TXT, MD, images, etc.)
-        
+
         Args:
             file_path: Path to the document file
             doc_id: Unique document identifier (auto-generated if None)
             doc_title: Document title (uses filename if None)
             additional_metadata: Optional additional metadata
-        
+            deep_analysis: Per-upload ingest mode. False is the Standard
+                structure-only path; True consults the LLM boundary judge
+                at ingest-time chunk boundaries (never at query time).
+
         Returns:
             List of processed document chunks
         """
@@ -271,9 +275,14 @@ class RAGPipeline:
                 doc_id=doc_id,
                 doc_title=doc_title,
                 additional_metadata=merged_metadata,
-                parsed_units=parsed_units
+                parsed_units=parsed_units,
+                deep_analysis=deep_analysis
             )
-            
+
+        except ConfigurationException:
+            # A misconfigured or unsupported Deep Analysis request must reach
+            # the caller as what it is, not wrapped into a generic failure.
+            raise
         except Exception as e:
             raise RAGException(f"Failed to ingest document from file {file_path}: {e}")
     
@@ -368,23 +377,33 @@ class RAGPipeline:
         doc_id: str,
         doc_title: str,
         additional_metadata: Dict[str, Any] = None,
-        parsed_units: Optional[List[Dict[str, Any]]] = None
+        parsed_units: Optional[List[Dict[str, Any]]] = None,
+        deep_analysis: bool = False
     ) -> List[DocumentChunk]:
         """
         Ingest a document through the complete processing pipeline
-        
+
         Args:
             document_text: Raw document text
             doc_id: Unique document identifier
             doc_title: Document title
             additional_metadata: Optional additional metadata
-        
+            deep_analysis: When True, chunk boundaries are judged by the
+                backend LLM boundary judge during this ingest. Requires the
+                structure-first chunker and a configured judge provider;
+                everything after chunking (embeddings, vector store, BM25)
+                is the unchanged shared path.
+
         Returns:
             List of processed document chunks
         """
+        # The report of the judge's work during the most recent ingest, for
+        # the caller to persist into document metadata/provenance. Reset per
+        # ingest; stays None on the Standard path.
+        self.last_deep_analysis_report = None
         try:
             print(f"Ingesting document: {doc_title}")
-            
+
             # Step 1: Generate document summary
             print("  - Generating document summary...")
             if self.retrieval_profile == 'benchmark_aligned':
@@ -393,15 +412,33 @@ class RAGPipeline:
                 doc_summary = self.contextual_enhancer.generate_document_summary(
                     document_text, doc_title
                 )
-            
+
             # Step 2: Create semantic chunks with context
-            print("  - Creating semantic chunks...")
-            chunks = self.chunker.chunk_text(
-                document_text, doc_id, doc_title, doc_summary,
-                embedding_model=self.embedding_model,
-                parser_metadata=additional_metadata,
-                parsed_units=parsed_units
-            )
+            if deep_analysis:
+                print("  - Creating chunks (Deep Analysis: LLM boundary judge)...")
+                if not hasattr(self.chunker, "chunk_text_deep"):
+                    raise ConfigurationException(
+                        "Deep Analysis requires the structure-first chunker; "
+                        f"this knowledge base uses {self.chunker.get_name()}"
+                    )
+                from components.chunker.boundary_judge import create_boundary_judge
+
+                judge = create_boundary_judge(self.settings)
+                chunks, judge_report = self.chunker.chunk_text_deep(
+                    document_text, doc_id, doc_title, doc_summary,
+                    judge=judge,
+                    parser_metadata=additional_metadata,
+                    parsed_units=parsed_units
+                )
+                self.last_deep_analysis_report = judge_report
+            else:
+                print("  - Creating semantic chunks...")
+                chunks = self.chunker.chunk_text(
+                    document_text, doc_id, doc_title, doc_summary,
+                    embedding_model=self.embedding_model,
+                    parser_metadata=additional_metadata,
+                    parsed_units=parsed_units
+                )
             
             if not chunks:
                 print(f"  ⚠️  Warning: No chunks created for document (text may be too short)")
@@ -466,7 +503,11 @@ class RAGPipeline:
             
             print(f"✓ Document '{doc_title}' ingested successfully!")
             return chunks
-            
+
+        except ConfigurationException:
+            # Deep Analysis misconfiguration is the caller's to handle
+            # explicitly; wrapping it would read as a document failure.
+            raise
         except Exception as e:
             raise RAGException(f"Document ingestion failed: {e}")
     

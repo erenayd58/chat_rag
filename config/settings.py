@@ -31,6 +31,21 @@ class Settings:
         self.ollama_model = os.getenv("OLLAMA_MODEL", "llama2")
         self.ollama_timeout = int(os.getenv("OLLAMA_TIMEOUT", "120"))
         
+        # Boundary Judge Settings (Deep Analysis ingest mode). Backend-only:
+        # the judge is a generative model consulted for SPLIT/KEEP decisions
+        # at ingest-time chunk boundaries, never at query time. The endpoint
+        # is any OpenAI-compatible chat-completions URL (OpenRouter, a
+        # company gateway, a local server); nothing is hardcoded to one
+        # vendor. Only the *name* of the environment variable holding the
+        # API key is configured here -- the key itself is read at request
+        # time by the provider and is never stored, logged or serialized.
+        self.boundary_judge_model = os.getenv("BOUNDARY_JUDGE_MODEL", "").strip()
+        self.boundary_judge_endpoint = os.getenv("BOUNDARY_JUDGE_ENDPOINT", "").strip()
+        self.boundary_judge_api_key_env = os.getenv(
+            "BOUNDARY_JUDGE_API_KEY_ENV", "OPENROUTER_API_KEY"
+        ).strip()
+        self.boundary_judge_timeout = float(os.getenv("BOUNDARY_JUDGE_TIMEOUT", "120"))
+
         # Embedding Settings
         self.embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
         
