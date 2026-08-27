@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Knowledge Base · RAG Console{% endblock %}
+
+{% block content %}
+<div class="page" id="kbDetailPage" data-kb-id="{{ kb_id }}">
+    <div class="breadcrumb">
+        <a href="/">Knowledge Bases</a>
+        <span>/</span>
+        <span id="crumbName">…</span>
+    </div>
+    <div class="page-header">
+        <div>
+            <h1 class="page-title" id="kbTitle">&nbsp;</h1>
+            <p class="page-desc" id="kbDescription"></p>
+        </div>
+        <button class="btn btn-primary" id="uploadBtn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
+            Upload Document
+        </button>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" data-tab="overview">Overview</button>
+        <button class="tab" data-tab="documents">Documents</button>
+        <button class="tab" data-tab="settings">Settings</button>
+    </div>
+
+    <!-- Overview -->
+    <div class="tab-panel active" id="panel-overview">
+        <div class="stats-row" id="statTiles">
+            <div class="card stat-tile"><div class="stat-label">Documents</div><div class="stat-value" id="statDocs">—</div></div>
+            <div class="card stat-tile"><div class="stat-label">Chunks</div><div class="stat-value" id="statChunks">—</div></div>
+            <div class="card stat-tile"><div class="stat-label">Corpus size</div><div class="stat-value" id="statSize">—</div></div>
+            <div class="card stat-tile"><div class="stat-label">Last indexed</div><div class="stat-value" id="statLatest" style="font-size:14px; margin-top:8px;">—</div></div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+            <div class="card-header"><div class="card-title">Configuration</div></div>
+            <div class="card-pad" id="configRows">
+                <div class="loading-state"><div class="spinner"></div>Loading…</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Documents -->
+    <div class="tab-panel" id="panel-documents">
+        <div class="card">
+            <div class="table-wrap" id="docsContainer">
+                <div class="loading-state"><div class="spinner"></div>Loading documents…</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings -->
+    <div class="tab-panel" id="panel-settings">
+        <div class="card">
+            <div class="card-header"><div class="card-title">General</div></div>
+            <div class="card-pad">
+                <div class="field">
+                    <label class="field-label" for="settingsName">Name</label>
+                    <input class="input" id="settingsName" type="text" maxlength="120" style="max-width:420px;">
+                </div>
+                <div class="field">
+                    <label class="field-label" for="settingsDesc">Description</label>
+                    <textarea class="textarea" id="settingsDesc" style="max-width:420px;"></textarea>
+                </div>
+                <div id="settingsError"></div>
+                <button class="btn btn-primary" id="settingsSave">Save changes</button>
+            </div>
+        </div>
+
+        <div class="card danger-zone" style="margin-top:16px;">
+            <div class="card-header"><div class="card-title" style="color:var(--danger);">Danger zone</div></div>
+            <div class="card-pad" style="display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap;">
+                <div style="font-size:13px; color:var(--text-2);">Deleting a knowledge base removes its record and its search index. Documents cannot be recovered.</div>
+                <button class="btn btn-danger" id="deleteKbBtn">Delete knowledge base</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Upload modal -->
+<div class="modal-backdrop" id="uploadModal">
+    <div class="modal">
+        <div class="modal-header">
+            <div class="modal-title">Upload Document</div>
+            <button class="modal-close" onclick="closeModal('uploadModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="field">
+                <label class="field-label">File</label>
+                <input type="file" id="fileInput" accept=".pdf,.txt,.md,.docx,.png,.jpg,.jpeg" style="display:none;">
+                <button class="btn btn-secondary" id="chooseFileBtn" style="width:100%; justify-content:flex-start;">Choose a file…</button>
+                <div class="field-hint">PDF, TXT, MD, DOCX, PNG, JPG</div>
+            </div>
+
+            <div class="field">
+                <label class="field-label">Chunking mode</label>
+                <label class="option-card selected" id="optStandard">
+                    <input type="radio" name="chunkMode" value="standard" checked>
+                    <div>
+                        <div class="option-title">Standard</div>
+                        <div class="option-desc">Structure-only chunking. Fast and deterministic — boundaries follow the document's own structure.</div>
+                    </div>
+                </label>
+                <label class="option-card disabled" id="optDeep" title="LLM Boundary Judge integration is pending">
+                    <input type="radio" name="chunkMode" value="deep_analysis" disabled>
+                    <div>
+                        <div class="option-title">Deep Analysis <span class="badge badge-warn">Integration pending</span></div>
+                        <div class="option-desc">Structure plus a backend LLM Boundary Judge that resolves hard chunk boundaries at ingest time. Not available in this build.</div>
+                    </div>
+                </label>
+                <div class="field-hint">Chunking mode is chosen per document at upload. It cannot be changed at query time.</div>
+            </div>
+
+            <div id="uploadProgress" style="display:none;">
+                <div class="progress-indeterminate"></div>
+                <div style="font-size:12.5px; color:var(--text-2); margin-top:8px;">
+                    Processing document… parsing, chunking and indexing can take a while for large PDFs.
+                </div>
+            </div>
+            <div id="uploadError"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" id="uploadCancel" onclick="closeModal('uploadModal')">Cancel</button>
+            <button class="btn btn-primary" id="uploadSubmit" disabled>Upload &amp; Process</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/kb_detail.js') }}"></script>
+{% endblock %}

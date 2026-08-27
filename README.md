@@ -111,8 +111,9 @@ CHAT_RAG_GIT_SHA=$(git rev-parse HEAD) docker compose up --build
 # PowerShell: $env:CHAT_RAG_GIT_SHA = (git rev-parse HEAD); docker compose up --build
 ```
 
-Then open <http://localhost:5005> (the documents screen is at
-<http://localhost:5005/documents>).
+Then open <http://localhost:5005>. The app lands on Knowledge Bases;
+Chat is at `/chat` and the technical tools (retrieval quality review,
+parser output, chunk browser) are under `/lab`.
 
 ### Stop
 

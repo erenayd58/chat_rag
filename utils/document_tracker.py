@@ -105,7 +105,9 @@ class DocumentTracker:
         chunk_count: int,
         metadata: Optional[Dict] = None,
         kb_id: Optional[str] = None,
-        pipeline_snapshot: Optional[Dict] = None
+        pipeline_snapshot: Optional[Dict] = None,
+        status: str = 'indexed',
+        chunking_mode: Optional[str] = None
     ):
         """
         Mark a document as ingested
@@ -121,6 +123,13 @@ class DocumentTracker:
                 in the same call that records the document, so an ingest that
                 failed -- and therefore never reached this method -- cannot
                 leave a snapshot behind.
+            status: Lifecycle state of the record. Ingestion is synchronous
+                today, so a record only ever exists as 'indexed';
+                'processing' and 'failed' are reserved for asynchronous
+                ingestion.
+            chunking_mode: The per-document ingest choice ('standard' or
+                'deep_analysis'). None on records written by callers that
+                predate the field.
         """
         abs_path = os.path.abspath(file_path)
         file_hash = self._compute_file_hash(file_path)
@@ -138,6 +147,8 @@ class DocumentTracker:
             'file_size': os.path.getsize(file_path),
             'ingested_at': datetime.now().isoformat(),
             'kb_id': kb_id,  # Store KB ID with document
+            'status': status,
+            'chunking_mode': chunking_mode,
             'metadata': metadata or {},
             'pipeline_snapshot': pipeline_snapshot
         }
@@ -243,6 +254,10 @@ class DocumentTracker:
                 'ingested_at': doc_data.get('ingested_at', ''),
                 'file_hash': doc_data.get('file_hash', ''),
                 'kb_id': doc_kb_id,
+                # Records written before these fields existed count as
+                # indexed with an unknown chunking mode.
+                'status': doc_data.get('status', 'indexed'),
+                'chunking_mode': doc_data.get('chunking_mode'),
                 'metadata': doc_data.get('metadata', {}),
                 'pipeline_snapshot': doc_data.get('pipeline_snapshot')
             })
@@ -271,6 +286,8 @@ class DocumentTracker:
                     'file_size': doc_data.get('file_size', 0),
                     'ingested_at': doc_data.get('ingested_at', ''),
                     'file_hash': doc_data.get('file_hash', ''),
+                    'status': doc_data.get('status', 'indexed'),
+                    'chunking_mode': doc_data.get('chunking_mode'),
                     'metadata': doc_data.get('metadata', {}),
                     'pipeline_snapshot': doc_data.get('pipeline_snapshot')
                 }

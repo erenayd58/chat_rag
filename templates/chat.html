@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Chat · RAG Console{% endblock %}
+
+{% block content %}
+<div class="chat-layout">
+    <div class="chat-topbar">
+        <label for="kbSelect" style="font-size:13px; font-weight:550; color:var(--text-2);">Knowledge Base</label>
+        <select class="select" id="kbSelect" style="width:260px;"></select>
+        <span style="flex:1;"></span>
+        <button class="btn btn-ghost btn-sm" id="clearBtn">Clear conversation</button>
+    </div>
+
+    <div class="chat-scroll" id="chatScroll">
+        <div class="chat-thread" id="chatThread">
+            <div class="empty-state" id="chatEmpty">
+                <h3>Ask your documents</h3>
+                <p>Select a knowledge base above and ask a question. Answers cite the document sections they are based on.</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="chat-composer">
+        <div class="composer-inner">
+            <div class="composer-row">
+                <input class="input" id="queryInput" type="text" placeholder="Ask a question about the documents in this knowledge base…" disabled>
+                <button class="btn btn-primary" id="sendBtn" disabled>Send</button>
+            </div>
+            <div class="composer-hint" id="composerHint">Select a knowledge base to start.</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/chat.js') }}"></script>
+{% endblock %}

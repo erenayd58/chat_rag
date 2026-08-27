@@ -12,7 +12,7 @@ os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 os.environ.setdefault('MKL_NUM_THREADS', '1')
 os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
 
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify, session, redirect
 from flask_cors import CORS
 import uuid
 from datetime import datetime
@@ -92,14 +92,40 @@ def get_pipeline(session_id: str, kb_id: str = None) -> RAGPipeline:
     return pipelines[key]
 
 
-@app.route('/')
-def index():
-    """Home page"""
-    # Create session ID if not exists
+def _ensure_session():
+    """Create the per-browser session id used to cache pipelines."""
     if 'session_id' not in session:
         session['session_id'] = str(uuid.uuid4())
-    
-    return render_template('index.html')
+
+
+@app.route('/')
+def kb_list_page():
+    """Knowledge Bases: the product landing page."""
+    _ensure_session()
+    return render_template('kb_list.html', active_nav='kb')
+
+
+@app.route('/kb/<kb_id>')
+def kb_detail_page(kb_id):
+    """Knowledge base detail: Overview | Documents | Settings."""
+    _ensure_session()
+    if not kb_manager.get(kb_id):
+        return redirect('/')
+    return render_template('kb_detail.html', active_nav='kb', kb_id=kb_id)
+
+
+@app.route('/chat')
+def chat_page():
+    """Conversational QA over a selected knowledge base."""
+    _ensure_session()
+    return render_template('chat.html', active_nav='chat')
+
+
+@app.route('/lab')
+def lab_page():
+    """Technical tools: retrieval quality review, chunk and parser views."""
+    _ensure_session()
+    return render_template('lab.html', active_nav='lab')
 
 
 @app.route('/api/query', methods=['POST'])
@@ -237,18 +263,16 @@ def health_check():
     })
 
 
+# Legacy route redirects: the old documents screen became the KB detail
+# pages, and the old chunk screen lives in the Lab now.
 @app.route('/documents')
 def documents_page():
-    """Documents management page"""
-    return render_template('documents.html')
+    return redirect('/')
 
 
-# Legacy route redirect
 @app.route('/chunks')
 def chunks_page():
-    """Redirect to documents page"""
-    from flask import redirect
-    return redirect('/documents')
+    return redirect('/lab')
 
 
 @app.route('/api/chunks', methods=['GET'])
@@ -688,6 +712,54 @@ def create_kb():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/kb/<kb_id>', methods=['GET'])
+def get_kb(kb_id):
+    """Single knowledge base record, as the detail page reads it."""
+    try:
+        kb = kb_manager.get(kb_id)
+        if not kb:
+            return jsonify({'success': False, 'error': 'Knowledge base not found'}), 404
+        return jsonify({'success': True, 'kb': {'kb_id': kb_id, **kb}})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/kb/<kb_id>', methods=['PUT'])
+def update_kb(kb_id):
+    """Update the presentation fields of a knowledge base.
+
+    Only `name` and `extra` are accepted: chunker, embedding model and
+    storage are fixed at creation because the ingested corpus depends on
+    them.
+    """
+    try:
+        if not kb_manager.get(kb_id):
+            return jsonify({'success': False, 'error': 'Knowledge base not found'}), 404
+        data = request.json or {}
+        updates = {}
+        if 'name' in data:
+            name = str(data.get('name') or '').strip()
+            if not name:
+                return jsonify({'success': False, 'error': 'name is required'}), 400
+            existing = kb_manager.find_by_name(name)
+            if existing is not None and existing != kb_id:
+                return jsonify({
+                    'success': False,
+                    'error': f'A knowledge base named {name!r} already exists'
+                }), 400
+            updates['name'] = name
+        if 'extra' in data:
+            if not isinstance(data['extra'], dict):
+                return jsonify({'success': False, 'error': 'extra must be an object'}), 400
+            updates['extra'] = data['extra']
+        if not updates:
+            return jsonify({'success': False, 'error': 'Nothing to update'}), 400
+        kb = kb_manager.update(kb_id, updates)
+        return jsonify({'success': True, 'kb': kb})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 def _release_vector_store_handles(kb_id: str) -> None:
     """Close and forget every cached pipeline for this knowledge base.
 
@@ -1074,7 +1146,24 @@ def upload_document():
                     'success': False,
                     'error': f'Knowledge base "{kb_id}" not found'
                 }), 404
-            
+
+            # Ingest-time chunking mode. Deep Analysis (structure candidates
+            # judged by a backend LLM Boundary Judge) is a per-document,
+            # ingest-only decision — never a query-time toggle. The judge is
+            # not integrated yet, so the flag is refused honestly instead of
+            # silently falling back to Standard.
+            deep_raw = (request.form.get('deep_analysis') or 'false').strip().lower()
+            deep_analysis = deep_raw in {'1', 'true', 'yes', 'on'}
+            if deep_analysis:
+                return jsonify({
+                    'success': False,
+                    'deep_analysis_unavailable': True,
+                    'error': ('Deep Analysis is not available yet: the LLM '
+                              'Boundary Judge integration is pending. Upload '
+                              'the document with the Standard mode.')
+                }), 501
+            chunking_mode = 'standard'
+
             user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
             chunks = user_pipeline.ingest_document_from_file(
                 file_path=temp_path,
@@ -1094,19 +1183,32 @@ def upload_document():
             # records the document, so a failed ingest leaves neither. Read
             # back by `python -m cli report/inspect`, which otherwise can only
             # describe today's configuration rather than the one that ran.
+            pipeline_snapshot = capture_pipeline_snapshot(
+                user_pipeline, kb, kb_id=kb_id,
+                storage_path=kb_manager.storage_path(kb_id),
+            )
+            if pipeline_snapshot is not None:
+                # Record the per-document ingest decision next to the
+                # pipeline facts, so the CLI can tell which mode produced
+                # this corpus.
+                pipeline_snapshot['ingest_options'] = {
+                    'chunking_mode': chunking_mode,
+                    'deep_analysis': deep_analysis,
+                }
+
             tracker.mark_as_ingested(
                 file_path=temp_path,
                 doc_id=doc_id,
                 chunk_count=len(chunks),
                 metadata={
                     'original_filename': file.filename,
-                    'upload_source': 'web_interface'
+                    'upload_source': 'web_interface',
+                    'chunking_mode': chunking_mode,
                 },
                 kb_id=kb_id,
-                pipeline_snapshot=capture_pipeline_snapshot(
-                    user_pipeline, kb, kb_id=kb_id,
-                    storage_path=kb_manager.storage_path(kb_id),
-                )
+                pipeline_snapshot=pipeline_snapshot,
+                status='indexed',
+                chunking_mode=chunking_mode,
             )
 
             logger.info(f"Document processed successfully: {len(chunks)} chunks created")

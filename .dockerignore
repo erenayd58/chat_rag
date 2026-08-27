@@ -33,3 +33,7 @@ artifacts/reports/
 .idea/
 documents/
 examples/
+
+# Local virtual environments must never enter an image layer.
+venv/
+.venv/

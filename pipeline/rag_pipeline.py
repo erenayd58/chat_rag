@@ -2,6 +2,7 @@
 """
 Main RAG pipeline orchestrator
 """
+import json
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
@@ -27,6 +28,24 @@ from core.exceptions import RAGException
 from utils.logger import get_logger, RAGLogger
 
 logger = get_logger("RAGPipeline")
+
+
+def _source_pages(metadata: Optional[Dict[str, Any]]) -> Optional[List[Any]]:
+    """Page numbers a chunk spans, read from whichever metadata key the
+    active chunker wrote. Purely presentational: used only to label the
+    sources returned with an answer."""
+    md = metadata or {}
+    try:
+        pages = json.loads(md.get('pages_json') or '[]')
+        if pages:
+            return pages
+    except (TypeError, ValueError):
+        pass
+    for key in ('page', 'page_number', 'page_start'):
+        value = md.get(key)
+        if value not in (None, ''):
+            return [value]
+    return None
 
 
 class RAGPipeline:
@@ -1053,7 +1072,9 @@ Please provide a clear and accurate answer based on the context provided above."
         for result in retrieval_results:
             sources.append({
                 'document': result.chunk.doc_title,
+                'doc_id': result.chunk.doc_id,
                 'section': result.chunk.section_title,
+                'pages': _source_pages(result.chunk.metadata),
                 'score': result.score,
                 'content_preview': result.chunk.content[:200] + '...' if len(result.chunk.content) > 200 else result.chunk.content
             })
