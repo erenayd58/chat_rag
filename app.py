@@ -1203,7 +1203,7 @@ def upload_document():
             # Model id, counts and per-candidate decisions — never prompts,
             # never keys.
             judge_report = getattr(user_pipeline, 'last_deep_analysis_report', None)
-            # The same report without its two per-candidate lists, for places
+            # The same report without its per-candidate lists, for places
             # that want the summary rather than a second copy of the detail.
             judge_summary = judge_report
             if judge_summary is not None:
@@ -1215,7 +1215,7 @@ def upload_document():
                 if isinstance(guard, dict):
                     judge_summary['structural_guard'] = {
                         key: value for key, value in guard.items()
-                        if key != 'blocked_candidates'
+                        if key not in ('blocked_candidates', 'contract_violations')
                     }
 
             pipeline_snapshot = capture_pipeline_snapshot(

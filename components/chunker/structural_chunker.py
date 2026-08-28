@@ -115,9 +115,10 @@ class StructuralChunker(BaseChunker):
 
         The judge is wrapped in :class:`StructurallyGuardedJudge`, which
         refuses structurally unsafe candidates (inside a list, straight after
-        a heading) so the model can only choose among the remaining ones. The
-        guard narrows choices and never widens them, so the walk's structural
-        cut and its token budget are untouched.
+        a heading) so the model can only choose among the remaining ones, and
+        refuses a whole window whose answer pairs a decision with a reason
+        code that contradicts it. The guard narrows choices and never widens
+        them, so the walk's structural cut and its token budget are untouched.
 
         Returns the chunks plus a document-level report (judge model, call
         and decision counts, per-step fallbacks, what the guard refused, and
@@ -176,11 +177,14 @@ class StructuralChunker(BaseChunker):
             "structural_guard": {
                 **guarded.report(),
                 "blocked_candidates": guarded.blocked_candidates,
+                "contract_violations": guarded.contract_violations,
             },
             # The decisions the model actually returned, per candidate, as
-            # amsc recorded them. Prompts are never included, so nothing here
-            # can carry document text or credentials.
-            "decisions": audit_rows(result),
+            # amsc recorded them, with the fallback reason restated on the
+            # windows the guard refused for a decision/reason_code conflict.
+            # Prompts are never included, so nothing here can carry document
+            # text or credentials.
+            "decisions": guarded.relabel_audit_rows(audit_rows(result)),
         }
         chunks = self._rows_to_chunks(
             result.chunks,

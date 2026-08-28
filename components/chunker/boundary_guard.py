@@ -8,6 +8,12 @@ introduces. This guard narrows what the judge can *choose*, using only
 metadata the canonical stream already carries -- unit type and unit identity.
 No text is inspected and no new heuristic is invented.
 
+The same wrapper also holds the answer to its own contract. A window answer
+whose ``decision`` and ``reason_code`` contradict each other -- ``SPLIT`` with
+``LIST_CONTINUATION``, ``KEEP`` with ``NEW_SUBTOPIC`` -- is not a usable
+answer even though it parses, so the whole window is refused and the walk
+falls back to its structural cut. See :func:`reason_code_conflict`.
+
 How the narrowing works. The guard wraps the judge model rather than the
 algorithm: for each decision window it reads the candidate markers out of the
 prompt amsc built, decides which candidates are structurally unsafe, and
@@ -43,6 +49,13 @@ import re
 from collections import Counter
 from typing import Any, Iterable, Sequence
 
+from amsc.llm_boundary_judge import (
+    DECISION_KEEP,
+    DECISION_SPLIT,
+    REASON_CODES,
+    _payload_rows,
+)
+
 # The markers amsc's window prompt writes. Kept strict: an unknown shape
 # means the guard steps aside rather than filtering on a guess.
 _CANDIDATE_LINE = re.compile(r"^\[CANDIDATE (C\d+) \| cut before (\w+) (\S+)\]$")
@@ -54,6 +67,28 @@ _KNOWN_KINDS = {"heading", "paragraph", "list", "table", "visual", "unknown"}
 RULE_LIST_ITEM_RUN = "list_item_run"
 RULE_LIST_FRAGMENTS = "list_item_fragments"
 RULE_HEADING_ORPHAN = "heading_orphan"
+
+#: The fallback label a window refused for a decision/reason_code conflict
+#: carries in the audit. Deliberately distinct from the walk's own
+#: ``parse_error`` (the answer parsed fine) and ``provider_error`` (the
+#: provider answered).
+SEMANTIC_CONTRACT_VIOLATION = "semantic_contract_violation"
+
+#: Which reason codes may accompany which decision. Codes that argue for
+#: continuity belong to KEEP, codes that name a change belong to SPLIT, and
+#: ``OTHER`` carries no direction so it fits either -- the window prompt
+#: offers it, and this guard's own short-circuit answer uses it.
+KEEP_REASON_CODES = frozenset({"CONTINUATION", "LIST_CONTINUATION", "TABLE_CONTINUATION"})
+SPLIT_REASON_CODES = frozenset({"NEW_SUBTOPIC", "TOPIC_SHIFT"})
+NEUTRAL_REASON_CODES = frozenset({"OTHER"})
+
+#: What a refused window is answered with. Free of brackets and braces so
+#: amsc's payload extractor finds no JSON in it and the walk falls back;
+#: which windows this happened to is recorded here, not inferred from it.
+REFUSAL_SENTINEL = (
+    "REFUSED semantic_contract_violation: a decision was paired with a "
+    "reason_code that contradicts it."
+)
 
 
 def base_unit_id(unit_id: str) -> str:
@@ -92,6 +127,61 @@ def unsafe_reason(
         return RULE_HEADING_ORPHAN
 
     return None
+
+
+def reason_code_conflict(decision: str, reason_code: Any) -> str | None:
+    """Why this ``(decision, reason_code)`` pair is incoherent, or None.
+
+    Two ways to break the contract: naming a reason code outside the audit
+    vocabulary, and naming one that argues against the decision it is
+    attached to. A decision outside ``SPLIT``/``KEEP`` is *not* judged here --
+    the walk's own parser refuses that as a parse error, and relabelling it
+    would misreport what went wrong.
+    """
+    decision = str(decision or "").strip().upper()
+    if decision not in (DECISION_SPLIT, DECISION_KEEP):
+        return None
+    reason = str(reason_code or "").strip().upper()
+    if reason not in REASON_CODES:
+        return f"reason_code {reason or '(missing)'} is outside the audit vocabulary"
+    if reason in NEUTRAL_REASON_CODES:
+        return None
+    allowed = KEEP_REASON_CODES if decision == DECISION_KEEP else SPLIT_REASON_CODES
+    if reason in allowed:
+        return None
+    return f"{decision} contradicts reason_code {reason}"
+
+
+def contract_violations(raw: str) -> list[dict[str, str]] | None:
+    """The decisions in this answer whose reason code contradicts them.
+
+    ``[]`` when every pair is coherent. ``None`` when the answer is not the
+    shape the walk reads at all -- that is a parse error and belongs to the
+    walk, not here. The answer is extracted exactly the way amsc extracts it,
+    so this sees precisely what the walk would have acted on.
+    """
+    try:
+        rows = _payload_rows(raw)
+    except Exception:  # pragma: no cover - the extractor is total in practice
+        return None
+    if not isinstance(rows, list):
+        return None
+    found: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        decision = str(row.get("decision", "")).strip().upper()
+        if decision not in (DECISION_SPLIT, DECISION_KEEP):
+            return None
+        conflict = reason_code_conflict(decision, row.get("reason_code"))
+        if conflict:
+            found.append({
+                "candidate_id": str(row.get("candidate_id", "")).strip(),
+                "decision": decision,
+                "reason_code": str(row.get("reason_code", "")).strip().upper(),
+                "conflict": conflict,
+            })
+    return found
 
 
 def parse_window_candidates(prompt: str) -> list[tuple[str, str, str]] | None:
@@ -145,12 +235,18 @@ class StructurallyGuardedJudge:
         }
         self.windows_seen = 0
         self.windows_short_circuited = 0
+        self.windows_refused_semantic = 0
         self.network_calls = 0
         self.candidates_seen = 0
         self.candidates_blocked = 0
         self.unparsed_prompts = 0
         self.blocked_by_rule: Counter[str] = Counter()
         self.blocked_candidates: list[dict[str, str]] = []
+        self.contract_violations: list[dict[str, Any]] = []
+        #: Window ordinal -> the violations that refused it. The ordinal is
+        #: the walk's own step number: the walk calls ``complete`` exactly
+        #: once per consulted window, in step order.
+        self.violations_by_step: dict[int, list[dict[str, Any]]] = {}
 
     @property
     def model_id(self) -> str | None:
@@ -192,9 +288,52 @@ class StructurallyGuardedJudge:
 
         self.network_calls += 1
         raw = self._inner.complete(prompt)
+
+        # The model's own answer is held to the contract before the guard's
+        # overrides touch it: forcing a candidate to KEEP is this guard's
+        # doing, not the model's, and must not read as the model's fault.
+        violations = contract_violations(raw)
+        if violations:
+            self._record_violations(violations, candidates)
+            return REFUSAL_SENTINEL
+
         if not blocked:
             return raw
         return self._force_keep(raw, blocked)
+
+    def _record_violations(
+        self,
+        violations: list[dict[str, Any]],
+        candidates: Sequence[tuple[str, str, str]],
+    ) -> None:
+        """Note which window broke the contract, and where."""
+        self.windows_refused_semantic += 1
+        positions = {label: (before, after) for label, before, after in candidates}
+        step = self.windows_seen
+        for item in violations:
+            before, after = positions.get(item["candidate_id"], (None, None))
+            item["step"] = step
+            item["cut_after_unit_id"] = before
+            item["cut_before_unit_id"] = after
+        self.contract_violations.extend(violations)
+        self.violations_by_step[step] = violations
+
+    def relabel_audit_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Restate the fallback reason on windows refused for a conflict.
+
+        The walk sees only that the refusal sentinel does not parse, so it
+        writes ``parse_error``; this guard knows the real reason and says so.
+        A row whose fallback is anything else is left alone: the step mapping
+        would no longer hold, and guessing would be the very mislabelling
+        this exists to remove.
+        """
+        for row in rows:
+            found = self.violations_by_step.get(row.get("step"))
+            if not found or row.get("fallback") != "parse_error":
+                continue
+            row["fallback"] = SEMANTIC_CONTRACT_VIOLATION
+            row["contract_violations"] = found
+        return rows
 
     @staticmethod
     def _force_keep(raw: str, blocked: dict[str, str]) -> str:
@@ -205,12 +344,7 @@ class StructurallyGuardedJudge:
         The reason codes stay as the model wrote them; which candidates were
         overridden is recorded separately rather than disguised here.
         """
-        try:
-            rows = json.loads(raw)
-        except (TypeError, ValueError):
-            return raw
-        if isinstance(rows, dict):
-            rows = rows.get("decisions")
+        rows = _payload_rows(raw)
         if not isinstance(rows, list):
             return raw
         out: list[Any] = []
@@ -233,4 +367,6 @@ class StructurallyGuardedJudge:
             "candidates_blocked": self.candidates_blocked,
             "blocked_by_rule": dict(self.blocked_by_rule),
             "unparsed_prompts": self.unparsed_prompts,
+            "windows_refused_semantic": self.windows_refused_semantic,
+            "contract_violation_count": len(self.contract_violations),
         }

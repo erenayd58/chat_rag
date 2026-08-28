@@ -15,18 +15,27 @@ import re
 import pytest
 
 from amsc.llm_boundary_judge import (
+    REASON_CODES,
     JudgeConfig,
     build_window_prompt,
     chunk_units_with_judge,
+    parse_window_decisions,
 )
 from amsc.structural_chunker import chunk_units
 from amsc.tokenization import TiktokenTokenCounter
 from components.chunker.boundary_guard import (
+    KEEP_REASON_CODES,
+    NEUTRAL_REASON_CODES,
+    REFUSAL_SENTINEL,
     RULE_HEADING_ORPHAN,
     RULE_LIST_FRAGMENTS,
     RULE_LIST_ITEM_RUN,
+    SEMANTIC_CONTRACT_VIOLATION,
+    SPLIT_REASON_CODES,
     StructurallyGuardedJudge,
+    contract_violations,
     parse_window_candidates,
+    reason_code_conflict,
     unsafe_reason,
 )
 from components.chunker.normalization_adapter import CanonicalUnitAdapter
@@ -211,6 +220,125 @@ def test_the_guard_report_carries_no_prompt_text():
     blob = json.dumps({**guard.report(), "blocked": guard.blocked_candidates})
     assert "metni" not in blob  # no document text
     assert "CANDIDATE" not in blob  # no prompt fragments
+
+
+# --------------------------------------------------------- semantic contract
+def answer(*pairs):
+    """A window answer: one ``(decision, reason_code)`` per candidate."""
+    return json.dumps([
+        {"candidate_id": f"C{index}", "decision": decision, "reason_code": reason}
+        for index, (decision, reason) in enumerate(pairs, start=1)
+    ])
+
+
+@pytest.mark.parametrize("decision, reason", [
+    ("SPLIT", "LIST_CONTINUATION"),
+    ("SPLIT", "CONTINUATION"),
+    ("SPLIT", "TABLE_CONTINUATION"),
+    ("KEEP", "NEW_SUBTOPIC"),
+    ("KEEP", "TOPIC_SHIFT"),
+])
+def test_a_reason_code_that_contradicts_its_decision_is_refused(decision, reason):
+    assert reason_code_conflict(decision, reason) is not None
+    found = contract_violations(answer((decision, reason)))
+    assert [(v["decision"], v["reason_code"]) for v in found] == [(decision, reason)]
+
+
+@pytest.mark.parametrize("decision, reason", [
+    ("KEEP", "CONTINUATION"),
+    ("KEEP", "LIST_CONTINUATION"),
+    ("SPLIT", "NEW_SUBTOPIC"),
+    ("SPLIT", "TOPIC_SHIFT"),
+])
+def test_the_four_coherent_combinations_are_accepted(decision, reason):
+    assert reason_code_conflict(decision, reason) is None
+    assert contract_violations(answer((decision, reason))) == []
+
+
+def test_a_neutral_reason_code_fits_either_decision():
+    """``OTHER`` names no direction -- the window prompt offers it, and the
+    guard's own short-circuit answer uses it."""
+    assert contract_violations(answer(("SPLIT", "OTHER"), ("KEEP", "OTHER"))) == []
+
+
+def test_a_reason_code_outside_the_vocabulary_is_refused():
+    """The walk would quietly rewrite an unknown code to OTHER; here it is a
+    refusal, so the audit never records a reason the model did not give."""
+    assert contract_violations(answer(("SPLIT", "VIBES"))) != []
+    assert contract_violations(answer(("KEEP", "")))[0]["reason_code"] == ""
+
+
+def test_the_vocabulary_split_covers_every_reason_code_amsc_defines():
+    """A pin bump that adds a reason code must fail here rather than silently
+    turning that code into a refusal in production."""
+    assert (
+        KEEP_REASON_CODES | SPLIT_REASON_CODES | NEUTRAL_REASON_CODES
+        == set(REASON_CODES)
+    )
+    assert not KEEP_REASON_CODES & SPLIT_REASON_CODES
+
+
+def test_a_malformed_answer_stays_the_walks_parse_error():
+    """Only the walk classifies what it cannot read; this must not dress a
+    parse error up as a contract violation."""
+    assert contract_violations("definitely not json") is None
+    assert contract_violations(answer(("MAYBE", "OTHER"))) is None
+    assert contract_violations('[{"candidate_id": "C1"}]') is None
+
+
+def test_a_fenced_answer_is_read_the_way_the_walk_reads_it():
+    raw = '```json\n' + answer(("SPLIT", "CONTINUATION")) + '\n```'
+    assert parse_window_decisions(raw, ["C1"]) is not None  # the walk accepts it
+    assert contract_violations(raw) != []  # so the guard must inspect it too
+
+
+class ContradictingJudge:
+    """Answers SPLIT everywhere, with a KEEP-side reason on one window."""
+
+    model_id = "contradicting"
+
+    def __init__(self, bad_window=1, reason="LIST_CONTINUATION"):
+        self.bad_window = bad_window
+        self.reason = reason
+        self.prompts = []
+
+    def complete(self, prompt):
+        self.prompts.append(prompt)
+        ids = CANDIDATE_MARKER.findall(prompt)
+        reason = self.reason if len(self.prompts) == self.bad_window else "TOPIC_SHIFT"
+        return json.dumps([
+            {"candidate_id": c, "decision": "SPLIT", "reason_code": reason}
+            for c in ids
+        ])
+
+
+def test_a_contradicting_window_is_refused_instead_of_acted_on():
+    guard = StructurallyGuardedJudge(ContradictingJudge(), UNITS)
+    refused = guard.complete(window_prompt(["p-1", "p-2", "p-3"], [1, 2]))
+    assert refused == REFUSAL_SENTINEL
+    assert parse_window_decisions(refused, ["C1", "C2"]) is None, (
+        "the refusal must reach the walk's fallback, not a decision"
+    )
+    assert guard.windows_refused_semantic == 1
+    assert guard.report()["contract_violation_count"] == 2
+
+
+def test_the_guards_own_forced_keep_is_not_a_contract_violation():
+    """Forcing a refused candidate to KEEP is the guard's doing, so the
+    model's SPLIT-side reason code on that row must not be held against it."""
+    inner = RecordingJudge("SPLIT")  # SPLIT + TOPIC_SHIFT: coherent
+    guard = StructurallyGuardedJudge(inner, UNITS)
+    result = guard.complete(window_prompt(["p-1", "l-1", "l-2", "p-2"], [1, 2, 3]))
+    assert decisions_of(result) == {"C1": "SPLIT", "C2": "KEEP", "C3": "SPLIT"}
+    assert guard.windows_refused_semantic == 0
+
+
+def test_a_refused_window_still_costs_exactly_one_provider_call():
+    judge = ContradictingJudge()
+    guard = StructurallyGuardedJudge(judge, UNITS)
+    guard.complete(window_prompt(["p-1", "p-2", "p-3"], [1, 2]))
+    assert len(judge.prompts) == 1
+    assert guard.network_calls == 1
 
 
 # ------------------------------------------------- end to end through ingest
@@ -408,3 +536,70 @@ def test_per_candidate_decisions_are_persisted_in_the_report():
     blob = json.dumps(report)
     assert "CANDIDATE" not in blob  # no prompt was persisted
     assert "Authorization" not in blob and "api_key" not in blob.lower()
+
+
+# ------------------------------- semantic contract, end to end through ingest
+def deep_with(judge):
+    rows = list_heavy_document()
+    chunker = StructuralChunker()
+    deep, report = chunker.chunk_text_deep(
+        "", "doc", "rapor.pdf", judge=judge, parsed_units=rows
+    )
+    return deep, report
+
+
+def test_a_contradicting_window_falls_back_to_the_structural_cut():
+    judge = ContradictingJudge(bad_window=1)
+    deep, report = deep_with(judge)
+    standard = StructuralChunker().chunk_text(
+        "", "doc", "rapor.pdf", parsed_units=list_heavy_document()
+    )
+    refused = report["decisions"][0]
+
+    assert refused["decisions"] == [], "a refused answer must not reach the audit"
+    assert refused["chosen_equals_greedy"] is True, "the safe fallback is the cut"
+    assert report["fallback_count"] >= 1
+    assert all(c.metadata["token_count"] <= HARD_MAX_TOKENS for c in deep)
+    # The first window is the only one refused, so the first cut is Standard's.
+    assert boundaries_of(deep)[0] == boundaries_of(standard)[0]
+
+
+def test_the_audit_names_the_violation_rather_than_a_parse_error():
+    judge = ContradictingJudge(bad_window=1)
+    _, report = deep_with(judge)
+    refused = report["decisions"][0]
+
+    assert refused["fallback"] == SEMANTIC_CONTRACT_VIOLATION
+    assert refused["fallback"] not in ("parse_error", "provider_error")
+    assert [
+        (v["decision"], v["reason_code"]) for v in refused["contract_violations"]
+    ] == [("SPLIT", "LIST_CONTINUATION")] * refused["candidate_count"]
+    assert all(
+        violation["cut_after_unit_id"] and violation["cut_before_unit_id"]
+        for violation in refused["contract_violations"]
+    )
+
+    guard = report["structural_guard"]
+    assert guard["windows_refused_semantic"] == 1
+    assert guard["contract_violation_count"] == refused["candidate_count"]
+
+
+def test_only_the_offending_window_is_refused():
+    """A conflict abandons its own window, never the rest of the document."""
+    judge = ContradictingJudge(bad_window=2)
+    _, report = deep_with(judge)
+    if report["consulted_boundary_count"] < 2:
+        pytest.skip("fixture produced a single window")
+    labels = [row["fallback"] for row in report["decisions"]]
+    assert labels.count(SEMANTIC_CONTRACT_VIOLATION) == 1
+    assert report["decisions"][1]["fallback"] == SEMANTIC_CONTRACT_VIOLATION
+    assert report["decisions"][0]["decisions"], "other windows still decide"
+
+
+def test_a_coherent_run_is_never_relabelled():
+    _, report = deep_with(AlwaysSplitJudge())  # SPLIT + TOPIC_SHIFT throughout
+    assert report["structural_guard"]["windows_refused_semantic"] == 0
+    assert report["structural_guard"]["contract_violations"] == []
+    assert all(
+        row["fallback"] != SEMANTIC_CONTRACT_VIOLATION for row in report["decisions"]
+    )
