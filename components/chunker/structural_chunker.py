@@ -113,16 +113,27 @@ class StructuralChunker(BaseChunker):
         """Deep Analysis: the same structural walk, with the LLM boundary
         judge consulted at plain budget cuts that offer a real choice.
 
+        The judge is wrapped in :class:`StructurallyGuardedJudge`, which
+        refuses structurally unsafe candidates (inside a list, straight after
+        a heading) so the model can only choose among the remaining ones. The
+        guard narrows choices and never widens them, so the walk's structural
+        cut and its token budget are untouched.
+
         Returns the chunks plus a document-level report (judge model, call
-        and decision counts, per-step fallbacks). ``chunk_text`` above stays
-        the untouched Standard path; with an all-KEEP judge or none at all
-        the amsc walk is pinned byte-identical to ``chunk_units``.
+        and decision counts, per-step fallbacks, what the guard refused, and
+        the per-candidate decisions the model actually returned).
+        ``chunk_text`` above stays the untouched Standard path; with an
+        all-KEEP judge or none at all the amsc walk is pinned byte-identical
+        to ``chunk_units``.
         """
         from amsc.llm_boundary_judge import (
             JudgeConfig,
             ProductChunkingMode,
+            audit_rows,
             chunk_with_product_mode,
         )
+
+        from .boundary_guard import StructurallyGuardedJudge
 
         units = self._adapter.normalize(
             text=text,
@@ -130,12 +141,13 @@ class StructuralChunker(BaseChunker):
             parsed_units=kwargs.get("parsed_units"),
             parser_metadata=kwargs.get("parser_metadata"),
         )
+        guarded = StructurallyGuardedJudge(judge, units)
         try:
             result = chunk_with_product_mode(
                 units,
                 counter=self._counter,
                 mode=ProductChunkingMode.DEEP_ANALYSIS,
-                judge=judge,
+                judge=guarded,
                 config=JudgeConfig(
                     min_tokens=MIN_TOKENS,
                     target_tokens=TARGET_TOKENS,
@@ -159,6 +171,16 @@ class StructuralChunker(BaseChunker):
             "fallback_count": diagnostics.get("fallback_count"),
             "changed_from_greedy_count": diagnostics.get("changed_from_greedy_count"),
             "tuning_status": diagnostics.get("tuning_status"),
+            # What the structural guard refused, and which candidates it
+            # refused. Counts and unit ids only.
+            "structural_guard": {
+                **guarded.report(),
+                "blocked_candidates": guarded.blocked_candidates,
+            },
+            # The decisions the model actually returned, per candidate, as
+            # amsc recorded them. Prompts are never included, so nothing here
+            # can carry document text or credentials.
+            "decisions": audit_rows(result),
         }
         chunks = self._rows_to_chunks(
             result.chunks,

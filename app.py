@@ -1200,8 +1200,23 @@ def upload_document():
             # back by `python -m cli report/inspect`, which otherwise can only
             # describe today's configuration rather than the one that ran.
             # The judge's report for this ingest (None on the Standard path).
-            # Counts and the model id only — never prompts, never keys.
+            # Model id, counts and per-candidate decisions — never prompts,
+            # never keys.
             judge_report = getattr(user_pipeline, 'last_deep_analysis_report', None)
+            # The same report without its two per-candidate lists, for places
+            # that want the summary rather than a second copy of the detail.
+            judge_summary = judge_report
+            if judge_summary is not None:
+                judge_summary = {
+                    key: value for key, value in judge_report.items()
+                    if key != 'decisions'
+                }
+                guard = judge_summary.get('structural_guard')
+                if isinstance(guard, dict):
+                    judge_summary['structural_guard'] = {
+                        key: value for key, value in guard.items()
+                        if key != 'blocked_candidates'
+                    }
 
             pipeline_snapshot = capture_pipeline_snapshot(
                 user_pipeline, kb, kb_id=kb_id,
@@ -1210,11 +1225,13 @@ def upload_document():
             if pipeline_snapshot is not None:
                 # Record the per-document ingest decision next to the
                 # pipeline facts, so the CLI can tell which mode produced
-                # this corpus.
+                # this corpus. The snapshot keeps the counts; the
+                # per-candidate decisions live once, in the document
+                # metadata below, rather than being copied into both.
                 pipeline_snapshot['ingest_options'] = {
                     'chunking_mode': chunking_mode,
                     'deep_analysis': deep_analysis,
-                    'boundary_judge': judge_report,
+                    'boundary_judge': judge_summary,
                 }
 
             doc_metadata = {
@@ -1245,7 +1262,9 @@ def upload_document():
                 'chunks_created': len(chunks),
                 'filename': file.filename,
                 'chunking_mode': chunking_mode,
-                'boundary_judge': judge_report
+                # The summary, not the per-candidate detail: the browser only
+                # shows counts, and the detail is on the document record.
+                'boundary_judge': judge_summary
             })
 
         except Exception as e:
