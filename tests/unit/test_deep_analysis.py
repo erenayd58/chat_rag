@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 
 import pytest
 
@@ -57,24 +58,55 @@ def oversized_document():
     return rows
 
 
+# The v2 window contract: candidate ids are read from the prompt's own
+# ``[CANDIDATE Cn | cut before ...]`` markers, never hardcoded, so a drift
+# in the marker format fails these tests instead of being papered over.
+CANDIDATE_MARKER = re.compile(r"\[CANDIDATE (C\d+) \|")
+
+
 class ScriptedJudge:
-    """A judge double: fixed or per-call answers, every prompt recorded."""
+    """A v2 judge double: one JSON array per window, decisions scripted by
+    ``decide(window_number, candidate_index, candidate_id)``."""
 
     model_id = "stub-judge-v1"
 
-    def __init__(self, answers):
+    def __init__(self, decide=None):
         self.prompts = []
-        self._answers = answers
+        self.candidates_seen = 0
+        self._decide = decide or (lambda window, index, cid: "KEEP")
 
     def complete(self, prompt: str) -> str:
         self.prompts.append(prompt)
-        if callable(self._answers):
-            return self._answers(len(self.prompts))
-        return self._answers
+        candidate_ids = CANDIDATE_MARKER.findall(prompt)
+        assert candidate_ids, "a window prompt must mark its candidates"
+        self.candidates_seen += len(candidate_ids)
+        return json.dumps([
+            {
+                "candidate_id": cid,
+                "decision": self._decide(len(self.prompts), index, cid),
+                "reason_code": "OTHER",
+            }
+            for index, cid in enumerate(candidate_ids)
+        ])
 
 
-def answer(decision, reason="OTHER"):
-    return json.dumps({"decision": decision, "reason_code": reason})
+class GarbageJudge:
+    model_id = "garbage-judge"
+
+    def complete(self, prompt: str) -> str:
+        return "not json at all"
+
+
+class WrongIdsJudge:
+    """Answers a well-formed array about candidates that do not exist —
+    the strict v2 parser must refuse the whole window."""
+
+    model_id = "wrong-ids-judge"
+
+    def complete(self, prompt: str) -> str:
+        return json.dumps(
+            [{"candidate_id": "C99", "decision": "SPLIT", "reason_code": "OTHER"}]
+        )
 
 
 class RaisingJudge:
@@ -96,26 +128,43 @@ def standard_and_deep(judge):
 
 # ------------------------------------------------------------ equivalence
 def test_the_fixture_actually_consults_the_judge():
-    judge = ScriptedJudge(answer("KEEP"))
+    judge = ScriptedJudge()
     _, _, report = standard_and_deep(judge)
     assert report["judge_call_count"] > 0
     assert report["consulted_boundary_count"] > 0
     assert judge.prompts, "the synthetic corpus must offer a real choice"
 
 
+def test_one_window_is_one_provider_call():
+    """The v2 batching: every decision window costs exactly one complete()."""
+    judge = ScriptedJudge()
+    _, _, report = standard_and_deep(judge)
+    assert len(judge.prompts) == report["consulted_boundary_count"]
+    assert report["judge_call_count"] == len(judge.prompts)
+    # A consulted window always offers a genuine choice: >= 2 candidates.
+    for prompt in judge.prompts:
+        assert len(CANDIDATE_MARKER.findall(prompt)) >= 2
+    # Candidate decisions stay counted per candidate, not per call.
+    assert judge.candidates_seen > len(judge.prompts)
+    assert report["split_votes"] + report["keep_votes"] == judge.candidates_seen
+
+
 def test_all_keep_matches_the_standard_output_and_the_hard_budget():
-    standard, deep, report = standard_and_deep(ScriptedJudge(answer("KEEP")))
+    judge = ScriptedJudge()
+    standard, deep, report = standard_and_deep(judge)
     assert [c.content for c in deep] == [c.content for c in standard]
-    assert report["keep_votes"] == report["judge_call_count"]
+    assert report["keep_votes"] == judge.candidates_seen
     assert report["split_votes"] == 0
     for chunk in deep:
         assert chunk.metadata["token_count"] <= HARD_MAX_TOKENS
 
 
 def test_a_split_vote_changes_the_cut():
-    # SPLIT only on the very first consulted candidate; the greedy cut sits
-    # at the last admissible position, so an early SPLIT must move it.
-    judge = ScriptedJudge(lambda call: answer("SPLIT" if call == 1 else "KEEP"))
+    # SPLIT only the first candidate of the first window; the greedy cut
+    # sits at the last admissible position, so an early SPLIT must move it.
+    judge = ScriptedJudge(
+        lambda window, index, cid: "SPLIT" if window == 1 and index == 0 else "KEEP"
+    )
     standard, deep, report = standard_and_deep(judge)
     assert report["split_votes"] >= 1
     assert report["changed_from_greedy_count"] >= 1
@@ -125,14 +174,14 @@ def test_a_split_vote_changes_the_cut():
 
 
 def test_deep_chunks_carry_their_mode_and_model_in_metadata():
-    _, deep, _ = standard_and_deep(ScriptedJudge(answer("KEEP")))
+    _, deep, _ = standard_and_deep(ScriptedJudge())
     for chunk in deep:
         assert chunk.metadata["chunking_mode"] == "deep_analysis"
         assert chunk.metadata["judge_model"] == "stub-judge-v1"
 
 
 def test_standard_chunks_carry_no_judge_metadata():
-    standard, _, _ = standard_and_deep(ScriptedJudge(answer("KEEP")))
+    standard, _, _ = standard_and_deep(ScriptedJudge())
     for chunk in standard:
         assert "chunking_mode" not in chunk.metadata
         assert "judge_model" not in chunk.metadata
@@ -140,9 +189,16 @@ def test_standard_chunks_carry_no_judge_metadata():
 
 # --------------------------------------------------------------- fallback
 def test_a_parse_error_falls_back_to_the_structural_cut():
-    standard, deep, report = standard_and_deep(ScriptedJudge("not json at all"))
+    standard, deep, report = standard_and_deep(GarbageJudge())
     assert [c.content for c in deep] == [c.content for c in standard]
     assert report["fallback_count"] >= 1
+
+
+def test_unknown_candidate_ids_refuse_the_whole_window():
+    standard, deep, report = standard_and_deep(WrongIdsJudge())
+    assert [c.content for c in deep] == [c.content for c in standard]
+    assert report["fallback_count"] >= 1
+    assert report["split_votes"] == 0, "a refused window steers nothing"
 
 
 def test_a_provider_error_falls_back_to_the_structural_cut():
@@ -153,7 +209,7 @@ def test_a_provider_error_falls_back_to_the_structural_cut():
 
 def test_the_report_never_contains_key_material(monkeypatch):
     monkeypatch.setenv("FAKE_JUDGE_KEY", "SECRET-SENTINEL-123")
-    _, deep, report = standard_and_deep(ScriptedJudge(answer("KEEP")))
+    _, deep, report = standard_and_deep(ScriptedJudge())
     serialized = json.dumps(report) + json.dumps(
         [chunk.metadata for chunk in deep]
     )
