@@ -593,9 +593,31 @@ kb_manager.delete(kb_id="abc12345")
 - Already processed documents are skipped (tracked in `.ingested_documents.json`)
 
 **Manual Ingestion (Web UI):**
-- Navigate to `/documents` page
-- Upload documents directly through the web interface
+- Open a knowledge base and use **Upload Document**
+- Choose the chunking mode per document: **Standard** or **Deep Analysis**
 - Documents are processed and indexed automatically
+
+**Chunking modes (chosen at upload, never at query time):**
+
+| Mode | What runs | When the model is unavailable |
+|---|---|---|
+| Standard | The frozen structure-first walk (`amsc.structural_chunker`). Fast, deterministic, no model. | — |
+| Deep Analysis | `amsc.deep_pipeline.chunk_document(mode="deep")`: the same structural walk, a backend LLM **proposer** (one bounded prompt per section that still has a choice), the deterministic **quality selector** (never worse than Standard on any smell type), the double-order **verifier** (a change is kept only when it wins in both orders) and the quality measurement. | The ingest still completes on the deterministic quality contract and the document is labelled with the pipeline status — never passed off as Standard. |
+
+Deep Analysis statuses, as recorded on the document and shown under the
+chunking badge: `ok` (quality checks passed), `deterministic` (LLM not
+requested), `fallback_no_provider` (model or key not configured),
+`fallback_provider_error` (every model call failed), `degraded` (some calls
+failed; those sections kept their deterministic result). The document's
+**Details** row shows quality before → after, model/verifier usage and the
+structural checks (hard token cap, coverage).
+
+Configuration is backend-only (`DEEP_ANALYSIS_MODEL`, `DEEP_ANALYSIS_ENDPOINT`,
+`DEEP_ANALYSIS_API_KEY_ENV`, `DEEP_ANALYSIS_VERIFY`, …; see `env.example`).
+Only the *name* of the key variable is configured; the key is read at request
+time by the provider and never stored, logged or written to provenance. Chat
+reads the chunks that were indexed at upload; no ingest model runs during a
+question.
 
 **Programmatic Ingestion:**
 ```python

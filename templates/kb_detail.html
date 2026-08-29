@@ -106,7 +106,7 @@
                     <input type="radio" name="chunkMode" value="deep_analysis">
                     <div>
                         <div class="option-title">Deep Analysis <span class="badge badge-accent">LLM-assisted</span></div>
-                        <div class="option-desc">Structure plus a backend LLM boundary judge: on important documents, hard chunk boundaries are evaluated by a generative model during ingest. Slower; falls back to the structural cut on any judge error.</div>
+                        <div class="option-desc">Structure-first chunking refined by a deterministic quality contract, with a backend language model proposing boundaries and a verifier confirming each change during ingest. Slower; if the model is unavailable the deterministic quality pass completes on its own and the document says so.</div>
                     </div>
                 </label>
                 <div class="field-hint">Chunking mode is chosen per document at upload. It cannot be changed at query time.</div>

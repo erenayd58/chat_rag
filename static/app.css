@@ -769,3 +769,42 @@ details.details-box > summary {
   .nav-link { justify-content: center; padding: 10px; }
   .page { padding: 20px 16px 40px; }
 }
+
+/* Deep Analysis status under the chunking badge, and the detail block. */
+.deep-status {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+.deep-status-success { color: var(--success); }
+.deep-status-warn { color: var(--warn); }
+.deep-status-danger { color: var(--danger); }
+.deep-status-neutral { color: var(--text-2); }
+
+.doc-detail-row > td {
+  background: var(--surface-2);
+  padding: 0 !important;
+}
+.deep-detail {
+  padding: 14px 18px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.deep-detail-head { font-weight: 600; font-size: 13px; }
+.deep-detail-text { color: var(--text-2); margin: 4px 0 12px; max-width: 900px; }
+.deep-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px 28px;
+}
+.deep-detail-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-3);
+  margin-bottom: 4px;
+}
+.deep-detail .def-row { padding: 4px 0; font-size: 12.5px; }
+.deep-detail-foot { margin-top: 12px; color: var(--text-3); font-size: 12px; }
+.deep-detail-foot code { font-family: var(--mono); }
