@@ -80,6 +80,16 @@ def canonical_cache() -> str:
     return _resolve("cache/canonical-units", ".cache/canonical-units")
 
 
+def viewer_live_analysis() -> str:
+    """Where this console packages its documents for the Viewer v2.
+
+    One directory per ingested document, holding the canonical units the
+    chunking ran on, the packaged Deep Analysis arm and the viewer payload
+    built from them. Regenerable from an ingest; never a frozen artifact.
+    """
+    return _resolve("viewer-live", "./artifacts/viewer-live")
+
+
 def embedding_cache() -> str:
     """Per-text vector cache of the OpenAI-compatible embedding provider
     (one ``.npy`` per exact text, per model). Regenerable."""

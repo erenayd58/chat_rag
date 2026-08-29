@@ -12,7 +12,7 @@ os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 os.environ.setdefault('MKL_NUM_THREADS', '1')
 os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
 
-from flask import Flask, render_template, request, jsonify, session, redirect
+from flask import Flask, render_template, request, jsonify, session, redirect, has_request_context
 from flask_cors import CORS
 import uuid
 from datetime import datetime
@@ -137,6 +137,266 @@ def probe_viewer(url: str, timeout: float = 1.5) -> dict:
 def demo_viewer_status():
     """Whether the companion Agentic Chunking Viewer is up (sidebar status dot)."""
     return jsonify({'success': True, **probe_viewer(settings.viewer_url)})
+
+
+def workspace_snapshot() -> dict:
+    """The console's knowledge bases and their documents, as one read-only
+    snapshot.
+
+    This is the single source of truth the Viewer v2 workspace panel reads,
+    so a knowledge base created here -- or a document ingested into it --
+    shows up over there without anyone copying state by hand. Names, counts
+    and ingest metadata only: no paths outside the file name, no keys.
+    """
+    from components.viewer import analysis
+
+    tracker = DocumentTracker()
+    documents = tracker.get_all_documents()
+    viewer_states = analysis.states()
+    by_kb: dict = {}
+    for doc in documents:
+        doc_id = doc.get('doc_id') or ''
+        # What the Viewer can do with this document right now. It is read from
+        # the packager's own records, so the two screens cannot disagree about
+        # whether an analysis exists.
+        viewer = viewer_states.get(doc_id) or {'status': analysis.STATUS_MISSING}
+        entry = {
+            'doc_id': doc_id,
+            'name': (doc.get('metadata') or {}).get('original_filename') or doc.get('file_name') or '',
+            'chunk_count': doc.get('chunk_count') or 0,
+            'file_size': doc.get('file_size') or 0,
+            'ingested_at': doc.get('ingested_at') or '',
+            'status': doc.get('status') or 'indexed',
+            'chunking_mode': doc.get('chunking_mode'),
+            'file_hash': (doc.get('file_hash') or '')[:16],
+            'viewer': {
+                'status': viewer.get('status'),
+                'deep_source': viewer.get('deep_source'),
+                'unit_count': viewer.get('unit_count'),
+                'chunk_count': viewer.get('chunk_count'),
+                'error': viewer.get('error'),
+                'updated_at': viewer.get('updated_at'),
+            },
+        }
+        by_kb.setdefault(doc.get('kb_id') or '', []).append(entry)
+
+    knowledge_bases = []
+    for kb in kb_manager.list():
+        kb_id = kb.get('kb_id')
+        docs = by_kb.pop(kb_id, [])
+        knowledge_bases.append({
+            'kb_id': kb_id,
+            'name': kb.get('name') or kb_id,
+            'chunker': (kb.get('chunker') or {}).get('type'),
+            'retrieval_method': kb.get('retrieval_method'),
+            'vector_db_provider': kb.get('vector_db_provider'),
+            'embedding_model_name': kb.get('embedding_model_name'),
+            'documents': docs,
+            'document_count': len(docs),
+            'chunk_count': sum(d['chunk_count'] for d in docs),
+        })
+    # Documents whose knowledge base was deleted still exist in the tracker.
+    # Hiding them would make the panel disagree with the console, but one card
+    # per vanished id buries the live bases under a wall of hex, so they are
+    # reported as a single group; each document keeps its own former id.
+    orphans = [dict(doc, kb_id=kb_id) for kb_id, docs in by_kb.items() for doc in docs]
+    if orphans:
+        knowledge_bases.append({
+            'kb_id': None,
+            'name': 'Bilgi tabani silinmis kayitlar',
+            'chunker': None,
+            'retrieval_method': None,
+            'vector_db_provider': None,
+            'embedding_model_name': None,
+            'documents': orphans,
+            'document_count': len(orphans),
+            'chunk_count': sum(d['chunk_count'] for d in orphans),
+            'orphan': True,
+        })
+
+    return {
+        'generated_at': datetime.now().isoformat(timespec='seconds'),
+        'console_url': request.host_url.rstrip('/') if has_request_context() else '',
+        'knowledge_bases': knowledge_bases,
+        'totals': {
+            'knowledge_bases': len(knowledge_bases),
+            'documents': len(documents),
+            'chunks': sum(d.get('chunk_count') or 0 for d in documents),
+            'viewer_ready': sum(
+                1 for d in documents
+                if (viewer_states.get(d.get('doc_id') or '') or {}).get('status') == analysis.STATUS_READY
+            ),
+        },
+    }
+
+
+@app.route('/api/demo/workspace', methods=['GET'])
+def demo_workspace():
+    """Live knowledge base / document state for the Viewer v2 workspace panel.
+
+    ``?prepare=1`` also queues an analysis for every document that has none,
+    which is what the Viewer's refresh asks for. Queuing is all it does: the
+    packaging runs on a worker, so this call never waits on it.
+    """
+    try:
+        if (request.args.get('prepare') or '').strip().lower() in {'1', 'true', 'yes'}:
+            prepare_missing_viewer_analyses()
+        return jsonify({'success': True, **workspace_snapshot()})
+    except Exception as e:
+        logger.error(f"Failed to build the workspace snapshot: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ---- Viewer v2 analysis of this console's own documents ----
+#
+# The Viewer reads a packaged Deep Analysis tree; an ingest here already
+# produces everything expensive that tree needs. These endpoints stage those
+# outputs, report where the packaging got to, and hand over the finished
+# payload. No provider call is ever made on this path: a Deep Analysis upload
+# is reused as it stands, and a Standard upload gets the deterministic quality
+# contract (``use_llm=False``), which is free.
+
+
+def recover_canonical_units(doc_id: str, kb_id: str = None):
+    """The canonical units of an already-ingested document, from the parser's
+    own cache -- the PDF is not parsed again.
+
+    Documents ingested before the Viewer packaging existed have no staged
+    canonical; their chunks still carry the unit ids that identify the cache
+    entry the parser wrote, which is enough to pin an analysis to exactly the
+    corpus that was chunked.
+
+    Called on the packaging worker, never inside a request: it reads a whole
+    document's chunks out of the vector store and then walks the parser cache.
+    It therefore takes a fixed pipeline key rather than the browser session's.
+    """
+    from components.parsers.canonical_units_store import find_cache_file, load_units
+
+    user_pipeline = get_pipeline('viewer-analysis', kb_id)
+    stored = user_pipeline.vector_db.get_chunks_paginated(
+        offset=0, limit=10000, filter_dict={'doc_id': doc_id}
+    )
+    wanted = []
+    for chunk in stored.get('chunks') or []:
+        metadata = chunk.get('metadata') or {}
+        ids = metadata.get('unit_ids')
+        if not ids:
+            for key in ('unit_ids_json', 'amsc_unit_ids_json'):
+                raw = metadata.get(key)
+                if raw:
+                    try:
+                        ids = json.loads(raw)
+                    except Exception:
+                        ids = None
+                    if ids:
+                        break
+        if ids:
+            wanted.extend(ids)
+    if not wanted:
+        return None
+    cache_file = find_cache_file(wanted)
+    return load_units(cache_file) if cache_file else None
+
+
+def stage_viewer_analysis(doc_id: str, *, label: str, kb_id: str = None, kb_name: str = None,
+                          chunking_mode: str = None, units=None, deep_result=None) -> dict:
+    """Hand one document's ingest outputs to the Viewer packager.
+
+    With ``units`` this is the upload path: the ingest's own canonical (and,
+    on a Deep Analysis upload, its own run) are written and queued. Without
+    them it is the catch-up path for a document ingested earlier: only the
+    request is recorded, and the worker recovers the canonical.
+    """
+    from components.viewer import analysis
+
+    if units is None:
+        return analysis.request_build(doc_id=doc_id, label=label, kb_id=kb_id,
+                                      kb_name=kb_name, chunking_mode=chunking_mode)
+    return analysis.stage(
+        doc_id=doc_id, label=label, units=units, deep_result=deep_result,
+        kb_id=kb_id, kb_name=kb_name, chunking_mode=chunking_mode,
+    )
+
+
+def prepare_missing_viewer_analyses() -> list:
+    """Queue an analysis for every tracked document that has none yet."""
+    from components.viewer import analysis
+
+    known = analysis.states()
+    queued = []
+    kb_names = {kb.get('kb_id'): kb.get('name') for kb in kb_manager.list()}
+    for doc in DocumentTracker().get_all_documents():
+        doc_id = doc.get('doc_id')
+        if not doc_id:
+            continue
+        status = (known.get(doc_id) or {}).get('status', analysis.STATUS_MISSING)
+        if status in (analysis.STATUS_READY, analysis.STATUS_RUNNING, analysis.STATUS_PENDING):
+            continue
+        if status == analysis.STATUS_FAILED:
+            continue  # a failed build is retried on request, not on every refresh
+        try:
+            state = stage_viewer_analysis(
+                doc_id,
+                label=(doc.get('metadata') or {}).get('original_filename') or doc.get('file_name') or doc_id,
+                kb_id=doc.get('kb_id'),
+                kb_name=kb_names.get(doc.get('kb_id')),
+                chunking_mode=doc.get('chunking_mode'),
+            )
+        except Exception as e:  # noqa: BLE001 - one bad document must not stop the rest
+            logger.warning(f"Could not stage {doc_id} for the viewer: {e}")
+            continue
+        if state.get('status') != analysis.STATUS_MISSING:
+            queued.append(doc_id)
+    return queued
+
+
+# The worker needs a way back to the parser cache; this is the only wiring
+# between the packager and the application's own pipeline.
+def _install_viewer_resolver():
+    from components.viewer import analysis
+    analysis.set_unit_resolver(recover_canonical_units)
+
+
+_install_viewer_resolver()
+
+
+@app.route('/api/demo/viewer-analysis/<doc_id>', methods=['GET', 'POST'])
+def demo_viewer_analysis(doc_id):
+    """Where this document's Viewer analysis got to; POST queues or retries it."""
+    from components.viewer import analysis
+
+    try:
+        if request.method == 'POST':
+            tracker = DocumentTracker()
+            doc = tracker.get_document_by_doc_id(doc_id)
+            if not doc:
+                return jsonify({'success': False, 'error': 'Document not found'}), 404
+            kb = kb_manager.get(doc.get('kb_id')) or {}
+            state = stage_viewer_analysis(
+                doc_id,
+                label=(doc.get('metadata') or {}).get('original_filename') or doc.get('file_name') or doc_id,
+                kb_id=doc.get('kb_id'), kb_name=kb.get('name'),
+                chunking_mode=doc.get('chunking_mode'),
+            )
+        else:
+            state = analysis.read_state(doc_id)
+        return jsonify({'success': True, 'state': state})
+    except Exception as e:
+        logger.error(f"Viewer analysis request failed for {doc_id}: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/demo/viewer-analysis/<doc_id>/payload', methods=['GET'])
+def demo_viewer_payload(doc_id):
+    """The finished viewer payload for one live document."""
+    from components.viewer import analysis
+
+    payload = analysis.payload(doc_id)
+    if payload is None:
+        state = analysis.read_state(doc_id)
+        return jsonify({'success': False, 'state': state,
+                        'error': f"no viewer payload for {doc_id} ({state.get('status')})"}), 404
+    return jsonify({'success': True, 'doc_id': doc_id, 'payload': payload})
 
 
 @app.route('/api/models', methods=['GET'])
@@ -1168,6 +1428,13 @@ def delete_document(doc_id):
         if doc_info:
             tracker.remove_document(doc_info['file_path'])
 
+        # And its live Viewer analysis, which is this document's own artifact
+        # and regenerable from an ingest. Only this console's live directory is
+        # reachable from here; the chunk repository's frozen benchmark trees
+        # are not, and are never touched.
+        from components.viewer import analysis
+        analysis.discard(doc_id)
+
         return jsonify({
             'success': True,
             'message': 'Document deleted successfully'
@@ -1327,6 +1594,34 @@ def upload_document():
 
             logger.info(f"Document processed successfully: {len(chunks)} chunks created")
 
+            # Hand this ingest's own outputs to the Viewer packager: the
+            # canonical the chunker just normalised, and -- on a Deep Analysis
+            # upload -- the run it just produced. Both are already in memory,
+            # so the Viewer costs no second parse and no second provider call.
+            # Staging is serialisation only; the packaging runs on a worker, so
+            # this response does not wait for it. A packaging problem must not
+            # fail an upload that already succeeded.
+            viewer_state = None
+            try:
+                chunker = getattr(user_pipeline, 'chunker', None)
+                viewer_state = stage_viewer_analysis(
+                    doc_id,
+                    label=file.filename,
+                    kb_id=kb_id,
+                    kb_name=kb.get('name'),
+                    chunking_mode=chunking_mode,
+                    units=getattr(chunker, 'last_canonical_units', None),
+                    deep_result=getattr(chunker, 'last_deep_result', None) if deep_analysis else None,
+                )
+            except Exception as viewer_error:  # noqa: BLE001
+                logger.warning(f"Could not stage {doc_id} for the viewer: {viewer_error}")
+            finally:
+                # The next ingest replaces them anyway; dropping them here
+                # keeps one document's canonical out of memory afterwards.
+                if getattr(user_pipeline, 'chunker', None) is not None:
+                    user_pipeline.chunker.last_canonical_units = None
+                    user_pipeline.chunker.last_deep_result = None
+
             message = 'Document uploaded and processed successfully'
             if deep_summary is not None:
                 message = f"Document indexed — Deep Analysis: {deep_summary['label']}"
@@ -1341,6 +1636,8 @@ def upload_document():
                 # shows status, quality before/after and LLM usage; the
                 # report is on the document record.
                 'deep_analysis': deep_summary,
+                # Where the Viewer's own analysis of this document got to.
+                'viewer_analysis': (viewer_state or {}).get('status'),
             })
 
         except Exception as e:
@@ -1556,6 +1853,17 @@ if __name__ == '__main__':
         print("\n⚠️  Warning: No documents ingested yet!")
         print("   Run 'python main_new.py' first to ingest documents")
     
+    # A Viewer packaging job interrupted by a restart is recorded on disk with
+    # every input it needs; picking it up here is what makes the integration
+    # survive a stop/start rather than needing the document re-uploaded.
+    try:
+        from components.viewer import analysis as viewer_analysis
+        resumed = viewer_analysis.resume_incomplete()
+        if resumed:
+            print(f"🔁 Resuming Viewer analysis for {len(resumed)} document(s)")
+    except Exception as e:  # noqa: BLE001 - never block start-up on this
+        logger.warning(f"Could not resume Viewer analyses: {e}")
+
     print("\n" + "="*80)
     print("🌐 Server starting at: http://localhost:5005")
     print("="*80 + "\n")

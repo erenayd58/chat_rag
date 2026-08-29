@@ -147,6 +147,47 @@ Viewer's chat gets `OPENROUTER_API_KEY` from the environment or `.env`
 that). Options: `-NoBrowser`, `-OpenViewer` (second tab), `-ProductPort`,
 `-ViewerPort`, `-TimeoutSeconds`.
 
+The two windows share one state. `GET /api/demo/workspace` returns this
+console's knowledge bases, their documents and chunk counts as a read-only
+snapshot; the Viewer's server reads it (`--console-url`, which `start-demo.ps1`
+points back here) and serves it to its own page. So a knowledge base created
+here, or a document ingested into it, appears in the Viewer's workspace strip
+on its next refresh — there is no second copy of that state to keep in step,
+and the browser never has to reach a second origin. The snapshot carries names,
+counts and ingest metadata only: no absolute paths and no full file hashes.
+
+**A document uploaded here becomes a document you can analyse over there.**
+The Viewer reads one shape — a packaged Deep Analysis tree pinned to the
+canonical it was chunked from — and an ingest already produces every expensive
+input that tree needs, so nothing is computed twice:
+
+* the canonical is the one the chunker normalised for *this* ingest, so the
+  PDF is never parsed again (a document ingested before this existed has its
+  canonical recovered from the parser's own cache instead);
+* a **Deep Analysis** upload hands over its whole run — deep rows, Standard
+  rows, selection audit, verifier verdicts, proposer audit — so **no second
+  proposer or verifier call is ever made**;
+* a **Standard** upload has no run to reuse, so the Deep side of the
+  comparison is the *deterministic* quality contract (`use_llm=False`): zero
+  provider calls, zero cost, and labelled as such rather than passed off as a
+  model-backed run.
+
+`components/viewer/analysis.py` does the packaging on a background worker, so
+no HTTP call waits on it: an upload records the ingest and returns, and the
+Viewer's refresh (`?prepare=1`) only *queues* what is missing. Each document's
+state — `missing` / `pending` / `running` / `ready` / `failed` — travels with
+it in the workspace snapshot, so the Viewer can say "Viewer analizi
+hazırlanıyor…" and open it when it is done. A build interrupted by a restart
+is picked up again from disk. Deleting a document here deletes its analysis;
+the chunk repository's frozen benchmark trees are never reachable from this
+path. Everything lives under `artifacts/viewer-live/` (git-ignored) and is
+regenerable from an ingest.
+
+These documents are a **live workspace category**, not benchmark data. They
+have no gold query set, so no Hit@k or MRR is computed for them — the Viewer
+says so rather than inventing numbers — and they never enter the frozen
+benchmark tables or the cross-document contract table.
+
 Inside the product, **Tools → Agentic Chunking Viewer** (sidebar, with a
 live/offline dot) and the card at the top of **Lab** open the Viewer in a new
 tab. The address comes from `VIEWER_URL` (default `http://127.0.0.1:8765/`;

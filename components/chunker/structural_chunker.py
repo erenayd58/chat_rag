@@ -37,6 +37,10 @@ class StructuralChunker(BaseChunker):
     def __init__(self) -> None:
         self._adapter = CanonicalUnitAdapter()
         self._counter = TiktokenTokenCounter(TOKEN_ENCODING)
+        #: What the most recent ingest ran on, for the Viewer packager. Both
+        #: are replaced by the next ingest and are never read at query time.
+        self.last_canonical_units: list | None = None
+        self.last_deep_result = None
 
     def get_name(self) -> str:
         return "StructuralChunker"
@@ -66,6 +70,10 @@ class StructuralChunker(BaseChunker):
             parsed_units=parsed_units,
             parser_metadata=parser_metadata,
         )
+        # The exact canonical this ingest chunks. The upload route hands it to
+        # the Viewer packager, so that analysis is pinned to what actually ran
+        # rather than to a second parse of the same PDF.
+        self.last_canonical_units = units
         return chunk_units(
             units,
             counter=self._counter,
@@ -152,6 +160,7 @@ class StructuralChunker(BaseChunker):
             parsed_units=kwargs.get("parsed_units"),
             parser_metadata=kwargs.get("parser_metadata"),
         )
+        self.last_canonical_units = units
         try:
             result = chunk_document(
                 units,
@@ -216,6 +225,10 @@ class StructuralChunker(BaseChunker):
                 "proposer_model": report.get("model_id"),
             },
         )
+        # The whole run, not just its report: the Viewer's Standard-vs-Deep
+        # view, decision story and proposer/verifier audit are packaged from
+        # this object, so no second Deep Analysis is ever run for the Viewer.
+        self.last_deep_result = result.deep
         return chunks, report
 
     def _rows_to_chunks(

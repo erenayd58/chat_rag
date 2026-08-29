@@ -81,6 +81,11 @@ docs/*
 artifacts/runs/
 artifacts/reports/
 
+# Viewer v2 analyses of this console's own documents: one directory per
+# ingested document, rebuilt from that ingest whenever it is missing. Live
+# workspace state, never a frozen benchmark artifact.
+artifacts/viewer-live/
+
 # Docker runtime data: the container's own knowledge bases, vector stores,
 # canonical-unit cache, logs and evaluation output. Never mixed with the local
 # development state above.

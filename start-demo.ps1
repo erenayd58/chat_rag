@@ -303,7 +303,10 @@ try {
     } else {
         $vOut = Join-Path $LogDir 'viewer.out.log'
         $vErr = Join-Path $LogDir 'viewer.err.log'
-        $viewerArgs = @() + $viewerPython.Pre + @('-m', 'amsc.viewer_server', '--viewer', $viewerHtml, '--config', $viewerConfig, '--root', $chunkRepo, '--host', '127.0.0.1', '--port', "$ViewerPort")
+        # --console-url points the viewer's workspace panel back at this
+        # launcher's chat_rag, so a knowledge base created there shows up in
+        # the viewer without either side being configured by hand.
+        $viewerArgs = @() + $viewerPython.Pre + @('-m', 'amsc.viewer_server', '--viewer', $viewerHtml, '--config', $viewerConfig, '--root', $chunkRepo, '--host', '127.0.0.1', '--port', "$ViewerPort", '--console-url', $ProductUrl)
         if ($Lexical -or -not $env:OPENROUTER_API_KEY) { $viewerArgs += '--lexical' }
         if (-not $env:OPENROUTER_API_KEY) { $viewerArgs += '--no-answer' }
         $viewerProc = Start-Process -FilePath $viewerPython.Exe -ArgumentList $viewerArgs -WorkingDirectory $chunkRepo `
