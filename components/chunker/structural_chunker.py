@@ -3,7 +3,9 @@
 Wraps ``amsc.structural_chunker``: document structure decides the boundaries,
 token limits only constrain them, and oversized units are split at table row /
 list item / sentence seams. No embeddings are involved, so chunking runs at
-parser speed with zero model cost.
+parser speed with zero model cost. That is the Standard path; Deep Analysis
+(``chunk_text_deep``) sends the same canonical units through
+``amsc.deep_pipeline`` and indexes its rows the same way.
 """
 
 from __future__ import annotations
@@ -107,34 +109,42 @@ class StructuralChunker(BaseChunker):
         doc_title: str,
         document_summary: str = None,
         *,
-        judge: Any,
+        configuration: Any,
+        provider: Any = None,
+        verifier_provider: Any = None,
         **kwargs: Any,
     ) -> tuple[list[DocumentChunk], dict[str, Any]]:
-        """Deep Analysis: the same structural walk, with the LLM boundary
-        judge consulted at plain budget cuts that offer a real choice.
+        """Deep Analysis: ``amsc.deep_pipeline.chunk_document`` in deep mode.
 
-        The judge is wrapped in :class:`StructurallyGuardedJudge`, which
-        refuses structurally unsafe candidates (inside a list, straight after
-        a heading) so the model can only choose among the remaining ones, and
-        refuses a whole window whose answer pairs a decision with a reason
-        code that contradicts it. The guard narrows choices and never widens
-        them, so the walk's structural cut and its token budget are untouched.
+        The same canonical units as ``chunk_text`` go through the final
+        pipeline -- the frozen structural walk, the LLM proposer, the
+        deterministic quality selector, the double-order verifier and the
+        quality measurement -- and come back as rows in the structural
+        chunker's row schema, so indexing is identical in both modes.
 
-        Returns the chunks plus a document-level report (judge model, call
-        and decision counts, per-step fallbacks, what the guard refused, and
-        the per-candidate decisions the model actually returned).
-        ``chunk_text`` above stays the untouched Standard path; with an
-        all-KEEP judge or none at all the amsc walk is pinned byte-identical
-        to ``chunk_units``.
+        ``configuration`` is a :class:`DeepAnalysisConfiguration`. When it
+        lacks what a model run needs, the deterministic contract runs alone
+        and the result is labelled ``fallback_no_provider``; a provider that
+        fails is the pipeline's own ``fallback_provider_error`` /
+        ``degraded``. Provider problems never raise; a structural error
+        (bad canonical, hard-cap breach) still does, because that is a bug.
+        ``provider`` / ``verifier_provider`` exist so tests can inject a
+        double; production builds them from ``configuration`` inside amsc,
+        which is the only place the key's variable name is ever used.
+
+        Returns the chunks plus a JSON-serialisable report: the pipeline's
+        own summary (status, model ids, chunk and smell counts before and
+        after, regression counts, proposer/verifier usage, timings) and the
+        product's structural checks. Never prompt text, never a key.
+        ``chunk_text`` above stays the untouched Standard path.
         """
-        from amsc.llm_boundary_judge import (
-            JudgeConfig,
-            ProductChunkingMode,
-            audit_rows,
-            chunk_with_product_mode,
+        from amsc.deep_pipeline import (
+            MODE_DEEP,
+            STATUS_FALLBACK_NO_PROVIDER,
+            chunk_document,
         )
 
-        from .boundary_guard import StructurallyGuardedJudge
+        from .deep_analysis import CHUNKING_MODE
 
         units = self._adapter.normalize(
             text=text,
@@ -142,58 +152,68 @@ class StructuralChunker(BaseChunker):
             parsed_units=kwargs.get("parsed_units"),
             parser_metadata=kwargs.get("parser_metadata"),
         )
-        guarded = StructurallyGuardedJudge(judge, units)
         try:
-            result = chunk_with_product_mode(
+            result = chunk_document(
                 units,
+                mode=MODE_DEEP,
+                settings=configuration.settings,
                 counter=self._counter,
-                mode=ProductChunkingMode.DEEP_ANALYSIS,
-                judge=guarded,
-                config=JudgeConfig(
-                    min_tokens=MIN_TOKENS,
-                    target_tokens=TARGET_TOKENS,
-                    soft_max_tokens=SOFT_MAX_TOKENS,
-                    hard_max_tokens=HARD_MAX_TOKENS,
-                ),
+                provider=provider,
+                verifier_provider=verifier_provider,
             )
         except (ValueError, TypeError, AssertionError):
             raise
         except Exception as exc:
             raise ChunkerException(f"Deep Analysis chunking failed: {exc}") from exc
 
-        diagnostics = result.diagnostics
-        report = {
-            "mode": "deep_analysis",
-            "boundary_judge_model": getattr(judge, "model_id", None),
-            "consulted_boundary_count": diagnostics.get("consulted_boundary_count"),
-            "judge_call_count": diagnostics.get("llm_call_count"),
-            "split_votes": diagnostics.get("split_votes"),
-            "keep_votes": diagnostics.get("keep_votes"),
-            "fallback_count": diagnostics.get("fallback_count"),
-            "changed_from_greedy_count": diagnostics.get("changed_from_greedy_count"),
-            "tuning_status": diagnostics.get("tuning_status"),
-            # What the structural guard refused, and which candidates it
-            # refused. Counts and unit ids only.
-            "structural_guard": {
-                **guarded.report(),
-                "blocked_candidates": guarded.blocked_candidates,
-                "contract_violations": guarded.contract_violations,
-            },
-            # The decisions the model actually returned, per candidate, as
-            # amsc recorded them, with the fallback reason restated on the
-            # windows the guard refused for a decision/reason_code conflict.
-            # Prompts are never included, so nothing here can carry document
-            # text or credentials.
-            "decisions": guarded.relabel_audit_rows(audit_rows(result)),
+        status = result.status
+        report: dict[str, Any] = dict(result.report)
+        if configuration.missing:
+            # The model run was never attempted: the contract ran alone.
+            # Say so with the product's status, not the pipeline's
+            # "deterministic" (which means the LLM was not *requested*).
+            status = STATUS_FALLBACK_NO_PROVIDER
+            report["fallback_reason"] = configuration.fallback_reason
+        report["pipeline_mode"] = report.get("mode")
+        report["mode"] = CHUNKING_MODE
+        report["status"] = status
+
+        # The product's own structural checks, computed on the rows that
+        # will be indexed: nothing over the hard cap, and every canonical
+        # unit exactly once in Standard's order.
+        standard_rows = result.deep.standard_rows if result.deep is not None else []
+        max_tokens = max((int(row["token_count"]) for row in result.rows), default=0)
+        report["checks"] = {
+            "hard_max_tokens": HARD_MAX_TOKENS,
+            "max_token_count": max_tokens,
+            "hard_cap_ok": max_tokens <= HARD_MAX_TOKENS,
+            "coverage_ok": (
+                [uid for row in result.rows for uid in row["unit_ids"]]
+                == [uid for row in standard_rows for uid in row["unit_ids"]]
+            ) if standard_rows else True,
         }
+        llm = configuration.llm_available
+        report["configuration"] = {
+            "use_llm": configuration.settings.use_llm,
+            "verify": configuration.settings.verify,
+            "proposer_model": configuration.settings.proposer_model if llm else None,
+            "verifier_model": (
+                configuration.settings.effective_verifier_model
+                if llm and configuration.settings.verify else None
+            ),
+            "endpoint": configuration.settings.endpoint if llm else None,
+            "api_key_env": configuration.settings.api_key_env,
+        }
+
         chunks = self._rows_to_chunks(
-            result.chunks,
+            result.rows,
             doc_id=doc_id,
             doc_title=doc_title,
             document_summary=document_summary,
             extra_metadata={
-                "chunking_mode": "deep_analysis",
-                "judge_model": getattr(judge, "model_id", None),
+                "chunking_mode": CHUNKING_MODE,
+                "deep_analysis_status": status,
+                "proposer_model": report.get("model_id"),
             },
         )
         return chunks, report
@@ -250,7 +270,7 @@ class StructuralChunker(BaseChunker):
                         "split_strategies_json": json.dumps(
                             row.get("split_strategies") or []
                         ),
-                        **(extra_metadata or {}),
+                        **{k: v for k, v in (extra_metadata or {}).items() if v is not None},
                     },
                 )
             )

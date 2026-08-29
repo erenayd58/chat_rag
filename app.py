@@ -1147,10 +1147,13 @@ def upload_document():
                     'error': f'Knowledge base "{kb_id}" not found'
                 }), 404
 
-            # Ingest-time chunking mode. Deep Analysis (structure candidates
-            # judged by a backend LLM Boundary Judge) is a per-document,
-            # ingest-only decision — never a query-time toggle and never
-            # written into the KB's chunker config.
+            # Ingest-time chunking mode. Deep Analysis (the amsc.deep_pipeline
+            # quality pipeline with an LLM proposer and verifier) is a
+            # per-document, ingest-only decision — never a query-time toggle
+            # and never written into the KB's chunker config. A missing or
+            # failing model provider does not refuse the upload: the
+            # deterministic quality contract runs alone and the document is
+            # labelled with that status, never passed off as Standard.
             deep_raw = (request.form.get('deep_analysis') or 'false').strip().lower()
             deep_analysis = deep_raw in {'1', 'true', 'yes', 'on'}
             chunking_mode = 'deep_analysis' if deep_analysis else 'standard'
@@ -1158,19 +1161,8 @@ def upload_document():
             user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
 
             if deep_analysis:
-                # Refuse a misconfigured or unsupported request before any
-                # document work starts — never silently fall back to Standard.
-                from components.chunker.boundary_judge import (
-                    boundary_judge_config_error,
-                )
-                config_error = boundary_judge_config_error(user_pipeline.settings)
-                if config_error:
-                    return jsonify({
-                        'success': False,
-                        'deep_analysis_unavailable': True,
-                        'configuration_missing': True,
-                        'error': config_error,
-                    }), 503
+                # The one thing that is refused up front: a chunker that has
+                # no Deep Analysis path at all.
                 if not hasattr(user_pipeline.chunker, 'chunk_text_deep'):
                     return jsonify({
                         'success': False,
@@ -1199,24 +1191,17 @@ def upload_document():
             # records the document, so a failed ingest leaves neither. Read
             # back by `python -m cli report/inspect`, which otherwise can only
             # describe today's configuration rather than the one that ran.
-            # The judge's report for this ingest (None on the Standard path).
-            # Model id, counts and per-candidate decisions — never prompts,
-            # never keys.
-            judge_report = getattr(user_pipeline, 'last_deep_analysis_report', None)
-            # The same report without its per-candidate lists, for places
-            # that want the summary rather than a second copy of the detail.
-            judge_summary = judge_report
-            if judge_summary is not None:
-                judge_summary = {
-                    key: value for key, value in judge_report.items()
-                    if key != 'decisions'
-                }
-                guard = judge_summary.get('structural_guard')
-                if isinstance(guard, dict):
-                    judge_summary['structural_guard'] = {
-                        key: value for key, value in guard.items()
-                        if key not in ('blocked_candidates', 'contract_violations')
-                    }
+            # The Deep Analysis report for this ingest (None on the Standard
+            # path): status, model ids, chunk and smell counts before and
+            # after, regression counts, proposer/verifier usage, checks.
+            # Counts and ids only — never prompts, never keys.
+            deep_report = getattr(user_pipeline, 'last_deep_analysis_report', None)
+            deep_summary = None
+            deep_status = None
+            if deep_report is not None:
+                from components.chunker.deep_analysis import product_summary
+                deep_summary = product_summary(deep_report)
+                deep_status = deep_summary['status']
 
             pipeline_snapshot = capture_pipeline_snapshot(
                 user_pipeline, kb, kb_id=kb_id,
@@ -1224,14 +1209,15 @@ def upload_document():
             )
             if pipeline_snapshot is not None:
                 # Record the per-document ingest decision next to the
-                # pipeline facts, so the CLI can tell which mode produced
-                # this corpus. The snapshot keeps the counts; the
-                # per-candidate decisions live once, in the document
-                # metadata below, rather than being copied into both.
+                # pipeline facts, so the CLI can tell which mode -- and at
+                # which level of completion -- produced this corpus. The
+                # snapshot keeps the summary; the full report lives once,
+                # in the document metadata below.
                 pipeline_snapshot['ingest_options'] = {
                     'chunking_mode': chunking_mode,
                     'deep_analysis': deep_analysis,
-                    'boundary_judge': judge_summary,
+                    'deep_analysis_status': deep_status,
+                    'deep_analysis_summary': deep_summary,
                 }
 
             doc_metadata = {
@@ -1239,8 +1225,9 @@ def upload_document():
                 'upload_source': 'web_interface',
                 'chunking_mode': chunking_mode,
             }
-            if judge_report is not None:
-                doc_metadata['boundary_judge'] = judge_report
+            if deep_report is not None:
+                doc_metadata['deep_analysis_status'] = deep_status
+                doc_metadata['deep_analysis'] = deep_report
 
             tracker.mark_as_ingested(
                 file_path=temp_path,
@@ -1255,16 +1242,20 @@ def upload_document():
 
             logger.info(f"Document processed successfully: {len(chunks)} chunks created")
 
+            message = 'Document uploaded and processed successfully'
+            if deep_summary is not None:
+                message = f"Document indexed — Deep Analysis: {deep_summary['label']}"
             return jsonify({
                 'success': True,
-                'message': f'Document uploaded and processed successfully',
+                'message': message,
                 'doc_id': doc_id,
                 'chunks_created': len(chunks),
                 'filename': file.filename,
                 'chunking_mode': chunking_mode,
-                # The summary, not the per-candidate detail: the browser only
-                # shows counts, and the detail is on the document record.
-                'boundary_judge': judge_summary
+                # The product summary, not the full report: the browser
+                # shows status, quality before/after and LLM usage; the
+                # report is on the document record.
+                'deep_analysis': deep_summary,
             })
 
         except Exception as e:
@@ -1274,14 +1265,13 @@ def upload_document():
             raise e
 
     except ConfigurationException as e:
-        # A Deep Analysis request the backend cannot honour: unsupported
-        # chunker or missing judge configuration. Refused explicitly —
+        # A Deep Analysis request the backend cannot honour at all (a
+        # chunker without a Deep Analysis path). Refused explicitly —
         # never a silent fall back to Standard.
         logger.warning(f"Deep Analysis refused: {e}")
         return jsonify({
             'success': False,
             'deep_analysis_unavailable': True,
-            'configuration_missing': True,
             'error': str(e)
         }), 503
     except Exception as e:

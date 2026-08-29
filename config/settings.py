@@ -31,20 +31,39 @@ class Settings:
         self.ollama_model = os.getenv("OLLAMA_MODEL", "llama2")
         self.ollama_timeout = int(os.getenv("OLLAMA_TIMEOUT", "120"))
         
-        # Boundary Judge Settings (Deep Analysis ingest mode). Backend-only:
-        # the judge is a generative model consulted for SPLIT/KEEP decisions
-        # at ingest-time chunk boundaries, never at query time. The endpoint
-        # is any OpenAI-compatible chat-completions URL (OpenRouter, a
-        # company gateway, a local server); nothing is hardcoded to one
-        # vendor. Only the *name* of the environment variable holding the
-        # API key is configured here -- the key itself is read at request
-        # time by the provider and is never stored, logged or serialized.
-        self.boundary_judge_model = os.getenv("BOUNDARY_JUDGE_MODEL", "").strip()
-        self.boundary_judge_endpoint = os.getenv("BOUNDARY_JUDGE_ENDPOINT", "").strip()
-        self.boundary_judge_api_key_env = os.getenv(
-            "BOUNDARY_JUDGE_API_KEY_ENV", "OPENROUTER_API_KEY"
-        ).strip()
-        self.boundary_judge_timeout = float(os.getenv("BOUNDARY_JUDGE_TIMEOUT", "120"))
+        # Deep Analysis settings (the premium ingest mode, amsc.deep_pipeline).
+        # Backend-only: a generative model proposes chunk boundaries and a
+        # verifier confirms them during ingest, never at query time. The
+        # endpoint is any OpenAI-compatible chat-completions URL (OpenRouter,
+        # a company gateway, a local server); no model or vendor is hardcoded.
+        # Only the *name* of the environment variable holding the API key is
+        # configured -- the key itself is read at request time by the
+        # provider and is never stored, logged or serialized. An unset model
+        # or key does not refuse the upload: the deterministic quality
+        # contract runs alone and the document is labelled accordingly.
+        #
+        # The earlier BOUNDARY_JUDGE_* names are still read as a fallback so
+        # an existing deployment keeps working; DEEP_ANALYSIS_* wins.
+        def _env(name: str, legacy: str, default: str = "") -> str:
+            value = os.getenv(name)
+            if value is None or not value.strip():
+                value = os.getenv(legacy)
+            return (value if value is not None else default).strip()
+
+        self.deep_analysis_model = _env("DEEP_ANALYSIS_MODEL", "BOUNDARY_JUDGE_MODEL")
+        self.deep_analysis_verifier_model = os.getenv("DEEP_ANALYSIS_VERIFIER_MODEL", "").strip()
+        self.deep_analysis_endpoint = _env("DEEP_ANALYSIS_ENDPOINT", "BOUNDARY_JUDGE_ENDPOINT")
+        self.deep_analysis_api_key_env = _env(
+            "DEEP_ANALYSIS_API_KEY_ENV", "BOUNDARY_JUDGE_API_KEY_ENV", "OPENROUTER_API_KEY"
+        )
+        self.deep_analysis_use_llm = (
+            os.getenv("DEEP_ANALYSIS_USE_LLM", "true").strip().lower() in {"1", "true", "yes", "on"}
+        )
+        self.deep_analysis_verify = (
+            os.getenv("DEEP_ANALYSIS_VERIFY", "true").strip().lower() in {"1", "true", "yes", "on"}
+        )
+        self.deep_analysis_timeout = float(_env("DEEP_ANALYSIS_TIMEOUT", "BOUNDARY_JUDGE_TIMEOUT", "120"))
+        self.deep_analysis_concurrency = int(os.getenv("DEEP_ANALYSIS_CONCURRENCY", "8"))
 
         # Embedding Settings
         self.embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")

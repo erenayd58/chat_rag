@@ -224,8 +224,8 @@ class RAGPipeline:
             doc_title: Document title (uses filename if None)
             additional_metadata: Optional additional metadata
             deep_analysis: Per-upload ingest mode. False is the Standard
-                structure-only path; True consults the LLM boundary judge
-                at ingest-time chunk boundaries (never at query time).
+                structure-only path; True runs the Deep Analysis pipeline
+                at ingest (never at query time).
 
         Returns:
             List of processed document chunks
@@ -388,18 +388,22 @@ class RAGPipeline:
             doc_id: Unique document identifier
             doc_title: Document title
             additional_metadata: Optional additional metadata
-            deep_analysis: When True, chunk boundaries are judged by the
-                backend LLM boundary judge during this ingest. Requires the
-                structure-first chunker and a configured judge provider;
-                everything after chunking (embeddings, vector store, BM25)
+            deep_analysis: When True, this ingest runs the final Deep
+                Analysis pipeline (``amsc.deep_pipeline``: structural walk,
+                LLM proposer, deterministic quality selector, verifier).
+                Requires the structure-first chunker; a missing or failing
+                model provider degrades to the deterministic quality
+                contract and is reported in the status, never raised.
+                Everything after chunking (embeddings, vector store, BM25)
                 is the unchanged shared path.
 
         Returns:
             List of processed document chunks
         """
-        # The report of the judge's work during the most recent ingest, for
-        # the caller to persist into document metadata/provenance. Reset per
-        # ingest; stays None on the Standard path.
+        # The Deep Analysis report of the most recent ingest (status, model
+        # ids, quality before/after, LLM usage), for the caller to persist
+        # into document metadata/provenance. Reset per ingest; stays None on
+        # the Standard path.
         self.last_deep_analysis_report = None
         try:
             print(f"Ingesting document: {doc_title}")
@@ -415,22 +419,39 @@ class RAGPipeline:
 
             # Step 2: Create semantic chunks with context
             if deep_analysis:
-                print("  - Creating chunks (Deep Analysis: LLM boundary judge)...")
+                print("  - Creating chunks (Deep Analysis: amsc.deep_pipeline)...")
                 if not hasattr(self.chunker, "chunk_text_deep"):
                     raise ConfigurationException(
                         "Deep Analysis requires the structure-first chunker; "
                         f"this knowledge base uses {self.chunker.get_name()}"
                     )
-                from components.chunker.boundary_judge import create_boundary_judge
+                from components.chunker.deep_analysis import (
+                    build_configuration,
+                    deep_config,
+                )
+                from components.chunker.structural_chunker import (
+                    HARD_MAX_TOKENS, MIN_TOKENS, SOFT_MAX_TOKENS, TARGET_TOKENS,
+                )
 
-                judge = create_boundary_judge(self.settings)
-                chunks, judge_report = self.chunker.chunk_text_deep(
+                configuration = build_configuration(
+                    self.settings,
+                    deep_config(
+                        min_tokens=MIN_TOKENS,
+                        target_tokens=TARGET_TOKENS,
+                        soft_max_tokens=SOFT_MAX_TOKENS,
+                        hard_max_tokens=HARD_MAX_TOKENS,
+                    ),
+                )
+                if configuration.missing:
+                    print(f"  - {configuration.fallback_reason}")
+                chunks, deep_report = self.chunker.chunk_text_deep(
                     document_text, doc_id, doc_title, doc_summary,
-                    judge=judge,
+                    configuration=configuration,
                     parser_metadata=additional_metadata,
                     parsed_units=parsed_units
                 )
-                self.last_deep_analysis_report = judge_report
+                self.last_deep_analysis_report = deep_report
+                print(f"  - Deep Analysis status: {deep_report.get('status')}")
             else:
                 print("  - Creating semantic chunks...")
                 chunks = self.chunker.chunk_text(
