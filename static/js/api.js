@@ -188,3 +188,37 @@ async function populateKbSelect(selectEl, opts) {
   if (stored && kbs.some((kb) => kb.kb_id === stored)) selectEl.value = stored;
   return kbs;
 }
+
+/* ------------------------------------------------------------------ */
+/* Companion viewer status                                             */
+/* ------------------------------------------------------------------ */
+/**
+ * Mark the "Agentic Chunking Viewer" link with whether its server answers.
+ * The probe runs on the backend (a local address the browser may not be
+ * allowed to reach cross-origin); the link itself works regardless.
+ */
+async function probeViewerStatus() {
+  const dot = $('#viewerStatus');
+  const card = $('#viewerCardState');
+  if (!dot && !card) return;
+  let status = null;
+  try {
+    status = await api('/api/demo/viewer');
+  } catch (e) {
+    status = { reachable: false };
+  }
+  const live = !!(status && status.reachable);
+  if (dot) {
+    dot.classList.toggle('nav-status-live', live);
+    dot.classList.toggle('nav-status-off', !live);
+    dot.title = live ? 'Viewer running' : 'Viewer not running — start it with .\start-demo.ps1';
+  }
+  if (card) {
+    card.textContent = live ? 'Running' : 'Not running';
+    card.classList.toggle('viewer-state-live', live);
+    card.classList.toggle('viewer-state-off', !live);
+    card.title = live ? '' : 'Start it with .\start-demo.ps1 (or python -m amsc.viewer_server in the chunk repo)';
+  }
+}
+
+probeViewerStatus();

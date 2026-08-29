@@ -83,6 +83,48 @@ chat_rag/
 └── env.example          # Environment variables template
 ```
 
+## Demo mode (product + Agentic Chunking Viewer)
+
+The proof of concept has two faces: this product (how it is used) and the
+chunk repository's **Viewer v2** (what the chunking technology does
+underneath — Sunum / Sorgu / Debug / Benchmark). They stay separate servers;
+one script starts both for a presentation.
+
+```powershell
+.\start-demo.ps1      # start both, wait until each answers, open the product
+.\stop-demo.ps1       # stop what start-demo started
+```
+
+| | Address | Server |
+|---|---|---|
+| Product (chat_rag) | http://127.0.0.1:5005 | `venv\Scripts\python.exe app.py` (`FLASK_PORT`, reloader off) |
+| Viewer (chunk, Viewer v2) | http://127.0.0.1:8765 | `py -3.11 -m amsc.viewer_server --viewer artifacts/viewer-v2/index.html` in the chunk repo |
+
+The chunk repository is expected next to this one (`..\chunk`); override with
+`-ChunkPath` or `CHUNK_REPO`. The launcher checks readiness over HTTP
+(`/api/health` on both), recognises servers that are already running instead
+of starting a second copy, refuses a port held by something else, writes the
+servers' output to `.demo\logs\` and the started process ids to
+`.demo\state.json` (both git-ignored). `stop-demo.ps1` stops only processes it
+can identify as those servers; `-All` extends that to a product/viewer server
+on the demo ports that it did not start. Nothing from `.env` is printed; the
+Viewer's chat gets `OPENROUTER_API_KEY` from the environment or `.env`
+(without it the Viewer runs BM25-only, no answers — use `-Lexical` to force
+that). Options: `-NoBrowser`, `-OpenViewer` (second tab), `-ProductPort`,
+`-ViewerPort`, `-TimeoutSeconds`.
+
+Inside the product, **Tools → Agentic Chunking Viewer** (sidebar, with a
+live/offline dot) and the card at the top of **Lab** open the Viewer in a new
+tab. The address comes from `VIEWER_URL` (default `http://127.0.0.1:8765/`;
+empty hides the link).
+
+Presentation order: **1.** chat_rag — a knowledge base and its documents;
+**2.** upload a document with **Deep Analysis** (status and quality summary
+under the chunking badge, *Details* for before/after); **3.** Chat — an answer
+with sources; **4.** Agentic Chunking Viewer; **5.** Sunum (the four methods
+side by side) → Debug (why each boundary) → Benchmark; then back to the
+product.
+
 ## Running with Docker
 
 One container runs the whole application. There is no separate database,

@@ -14,6 +14,23 @@
         </div>
     </div>
 
+    {% if viewer_url %}
+    <div class="card card-pad viewer-card" style="margin-bottom:16px;">
+        <div>
+            <div class="card-title">Agentic Chunking Viewer</div>
+            <p style="font-size:12.5px; color:var(--text-2); margin:4px 0 0; max-width:720px;">
+                The research side of this proof of concept: Markdown / Hybrid / Structure-first / Agentic chunking compared page by page (Sunum),
+                a live "ask the document" chat over each method (Sorgu), every boundary decision explained (Debug) and the frozen benchmark (Benchmark).
+                Runs as its own server; <code>start-demo.ps1</code> starts both.
+            </p>
+        </div>
+        <div style="display:flex; align-items:center; gap:12px; white-space:nowrap;">
+            <span class="viewer-state" id="viewerCardState">Checking…</span>
+            <a class="btn btn-primary" href="{{ viewer_url }}" target="_blank" rel="noopener">Open Viewer ↗</a>
+        </div>
+    </div>
+    {% endif %}
+
     <div class="tabs">
         <button class="tab active" data-tab="quality">Retrieval Quality</button>
         <button class="tab" data-tab="search">Chunk Search</button>

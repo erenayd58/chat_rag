@@ -98,6 +98,40 @@ def _ensure_session():
         session['session_id'] = str(uuid.uuid4())
 
 
+@app.context_processor
+def inject_companion_links():
+    """The research viewer's address, for the sidebar link. Empty hides it."""
+    return {'viewer_url': settings.viewer_url}
+
+
+def probe_viewer(url: str, timeout: float = 1.5) -> dict:
+    """Is the Viewer v2 server answering at ``url``? A local probe only."""
+    import urllib.request
+    import urllib.error
+
+    if not url:
+        return {'configured': False, 'url': '', 'reachable': False}
+    health = url.rstrip('/') + '/api/health'
+    try:
+        with urllib.request.urlopen(health, timeout=timeout) as response:
+            payload = json.loads(response.read().decode('utf-8') or '{}')
+    except (urllib.error.URLError, OSError, ValueError):
+        return {'configured': True, 'url': url, 'reachable': False}
+    documents = payload.get('documents') if isinstance(payload, dict) else None
+    return {
+        'configured': True,
+        'url': url,
+        'reachable': True,
+        'documents': len(documents) if isinstance(documents, (list, dict)) else None,
+    }
+
+
+@app.route('/api/demo/viewer', methods=['GET'])
+def demo_viewer_status():
+    """Whether the companion Agentic Chunking Viewer is up (sidebar status dot)."""
+    return jsonify({'success': True, **probe_viewer(settings.viewer_url)})
+
+
 @app.route('/')
 def kb_list_page():
     """Knowledge Bases: the product landing page."""

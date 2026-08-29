@@ -808,3 +808,27 @@ details.details-box > summary {
 .deep-detail .def-row { padding: 4px 0; font-size: 12.5px; }
 .deep-detail-foot { margin-top: 12px; color: var(--text-3); font-size: 12px; }
 .deep-detail-foot code { font-family: var(--mono); }
+
+/* Companion viewer link: status dot in the sidebar, card in the Lab. */
+.nav-link-external span:first-of-type { flex: 1; }
+.nav-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border);
+  flex-shrink: 0;
+}
+.nav-status-live { background: var(--success); }
+.nav-status-off { background: var(--text-3); opacity: .55; }
+.viewer-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.viewer-card code { font-family: var(--mono); font-size: 12px; }
+.viewer-state { font-size: 12.5px; font-weight: 550; color: var(--text-3); }
+.viewer-state-live { color: var(--success); }
+.viewer-state-off { color: var(--text-3); }
+@media (max-width: 900px) { .nav-status { display: none; } }

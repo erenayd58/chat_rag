@@ -65,6 +65,12 @@ class Settings:
         self.deep_analysis_timeout = float(_env("DEEP_ANALYSIS_TIMEOUT", "BOUNDARY_JUDGE_TIMEOUT", "120"))
         self.deep_analysis_concurrency = int(os.getenv("DEEP_ANALYSIS_CONCURRENCY", "8"))
 
+        # Companion research viewer (the chunk repository's Viewer v2), linked
+        # from the console as "Agentic Chunking Viewer". A demo-level setting:
+        # the default is the viewer server's own default address; an empty
+        # value hides the link. start-demo.ps1 sets it to the port it used.
+        self.viewer_url = os.getenv("VIEWER_URL", "http://127.0.0.1:8765/").strip()
+
         # Embedding Settings
         self.embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
         

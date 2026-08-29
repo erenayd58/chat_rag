@@ -94,3 +94,7 @@ artifacts/reports/
 # configuration. Committing it publishes whichever knowledge bases happen to
 # exist on one machine; the file is recreated on demand when absent.
 .knowledge_bases.json
+
+# Demo launcher runtime state: logs and the process ids start-demo.ps1
+# started (stop-demo.ps1 reads them). Local, regenerable, never committed.
+.demo/
