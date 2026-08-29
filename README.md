@@ -176,8 +176,9 @@ input that tree needs, so nothing is computed twice:
 no HTTP call waits on it: an upload records the ingest and returns, and the
 Viewer's refresh (`?prepare=1`) only *queues* what is missing. Each document's
 state — `missing` / `pending` / `running` / `ready` / `failed` — travels with
-it in the workspace snapshot, so the Viewer can say "Viewer analizi
-hazırlanıyor…" and open it when it is done. A build interrupted by a restart
+it in the workspace snapshot, so the Viewer lists a ready document in its own
+document picker and shows one that is still being prepared as a disabled entry
+saying so. A build interrupted by a restart
 is picked up again from disk. Deleting a document here deletes its analysis;
 the chunk repository's frozen benchmark trees are never reachable from this
 path. Everything lives under `artifacts/viewer-live/` (git-ignored) and is
