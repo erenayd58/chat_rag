@@ -61,22 +61,48 @@ function sourcePages(source) {
   return 'pp. ' + pages[0] + '–' + pages[pages.length - 1];
 }
 
+/** Product label for a source's chunking mode. */
+function sourceModeLabel(source) {
+  if (source.chunking_mode === 'deep_analysis') return 'Deep Analysis';
+  if (source.chunking_mode === 'standard') return 'Standard';
+  return source.doc_id ? (docModeByDocId[source.doc_id] || null) : null;
+}
+
+/**
+ * How a source was found. The fused score is a rank-fusion value, not a
+ * probability, so it is never shown as a percentage: the card shows the
+ * rank and the retrieval legs, and the raw numbers live in the detail view.
+ */
+function sourceLegsLabel(source) {
+  const legs = source.legs || [];
+  if (legs.length === 2) return 'semantic + keyword match';
+  if (legs[0] === 'dense') return 'semantic match';
+  if (legs[0] === 'lexical') return 'keyword match';
+  if (source.expanded_from) return 'same-section continuation';
+  return null;
+}
+
+let lastSources = [];
+
 function renderSources(sources) {
   if (!sources || !sources.length) return '';
-  const cards = sources.slice(0, 5).map((source) => {
+  lastSources = sources;
+  const cards = sources.map((source, index) => {
     const pages = sourcePages(source);
-    const mode = source.doc_id ? docModeByDocId[source.doc_id] : null;
-    const score = (source.score === null || source.score === undefined)
-      ? null : Math.round(source.score * 100);
+    const mode = sourceModeLabel(source);
+    const legs = sourceLegsLabel(source);
+    const heading = source.heading || source.section;
     return (
-      '<div class="source-card">' +
+      '<div class="source-card source-card-clickable' + (source.used ? ' source-card-used' : '') + '" data-source-index="' + index + '" role="button" tabindex="0" title="Show the chunk text">' +
         '<div class="source-head">' +
+          (source.label ? '<span class="source-label">' + escapeHtml(source.label) + '</span>' : '') +
           '<span class="source-doc">' + escapeHtml(source.document || 'Document') + '</span>' +
           (pages ? '<span class="badge badge-neutral">' + escapeHtml(pages) + '</span>' : '') +
-          (score !== null ? '<span class="badge badge-neutral">' + score + '% relevance</span>' : '') +
           (mode ? '<span class="badge badge-accent">' + escapeHtml(mode) + '</span>' : '') +
+          (source.used ? '<span class="badge badge-success">Used in answer</span>' : '') +
         '</div>' +
-        (source.section ? '<div class="source-section">' + escapeHtml(source.section) + '</div>' : '') +
+        (heading ? '<div class="source-section">' + escapeHtml(heading) + '</div>' : '') +
+        (legs ? '<div class="source-meta">' + escapeHtml(legs) + (source.rank ? ' · rank ' + source.rank : '') + '</div>' : '') +
         (source.content_preview ? '<div class="source-preview">' + escapeHtml(source.content_preview) + '</div>' : '') +
       '</div>'
     );
@@ -84,15 +110,60 @@ function renderSources(sources) {
   return '<div class="sources-block"><div class="sources-label">Sources</div>' + cards + '</div>';
 }
 
-function addAssistantMessage(answer, sources) {
+function openSourceModal(source) {
+  const modal = $('#chunkModal');
+  if (!modal) return;
+  const pages = sourcePages(source);
+  const mode = sourceModeLabel(source);
+  $('#chunkModalTitle').textContent = (source.label ? source.label + ' · ' : '') + (source.document || 'Chunk');
+  const facts = [
+    ['Section', source.heading || source.section || '—'],
+    ['Pages', pages || '—'],
+    ['Chunking', mode || '—'],
+    ['Found by', sourceLegsLabel(source) || '—'],
+    ['Fused rank', source.rank ? String(source.rank) : '—'],
+    ['Dense rank / lexical rank', (source.dense_rank || '—') + ' / ' + (source.bm25_rank || '—')],
+    ['Fusion score (RRF)', (source.score === null || source.score === undefined) ? '—' : Number(source.score).toFixed(4)],
+    ['Chunk id', source.chunk_id || '—'],
+  ];
+  $('#chunkModalFacts').innerHTML = facts.map((row) =>
+    '<div class="def-row"><span class="def-key">' + escapeHtml(row[0]) + '</span><span class="def-val mono">' + escapeHtml(String(row[1])) + '</span></div>'
+  ).join('');
+  $('#chunkModalText').textContent = source.content || source.content_preview || '';
+  openModal('chunkModal');
+}
+
+function answerNotices(metadata) {
+  if (!metadata) return '';
+  let html = '';
+  if (metadata.reindex_required) {
+    html += '<div class="msg-notice-inline">Semantic search is off for this knowledge base — its vectors were built with another embedding model. ' +
+      'Keyword results were used. Re-index it under the knowledge base\'s <strong>Settings</strong>.</div>';
+  }
+  const answer = metadata.answer || {};
+  if (answer.fallback_used) {
+    html += '<div class="msg-notice-inline">Answered by the local fallback model — the primary answer service was unavailable.</div>';
+  } else if (answer.skipped === 'no_sources') {
+    html += '<div class="msg-notice-inline">No matching passages were found, so no answer was generated.</div>';
+  }
+  return html;
+}
+
+function addAssistantMessage(answer, sources, metadata) {
   removeEmptyState();
   const el = document.createElement('div');
   el.className = 'msg msg-assistant';
   el.innerHTML =
     '<div class="msg-bubble"></div>' +
+    answerNotices(metadata) +
     renderSources(sources) +
     '<div class="msg-time">' + timeNow() + '</div>';
   $('.msg-bubble', el).textContent = answer;
+  $all('.source-card-clickable', el).forEach((card) => {
+    const open = () => openSourceModal(lastSources[Number(card.dataset.sourceIndex)]);
+    card.addEventListener('click', open);
+    card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } });
+  });
   $('#chatThread').appendChild(el);
   scrollToBottom();
 }
@@ -141,7 +212,7 @@ async function sendQuestion() {
       json: { question: question, kb_id: kbId, top_k: 5 }
     });
     removeTyping();
-    addAssistantMessage(data.answer, data.sources);
+    addAssistantMessage(data.answer, data.sources, data.metadata);
   } catch (e) {
     removeTyping();
     if (e.body && e.body.generation_unavailable) {

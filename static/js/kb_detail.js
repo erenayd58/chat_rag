@@ -353,6 +353,67 @@ $('#deleteKbBtn').addEventListener('click', async () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Embedding index (Settings)                                          */
+/* ------------------------------------------------------------------ */
+function indexStateBadge(state) {
+  if (state === 'compatible') return '<span class="badge badge-success"><span class="dot"></span>Up to date</span>';
+  if (state === 'empty') return '<span class="badge badge-neutral">Empty</span>';
+  if (state === 'not_applicable') return '<span class="badge badge-neutral">Not used by this profile</span>';
+  if (state === 'no_dense_index') return '<span class="badge badge-warn"><span class="dot"></span>No semantic index</span>';
+  if (state === 'reindex_required') return '<span class="badge badge-warn"><span class="dot"></span>Re-index required</span>';
+  return '<span class="badge badge-neutral">' + escapeHtml(state || '—') + '</span>';
+}
+
+async function loadEmbeddingIndex() {
+  const rows = $('#embeddingIndexRows');
+  const button = $('#reindexBtn');
+  const note = $('#reindexNote');
+  if (!rows) return;
+  let index;
+  try {
+    index = (await api('/api/kb/' + encodeURIComponent(KB_ID) + '/embedding-index')).index;
+  } catch (e) {
+    rows.innerHTML = '<div class="error-state">Could not read the index status: ' + escapeHtml(e.message) + '</div>';
+    return;
+  }
+  const stored = index.stored || {};
+  const current = index.current || {};
+  rows.innerHTML =
+    defRow('Status', indexStateBadge(index.state)) +
+    defRow('Current embedding model', escapeHtml(current.model || '—') + (current.dimension ? ' · ' + escapeHtml(String(current.dimension)) + ' dims' : '')) +
+    defRow('Stored vectors from', escapeHtml(stored.model || (stored.chunk_count ? 'unknown model' : '—')) + (stored.dimension ? ' · ' + escapeHtml(String(stored.dimension)) + ' dims' : '')) +
+    defRow('Stored chunks', escapeHtml(String(stored.chunk_count == null ? '—' : stored.chunk_count))) +
+    defRow('Fingerprint (stored / current)', '<span class="mono">' + escapeHtml((stored.fingerprint || '—') + ' / ' + (current.fingerprint || '—')) + '</span>');
+  note.textContent = index.reason || '';
+  const canReindex = index.state !== 'not_applicable' && (stored.chunk_count || 0) > 0;
+  button.disabled = !canReindex;
+  button.classList.toggle('btn-primary', index.state === 'reindex_required' || index.state === 'no_dense_index');
+  button.classList.toggle('btn-secondary', !(index.state === 'reindex_required' || index.state === 'no_dense_index'));
+}
+
+$('#reindexBtn').addEventListener('click', async () => {
+  const ok = await confirmDialog({
+    title: 'Re-index embeddings',
+    message: 'Rebuild the semantic index of this knowledge base with the current embedding model? Every stored chunk is embedded again; documents and chunks are unchanged.',
+    confirmLabel: 'Re-index'
+  });
+  if (!ok) return;
+  const button = $('#reindexBtn');
+  const note = $('#reindexNote');
+  button.disabled = true;
+  note.textContent = 'Re-indexing… this embeds every chunk and can take a while.';
+  try {
+    const data = await api('/api/kb/' + encodeURIComponent(KB_ID) + '/reindex-embeddings', { method: 'POST', json: {} });
+    toast('Re-indexed ' + data.result.chunks + ' chunks with ' + data.result.model + ' (' + data.result.seconds + ' s)', 'success');
+  } catch (e) {
+    toast('Re-index failed: ' + e.message, 'error');
+  } finally {
+    loadEmbeddingIndex();
+  }
+});
+
+/* ------------------------------------------------------------------ */
 loadKb();
 loadStats();
 loadDocuments();
+loadEmbeddingIndex();

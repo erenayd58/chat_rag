@@ -65,6 +65,46 @@ class Settings:
         self.deep_analysis_timeout = float(_env("DEEP_ANALYSIS_TIMEOUT", "BOUNDARY_JUDGE_TIMEOUT", "120"))
         self.deep_analysis_concurrency = int(os.getenv("DEEP_ANALYSIS_CONCURRENCY", "8"))
 
+        # Answer model (chat generation). The final chain answers with an
+        # OpenAI-compatible gateway model (minimax/minimax-m2.7 through
+        # OpenRouter in the demo) and keeps a local Ollama model as the
+        # fallback. ANSWER_PROVIDER: 'openrouter' / 'openai_compatible',
+        # 'ollama' or 'azure'; unset means the historical LLM_PROVIDER.
+        # Only the *name* of the key's environment variable is configured.
+        self.answer_provider = (
+            os.getenv("ANSWER_PROVIDER", "").strip().lower() or self.llm_provider
+        )
+        self.answer_model = os.getenv("ANSWER_MODEL", "").strip()
+        self.answer_endpoint = os.getenv("ANSWER_ENDPOINT", "").strip()
+        self.answer_api_key_env = os.getenv("ANSWER_API_KEY_ENV", "OPENROUTER_API_KEY").strip()
+        self.answer_timeout = float(os.getenv("ANSWER_TIMEOUT", "120"))
+        self.answer_fallback_provider = os.getenv("ANSWER_FALLBACK_PROVIDER", "none").strip().lower()
+        self.answer_fallback_model = os.getenv("ANSWER_FALLBACK_MODEL", "").strip()
+
+        # Dense retrieval embeddings. 'openrouter' / 'openai_compatible' calls
+        # an OpenAI-compatible /embeddings endpoint (qwen/qwen3-embedding-8b
+        # in the demo); 'sentence_transformers' runs EMBEDDING_MODEL locally.
+        # Documents and queries always share one model and one space; the
+        # store's manifest records which, so a stale index is detected
+        # rather than silently searched.
+        self.embedding_provider = os.getenv("EMBEDDING_PROVIDER", "sentence_transformers").strip().lower()
+        self.embedding_endpoint = os.getenv("EMBEDDING_ENDPOINT", "").strip()
+        self.embedding_api_key_env = os.getenv("EMBEDDING_API_KEY_ENV", "OPENROUTER_API_KEY").strip()
+        self.embedding_batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
+        self.embedding_timeout = float(os.getenv("EMBEDDING_TIMEOUT", "120"))
+        # Batches go one at a time by default: a burst of parallel embedding
+        # requests is what the gateway rejected during a large re-index.
+        self.embedding_concurrency = int(os.getenv("EMBEDDING_CONCURRENCY", "1"))
+        _dims = os.getenv("EMBEDDING_DIMENSIONS", "").strip()
+        self.embedding_dimensions = int(_dims) if _dims else None
+
+        # Context assembly for the answer model (hybrid_rrf profile).
+        self.context_max_tokens = int(os.getenv("CONTEXT_MAX_TOKENS", "3200"))
+        self.context_max_sources = int(os.getenv("CONTEXT_MAX_SOURCES", "8"))
+        self.context_expand_neighbors = (
+            os.getenv("CONTEXT_EXPAND_NEIGHBORS", "true").strip().lower() in {"1", "true", "yes", "on"}
+        )
+
         # Companion research viewer (the chunk repository's Viewer v2), linked
         # from the console as "Agentic Chunking Viewer". A demo-level setting:
         # the default is the viewer server's own default address; an empty
@@ -96,9 +136,9 @@ class Settings:
         
         # Retrieval Settings
         self.retrieval_profile = os.getenv("RETRIEVAL_PROFILE", "legacy").strip().lower()
-        if self.retrieval_profile not in {"legacy", "benchmark_aligned", "bm25_only"}:
+        if self.retrieval_profile not in {"legacy", "benchmark_aligned", "bm25_only", "hybrid_rrf"}:
             raise ValueError(
-                "RETRIEVAL_PROFILE must be 'legacy', 'benchmark_aligned' or 'bm25_only'"
+                "RETRIEVAL_PROFILE must be 'legacy', 'benchmark_aligned', 'bm25_only' or 'hybrid_rrf'"
             )
         self.default_top_k = int(os.getenv("DEFAULT_TOP_K", "5"))
         self.vector_weight = float(os.getenv("VECTOR_WEIGHT", "0.7"))

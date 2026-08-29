@@ -22,7 +22,7 @@ from pipeline import RAGPipeline
 from components.goldset import GoldSetManager
 from components.knowledgebase.manager import KnowledgeBaseManager
 from components.provenance import capture as capture_pipeline_snapshot
-from core.exceptions import ConfigurationException, LLMException
+from core.exceptions import ConfigurationException, IndexIncompatibleException, LLMException
 from config import paths
 from components.retriever import (
     method_is_available,
@@ -53,8 +53,15 @@ pipelines = {}
 
 def build_settings_for_kb(kb_cfg: dict, kb_id: str = None) -> Settings:
     s = Settings()
-    # Override with KB-specific config
-    if kb_cfg.get('embedding_model_name'):
+    # Override with KB-specific config. A knowledge base may name its own
+    # embedding model only for the provider it was created for: the older
+    # records carry local sentence-transformers names, which must not be
+    # sent to an OpenAI-compatible gateway (the demo's re-index of kkb-final
+    # asked OpenRouter for "paraphrase-multilingual-MiniLM-L12-v2" and got a
+    # 400 for it). With a different global provider the global model is
+    # used and the store's manifest records that.
+    kb_provider = (kb_cfg.get('embedding_provider') or 'sentence_transformers').strip().lower()
+    if kb_cfg.get('embedding_model_name') and kb_provider == s.embedding_provider:
         s.embedding_model_name = kb_cfg['embedding_model_name']
     if kb_cfg.get('vector_db_provider'):
         s.vector_db_provider = kb_cfg['vector_db_provider']
@@ -130,6 +137,50 @@ def probe_viewer(url: str, timeout: float = 1.5) -> dict:
 def demo_viewer_status():
     """Whether the companion Agentic Chunking Viewer is up (sidebar status dot)."""
     return jsonify({'success': True, **probe_viewer(settings.viewer_url)})
+
+
+@app.route('/api/models', methods=['GET'])
+def model_chain():
+    """The configured model chain (agentic chunking, embedding, answer),
+    for the Lab. Names, ids and endpoints only -- never a key."""
+    try:
+        kb_id = request.args.get('kb_id') or None
+        user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
+        return jsonify({'success': True, 'chain': user_pipeline.model_chain()})
+    except Exception as e:
+        logger.error(f"Failed to describe the model chain: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/kb/<kb_id>/embedding-index', methods=['GET'])
+def embedding_index_status(kb_id):
+    """Whether the knowledge base's vectors belong to the current embedding."""
+    try:
+        if not kb_manager.get(kb_id):
+            return jsonify({'success': False, 'error': 'Knowledge base not found'}), 404
+        user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
+        return jsonify({'success': True, 'index': user_pipeline.embedding_index_status()})
+    except Exception as e:
+        logger.error(f"Failed to read the embedding index status: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/kb/<kb_id>/reindex-embeddings', methods=['POST'])
+def reindex_embeddings(kb_id):
+    """Re-embed every stored chunk with the current embedding model."""
+    try:
+        if not kb_manager.get(kb_id):
+            return jsonify({'success': False, 'error': 'Knowledge base not found'}), 404
+        user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
+        result = user_pipeline.reindex_embeddings()
+        logger.info(f"Re-indexed knowledge base {kb_id}: {result}")
+        return jsonify({'success': True, 'result': result,
+                        'index': user_pipeline.embedding_index_status()})
+    except ConfigurationException as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Re-index failed: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/')
@@ -1298,6 +1349,15 @@ def upload_document():
                 os.remove(temp_path)
             raise e
 
+    except IndexIncompatibleException as e:
+        # The store holds vectors from another embedding model. Refused
+        # rather than mixed; the knowledge base's Settings offer a re-index.
+        logger.warning(f"Upload refused, re-index required: {e}")
+        return jsonify({
+            'success': False,
+            'reindex_required': True,
+            'error': str(e)
+        }), 409
     except ConfigurationException as e:
         # A Deep Analysis request the backend cannot honour at all (a
         # chunker without a Deep Analysis path). Refused explicitly —
@@ -1478,8 +1538,12 @@ if __name__ == '__main__':
     print("\n" + "="*80)
     print("🚀 Starting RAG Chat Web Application")
     print("="*80)
-    print(f"\nLLM Provider: {settings.llm_provider}")
-    print(f"Embedding Model: {settings.embedding_model_name}")
+    print(f"\nAnswer model: {settings.answer_provider} / {settings.answer_model or settings.ollama_model}"
+          + (f"  (fallback: {settings.answer_fallback_provider} / {settings.answer_fallback_model or settings.ollama_model})"
+             if settings.answer_fallback_provider not in ('', 'none') else ""))
+    print(f"Embedding: {settings.embedding_provider} / {settings.embedding_model_name}")
+    print(f"Retrieval profile: {settings.retrieval_profile}")
+    print(f"Deep Analysis model: {settings.deep_analysis_model or '(not configured)'}")
     print(f"Vector DB: {settings.vector_db_path}")
     
     # Check if documents are ingested

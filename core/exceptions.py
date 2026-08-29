@@ -38,3 +38,9 @@ class ConfigurationException(RAGException):
     """Exception raised for configuration errors"""
     pass
 
+
+
+class IndexIncompatibleException(RAGException):
+    """The vector store was written by a different embedding model and must
+    be re-indexed before new vectors can be added to it."""
+    pass

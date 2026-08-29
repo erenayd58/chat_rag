@@ -528,3 +528,56 @@ $('#labKbSelect').addEventListener('change', async () => {
   }
   await Promise.all([rqRefreshMethods(), rqLoadGold(labKbId()), refreshDocSelectors()]);
 })();
+
+/* ------------------------------------------------------------------ */
+/* Model chain (technical detail)                                      */
+/* ------------------------------------------------------------------ */
+function chainStage(title, rows) {
+  return '<div class="chain-stage"><div class="chain-title">' + escapeHtml(title) + '</div>' +
+    rows.map((row) => '<div class="chain-row"><span class="chain-key">' + escapeHtml(row[0]) + '</span><span class="chain-val">' + row[1] + '</span></div>').join('') +
+    '</div>';
+}
+
+async function loadModelChain() {
+  const box = $('#modelChain');
+  if (!box) return;
+  const kbId = labKbId();
+  let chain;
+  try {
+    chain = (await api('/api/models' + (kbId ? '?kb_id=' + encodeURIComponent(kbId) : ''))).chain;
+  } catch (e) {
+    box.innerHTML = '<div class="error-state">Could not read the model chain: ' + escapeHtml(e.message) + '</div>';
+    return;
+  }
+  const agentic = chain.agentic_chunking || {};
+  const embedding = chain.embedding || {};
+  const answer = chain.answer || {};
+  const primary = answer.primary || {};
+  const fallback = answer.fallback;
+  const retrieval = chain.retrieval || {};
+  const context = chain.context || {};
+  box.innerHTML =
+    chainStage('1 · Agentic chunking (Deep Analysis, ingest only)', [
+      ['Model', escapeHtml(agentic.model || 'not configured — deterministic quality pass')],
+      ['Verifier', escapeHtml(agentic.verifier_model || (agentic.verify ? '—' : 'off'))],
+      ['Entry point', '<span class="mono">' + escapeHtml(agentic.entry_point || '') + '</span>'],
+    ]) +
+    chainStage('2 · Embedding (documents and queries, one space)', [
+      ['Model', escapeHtml(embedding.model || '—')],
+      ['Provider', escapeHtml(embedding.provider || '—')],
+      ['Dimension', escapeHtml(embedding.dimension ? String(embedding.dimension) : 'discovered on first use')],
+      ['Fingerprint', '<span class="mono">' + escapeHtml(embedding.fingerprint || '—') + '</span>'],
+    ]) +
+    chainStage('3 · Retrieval', [
+      ['Profile', escapeHtml(retrieval.profile || '—')],
+      ['Fusion', escapeHtml(retrieval.config && retrieval.config.rrf ? 'RRF, k=' + retrieval.config.rrf.rank_constant + ', pool ' + retrieval.config.rrf.candidate_pool_size : (retrieval.config && retrieval.config.bm25 ? 'BM25 only' : '—'))],
+      ['Context budget', escapeHtml((context.max_tokens || '—') + ' tokens · up to ' + (context.max_sources || '—') + ' sources' + (context.expand_neighbors ? ' · same-section neighbours' : ''))],
+    ]) +
+    chainStage('4 · Answer', [
+      ['Primary', escapeHtml((primary.model || '—') + (primary.provider ? ' via ' + primary.provider : ''))],
+      ['Fallback', escapeHtml(fallback ? (fallback.model || '—') + ' via ' + fallback.provider : 'none')],
+    ]);
+}
+
+loadModelChain();
+$('#labKbSelect').addEventListener('change', loadModelChain);

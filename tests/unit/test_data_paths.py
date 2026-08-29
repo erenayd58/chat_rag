@@ -145,6 +145,9 @@ def test_a_pipeline_is_still_built_when_the_model_cannot_be_reached(monkeypatch)
 
     settings = Settings()
     settings.llm_provider = "ollama"
+    settings.answer_provider = "ollama"
+    settings.answer_model = ""
+    settings.answer_fallback_provider = "none"
     settings.ollama_base_url = "http://127.0.0.1:59999"
     settings.ollama_timeout = 2
     settings.retrieval_profile = "bm25_only"

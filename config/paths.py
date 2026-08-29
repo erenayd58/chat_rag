@@ -78,3 +78,9 @@ def canonical_cache() -> str:
     if configured:
         return configured
     return _resolve("cache/canonical-units", ".cache/canonical-units")
+
+
+def embedding_cache() -> str:
+    """Per-text vector cache of the OpenAI-compatible embedding provider
+    (one ``.npy`` per exact text, per model). Regenerable."""
+    return _resolve("cache/embeddings", ".cache/embeddings")

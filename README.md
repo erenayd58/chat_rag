@@ -83,6 +83,40 @@ chat_rag/
 └── env.example          # Environment variables template
 ```
 
+## The model chain
+
+Three model roles, one OpenRouter key, each role configured on its own:
+
+| Stage | Model (demo) | Configuration | Runs |
+|---|---|---|---|
+| Deep Analysis / Agentic chunking — proposer + verifier | `qwen/qwen3-30b-a3b-instruct-2507` | `DEEP_ANALYSIS_MODEL`, `DEEP_ANALYSIS_ENDPOINT`, `DEEP_ANALYSIS_API_KEY_ENV`, `DEEP_ANALYSIS_VERIFY` | at upload only, through `amsc.deep_pipeline` |
+| Embedding — document chunks and questions, one space | `qwen/qwen3-embedding-8b` | `EMBEDDING_PROVIDER=openrouter`, `EMBEDDING_MODEL`, `EMBEDDING_ENDPOINT`, `EMBEDDING_API_KEY_ENV` | at upload (chunks) and per question (query vector) |
+| Answer — reads the assembled context, cites sources | `minimax/minimax-m2.7` | `ANSWER_PROVIDER=openrouter`, `ANSWER_MODEL`, `ANSWER_ENDPOINT`, `ANSWER_API_KEY_ENV` | per question |
+| Answer fallback (local, offline) | Ollama `qwen2.5:3b` | `ANSWER_FALLBACK_PROVIDER=ollama`, `ANSWER_FALLBACK_MODEL` | only when the primary answer call fails |
+
+`RETRIEVAL_PROFILE=hybrid_rrf` is the final retrieval profile: the stored
+Qwen3 vectors (cosine) and the frozen deterministic BM25 (Turkish diacritic
+fold) each rank a candidate pool of 50, reciprocal-rank fusion (k = 60)
+merges them with chunk-id tie-breaking, and the top hits are assembled into a
+labelled context (`[S1]`, `[S2]`, …; de-duplicated, same-section neighbours
+allowed, `CONTEXT_MAX_TOKENS` budget) that the answer model must cite.
+Standard and Deep Analysis documents go through exactly this path — only
+their chunk partition differs. No ingest-time model runs during a question.
+
+Each knowledge base's vector store carries an `embedding_index.json`
+manifest (provider, model, dimension, fingerprint). When the configured
+embedding changes, the knowledge base reports **re-index required**: dense
+retrieval is switched off (keyword results only, said so in the chat), new
+uploads are refused with 409 until the store is rebuilt, and **Settings →
+Embedding index → Re-index** re-embeds every stored chunk with the current
+model. Vectors from two models are never compared.
+
+Query responses carry the observability the Lab and the chat notices use:
+retrieval mode and hit counts (dense / BM25 / fused), selected context and
+its token estimate, embedding model and fingerprint, answer provider and
+model, whether the fallback answered, and per-stage latency. Prompts and
+keys are never stored.
+
 ## Demo mode (product + Agentic Chunking Viewer)
 
 The proof of concept has two faces: this product (how it is used) and the

@@ -221,6 +221,35 @@ class ChromaVectorDB(BaseVectorDB):
         except Exception as e:
             raise VectorDBException(f"Failed to retrieve chunks: {e}")
     
+    def replace_all(
+        self,
+        chunks: List[DocumentChunk],
+        embeddings: List[List[float]],
+        batch_size: int = 500,
+    ) -> None:
+        """Rewrite the whole collection with new vectors (a re-index).
+
+        Chroma fixes a collection's vector width at its first record, so a
+        change of embedding model means dropping the collection and adding
+        every chunk again with its new vector. Texts and metadata are the
+        ones already stored; only the vectors change.
+        """
+        if len(chunks) != len(embeddings):
+            raise VectorDBException("replace_all needs one embedding per chunk")
+        try:
+            self.client.delete_collection(self.collection_name)
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name,
+                metadata={"hnsw:space": self.space},
+                embedding_function=None,
+            )
+            for start in range(0, len(chunks), batch_size):
+                self.add_chunks(chunks[start:start + batch_size], embeddings[start:start + batch_size])
+        except VectorDBException:
+            raise
+        except Exception as e:
+            raise VectorDBException(f"Failed to re-index collection: {e}")
+
     def delete_by_doc_id(self, doc_id: str) -> None:
         """Delete all chunks for a document"""
         try:

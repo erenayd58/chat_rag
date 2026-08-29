@@ -68,6 +68,21 @@
             </div>
         </div>
 
+        <div class="card" style="margin-top:16px;" id="embeddingIndexCard">
+            <div class="card-header"><div class="card-title">Embedding index</div></div>
+            <div class="card-pad">
+                <p style="font-size:12.5px; color:var(--text-2); margin:0 0 12px; max-width:720px;">
+                    Semantic search compares question vectors with the vectors stored for this knowledge base. Both must come from the same embedding model;
+                    when the configured model changes, the stored vectors are rebuilt here — the documents and their chunks are kept as they are.
+                </p>
+                <div id="embeddingIndexRows"><div class="loading-state"><div class="spinner"></div>Checking…</div></div>
+                <div style="display:flex; align-items:center; gap:12px; margin-top:12px; flex-wrap:wrap;">
+                    <button class="btn btn-secondary" id="reindexBtn" disabled>Re-index with current model</button>
+                    <span id="reindexNote" style="font-size:12.5px; color:var(--text-2);"></span>
+                </div>
+            </div>
+        </div>
+
         <div class="card danger-zone" style="margin-top:16px;">
             <div class="card-header"><div class="card-title" style="color:var(--danger);">Danger zone</div></div>
             <div class="card-pad" style="display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap;">

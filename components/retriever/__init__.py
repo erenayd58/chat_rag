@@ -11,6 +11,7 @@ from .capabilities import (
     unavailable_reason,
 )
 from .hybrid_retriever import HybridRetriever
+from .hybrid_rrf_retriever import HybridRRFRetriever
 from .benchmark_aligned_retriever import (
     BenchmarkAlignedEmbedding,
     BenchmarkAlignedRetriever,
@@ -28,6 +29,7 @@ __all__ = [
     'method_is_available',
     'unavailable_reason',
     'HybridRetriever',
+    'HybridRRFRetriever',
     'BenchmarkAlignedEmbedding',
     'BenchmarkAlignedRetriever',
     'FROZEN_RETRIEVAL_COMMIT',
