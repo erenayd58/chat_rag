@@ -57,7 +57,7 @@ async function loadStats() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Dokümans tab                                                       */
+/* Dokümanlar sekmesi                                                 */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -134,9 +134,9 @@ function deepAnalysisDetails(d) {
 
 function statusBadge(doc) {
   const status = doc.status || 'indexed';
-  if (status === 'indexed') return '<span class="badge badge-success"><span class="dot"></span>Indexed</span>';
-  if (status === 'processing') return '<span class="badge badge-warn"><span class="dot"></span>Processing</span>';
-  if (status === 'failed') return '<span class="badge badge-danger"><span class="dot"></span>Failed</span>';
+  if (status === 'indexed') return '<span class="badge badge-success"><span class="dot"></span>İndekslendi</span>';
+  if (status === 'processing') return '<span class="badge badge-warn"><span class="dot"></span>İşleniyor</span>';
+  if (status === 'failed') return '<span class="badge badge-danger"><span class="dot"></span>Başarısız</span>';
   return '<span class="badge badge-neutral">' + escapeHtml(status) + '</span>';
 }
 
@@ -189,8 +189,8 @@ async function loadDokümans() {
         '<td style="color:var(--text-2);">' + fmtSize(doc.file_size) + '</td>' +
         '<td style="white-space:nowrap; text-align:right;">' +
           detailsButton +
-          '<button class="btn btn-ghost btn-sm doc-reprocess" disabled title="Yeniden işlemek için dosyayı tekrar yükleyin">Reprocess</button>' +
-          '<button class="btn btn-danger-ghost btn-sm doc-delete">Delete</button>' +
+          '<button class="btn btn-ghost btn-sm doc-reprocess" disabled title="Yeniden işlemek için dosyayı tekrar yükleyin">Yeniden işle</button>' +
+          '<button class="btn btn-danger-ghost btn-sm doc-delete">Sil</button>' +
         '</td>' +
       '</tr>' + detailRow
     );
@@ -199,7 +199,7 @@ async function loadDokümans() {
   container.innerHTML =
     '<table class="table">' +
       '<thead><tr>' +
-        '<th>Doküman</th><th>Status</th><th>Bölümleme</th><th>Chunks</th><th>Indexed at</th><th>Size</th><th style="text-align:right;">Actions</th>' +
+        '<th>Doküman</th><th>Durum</th><th>Yöntem</th><th>Parça</th><th>Yüklendi</th><th>Boyut</th><th style="text-align:right;"></th>' +
       '</tr></thead>' +
       '<tbody>' + rows + '</tbody>' +
     '</table>';
@@ -415,11 +415,11 @@ $('#deleteKbBtn').addEventListener('click', async () => {
 /* Embedding index (Settings)                                          */
 /* ------------------------------------------------------------------ */
 function indexStateBadge(state) {
-  if (state === 'compatible') return '<span class="badge badge-success"><span class="dot"></span>Up to date</span>';
-  if (state === 'empty') return '<span class="badge badge-neutral">Empty</span>';
-  if (state === 'not_applicable') return '<span class="badge badge-neutral">Not used by this profile</span>';
-  if (state === 'no_dense_index') return '<span class="badge badge-warn"><span class="dot"></span>No semantic index</span>';
-  if (state === 'reindex_required') return '<span class="badge badge-warn"><span class="dot"></span>Yeniden indeksle required</span>';
+  if (state === 'compatible') return '<span class="badge badge-success"><span class="dot"></span>Güncel</span>';
+  if (state === 'empty') return '<span class="badge badge-neutral">Boş</span>';
+  if (state === 'not_applicable') return '<span class="badge badge-neutral">Bu profilde kullanılmıyor</span>';
+  if (state === 'no_dense_index') return '<span class="badge badge-warn"><span class="dot"></span>Anlamsal indeks yok</span>';
+  if (state === 'reindex_required') return '<span class="badge badge-warn"><span class="dot"></span>Yeniden indeksleme gerekiyor</span>';
   return '<span class="badge badge-neutral">' + escapeHtml(state || '—') + '</span>';
 }
 
@@ -432,15 +432,15 @@ async function loadEmbeddingIndex() {
   try {
     index = (await api('/api/kb/' + encodeURIComponent(KB_ID) + '/embedding-index')).index;
   } catch (e) {
-    rows.innerHTML = '<div class="error-state">Could not read the index status: ' + escapeHtml(e.message) + '</div>';
+    rows.innerHTML = '<div class="error-state">İndeks durumu okunamadı: ' + escapeHtml(e.message) + '</div>';
     return;
   }
   const stored = index.stored || {};
   const current = index.current || {};
   rows.innerHTML =
-    defRow('Status', indexStateBadge(index.state)) +
+    defRow('Durum', indexStateBadge(index.state)) +
     defRow('Geçerli embedding modeli', escapeHtml(current.model || '—') + (current.dimension ? ' · ' + escapeHtml(String(current.dimension)) + ' dims' : '')) +
-    defRow('Kayıtlı vektörler', escapeHtml(stored.model || (stored.chunk_count ? 'unknown model' : '—')) + (stored.dimension ? ' · ' + escapeHtml(String(stored.dimension)) + ' dims' : '')) +
+    defRow('Kayıtlı vektörler', escapeHtml(stored.model || (stored.chunk_count ? 'model bilinmiyor' : '—')) + (stored.dimension ? ' · ' + escapeHtml(String(stored.dimension)) + ' dims' : '')) +
     defRow('Kayıtlı parça', escapeHtml(String(stored.chunk_count == null ? '—' : stored.chunk_count))) +
     defRow('Parmak izi (kayıtlı / geçerli)', '<span class="mono">' + escapeHtml((stored.fingerprint || '—') + ' / ' + (current.fingerprint || '—')) + '</span>');
   note.textContent = index.reason || '';
@@ -453,7 +453,7 @@ async function loadEmbeddingIndex() {
 $('#reindexBtn').addEventListener('click', async () => {
   const ok = await confirmDialog({
     title: 'Vektörleri yeniden üret',
-    message: 'Rebuild the semantic index of this knowledge base with the current embedding model? Every stored chunk is embedded again; documents and chunks are unchanged.',
+    message: 'Bu bilgi tabanının anlamsal indeksi geçerli embedding modeliyle yeniden üretilsin mi? Her parça yeniden vektörlenir; dokümanlar ve parçalar değişmez.',
     confirmLabel: 'Yeniden indeksle'
   });
   if (!ok) return;
@@ -463,7 +463,7 @@ $('#reindexBtn').addEventListener('click', async () => {
   note.textContent = 'Yeniden indeksleniyor… her parça yeniden vektörleniyor, bu biraz sürebilir.';
   try {
     const data = await api('/api/kb/' + encodeURIComponent(KB_ID) + '/reindex-embeddings', { method: 'POST', json: {} });
-    toast('Yeniden indekslendi: ' + data.result.chunks + ' chunks with ' + data.result.model + ' (' + data.result.seconds + ' s)', 'success');
+    toast('Yeniden indekslendi: ' + data.result.chunks + ' parça · ' + data.result.model + ' (' + data.result.seconds + ' sn)', 'success');
   } catch (e) {
     toast('Yeniden indeksleme başarısız: ' + e.message, 'error');
   } finally {

@@ -17,9 +17,9 @@ async function loadKbPage() {
   if (kbs.length === 0) {
     container.innerHTML =
       '<div class="card empty-state">' +
-      '<h3>No knowledge bases yet</h3>' +
-      '<p>Create a knowledge base, then upload PDF documents into it to start asking questions.</p>' +
-      '<button class="btn btn-primary" onclick="openModal(\'createKbModal\')">New Knowledge Base</button>' +
+      '<h3>Henüz bilgi tabanı yok</h3>' +
+      '<p>Bir bilgi tabanı oluşturun, içine PDF yükleyin ve sorularınızı sormaya başlayın.</p>' +
+      '<button class="btn btn-primary" onclick="openModal(\'createKbModal\')">Yeni bilgi tabanı</button>' +
       '</div>';
     return;
   }
@@ -39,8 +39,8 @@ async function loadKbPage() {
     const stats = byKb[kb.kb_id] || { docs: 0, chunks: 0, latest: '' };
     const desc = (kb.extra && kb.extra.description) || '';
     const status = stats.docs > 0
-      ? '<span class="badge badge-success"><span class="dot"></span>Indexed</span>'
-      : '<span class="badge badge-neutral"><span class="dot"></span>Empty</span>';
+      ? '<span class="badge badge-success"><span class="dot"></span>İndekslendi</span>'
+      : '<span class="badge badge-neutral"><span class="dot"></span>Boş</span>';
     const chunker = kb.chunker && kb.chunker.type;
     return (
       '<div class="card kb-card" data-kb="' + escapeHtml(kb.kb_id) + '">' +

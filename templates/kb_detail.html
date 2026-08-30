@@ -29,7 +29,7 @@
     <div class="tab-panel active" id="panel-overview">
         <div class="stats-row" id="statTiles">
             <div class="card stat-tile"><div class="stat-label">Dokümanlar</div><div class="stat-value" id="statDocs">—</div></div>
-            <div class="card stat-tile"><div class="stat-label">Parça</div><div class="stat-value" id="statParça">—</div></div>
+            <div class="card stat-tile"><div class="stat-label">Parça</div><div class="stat-value" id="statChunks">—</div></div>
             <div class="card stat-tile"><div class="stat-label">Toplam boyut</div><div class="stat-value" id="statSize">—</div></div>
             <div class="card stat-tile"><div class="stat-label">Son indeksleme</div><div class="stat-value" id="statLatest" style="font-size:14px; margin-top:8px;">—</div></div>
         </div>
@@ -64,7 +64,7 @@
                     <textarea class="textarea" id="settingsDesc" style="max-width:420px;"></textarea>
                 </div>
                 <div id="settingsError"></div>
-                <button class="btn btn-primary" id="settingsKaydet">Değişiklikleri kaydet</button>
+                <button class="btn btn-primary" id="settingsSave">Değişiklikleri kaydet</button>
             </div>
         </div>
 
@@ -126,7 +126,7 @@
             <div id="uploadError"></div>
         </div>
         <div class="modal-footer">
-            <button class="btn btn-secondary" id="uploadVazgeç" onclick="closeModal('uploadModal')">Vazgeç</button>
+            <button class="btn btn-secondary" id="uploadCancel" onclick="closeModal('uploadModal')">Vazgeç</button>
             <button class="btn btn-primary" id="uploadSubmit" disabled>Yükle ve analiz et</button>
         </div>
     </div>
