@@ -15,16 +15,16 @@
     </div>
 
     <div class="card" style="margin-bottom:16px;" id="modelChainCard">
-        <div class="card-header"><div class="card-title">Model chain</div></div>
+        <div class="card-header"><div class="card-title">Model zinciri</div></div>
         <div class="card-pad">
-            <div class="model-chain" id="modelChain"><div class="loading-state"><div class="spinner"></div>Loading…</div></div>
+            <div class="model-chain" id="modelChain"><div class="loading-state"><div class="spinner"></div>Yükleniyor…</div></div>
         </div>
     </div>
 
     {% if viewer_url %}
     <div class="card card-pad viewer-card" style="margin-bottom:16px;">
         <div>
-            <div class="card-title">Agentic Chunking Viewer</div>
+            <div class="card-title">Chunking Viewer</div>
             <p style="font-size:12.5px; color:var(--text-2); margin:4px 0 0; max-width:720px;">
                 The research side of this proof of concept: Markdown / Hybrid / Structure-first / Agentic chunking compared page by page (Sunum),
                 a live "ask the document" chat over each method (Sorgu), every boundary decision explained (Debug) and the frozen benchmark (Benchmark).
@@ -40,17 +40,17 @@
 
     <div class="tabs">
         <button class="tab active" data-tab="quality">Retrieval Quality</button>
-        <button class="tab" data-tab="search">Chunk Search</button>
+        <button class="tab" data-tab="search">Parça arama</button>
         <button class="tab" data-tab="parser">Parser Units</button>
-        <button class="tab" data-tab="chunks">Chunk Browser</button>
+        <button class="tab" data-tab="chunks">Parça gezgini</button>
     </div>
 
     <!-- Retrieval Quality -->
     <div class="tab-panel active" id="panel-quality">
         <div class="card card-pad" style="margin-bottom:16px;">
             <p style="font-size:12.5px; color:var(--text-2); margin-bottom:14px;">
-                Ask a question, inspect the returned sources and mark the correct one.
-                No answer is generated — only retrieval is evaluated. Marks are stored in the gold set used by the regression CLI.
+                Bir soru sorun, dönen kaynakları inceleyin ve doğru olanı işaretleyin.
+                Cevap üretilmez; yalnız aramanın doğru parçayı bulup bulmadığı ölçülür. İşaretlemeler ölçüm setine kaydedilir.
             </p>
             <div class="toolbar">
                 <div class="field" style="flex:1; min-width:240px;">
@@ -99,7 +99,7 @@
         <div class="card card-pad" style="margin-bottom:16px;">
             <div class="toolbar">
                 <div class="field" style="min-width:260px;">
-                    <label class="field-label" for="parserDoc">Document</label>
+                    <label class="field-label" for="parserDoc">Doküman</label>
                     <select class="select" id="parserDoc"></select>
                 </div>
                 <div class="field">
@@ -112,14 +112,14 @@
                 <div class="field">
                     <label class="field-label" for="puType">Type</label>
                     <select class="select" id="puType" style="width:130px;">
-                        <option value="">All types</option>
+                        <option value="">Tüm tipler</option>
                         <option value="heading">heading</option>
                         <option value="paragraph">paragraph</option>
                         <option value="list">list</option>
                         <option value="table">table</option>
                     </select>
                 </div>
-                <button class="btn btn-primary" id="puApply">Apply</button>
+                <button class="btn btn-primary" id="puApply">Uygula</button>
                 <span style="flex:1;"></span>
                 <button class="btn btn-secondary btn-sm" id="puPrev">&larr; Prev</button>
                 <span id="puRange" style="font-size:12.5px; color:var(--text-2);"></span>
@@ -135,7 +135,7 @@
         <div class="card card-pad" style="margin-bottom:16px;">
             <div class="toolbar" style="margin-bottom:0;">
                 <div class="field" style="min-width:260px;">
-                    <label class="field-label" for="chunksDoc">Document</label>
+                    <label class="field-label" for="chunksDoc">Doküman</label>
                     <select class="select" id="chunksDoc"></select>
                 </div>
                 <button class="btn btn-primary" id="chunksLoad">Load chunks</button>
@@ -149,7 +149,7 @@
 <div class="modal-backdrop" id="chunkViewModal">
     <div class="modal modal-lg">
         <div class="modal-header">
-            <div class="modal-title" id="chunkViewTitle">Chunk</div>
+            <div class="modal-title" id="chunkViewTitle">Parça</div>
             <button class="modal-close" onclick="closeModal('chunkViewModal')">&times;</button>
         </div>
         <div class="modal-body">
@@ -157,7 +157,7 @@
             <div class="chunk-text" id="chunkViewText" style="max-height:50vh; overflow-y:auto;"></div>
         </div>
         <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal('chunkViewModal')">Close</button>
+            <button class="btn btn-secondary" onclick="closeModal('chunkViewModal')">Kapat</button>
         </div>
     </div>
 </div>
@@ -175,7 +175,7 @@
             <div id="chunkEditError"></div>
         </div>
         <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal('chunkEditModal')">Cancel</button>
+            <button class="btn btn-secondary" onclick="closeModal('chunkEditModal')">Vazgeç</button>
             <button class="btn btn-primary" id="chunkEditSave">Save changes</button>
         </div>
     </div>

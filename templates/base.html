@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="tr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -13,32 +13,32 @@
                 <div class="brand-mark">R</div>
                 <div>
                     <div class="brand-name">RAG Console</div>
-                    <div class="brand-sub">Document intelligence</div>
+                    <div class="brand-sub">Doküman analizi</div>
                 </div>
             </div>
             <nav class="nav">
                 <a class="nav-link {% if active_nav == 'kb' %}active{% endif %}" href="/">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>
-                    <span>Knowledge Bases</span>
+                    <span>Bilgi tabanları</span>
                 </a>
                 <a class="nav-link {% if active_nav == 'chat' %}active{% endif %}" href="/chat">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                    <span>Chat</span>
+                    <span>Sohbet</span>
                 </a>
-                <div class="nav-section">Tools</div>
+                <div class="nav-section">Araçlar</div>
                 <a class="nav-link {% if active_nav == 'lab' %}active{% endif %}" href="/lab">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2v6L4.5 18.5A2 2 0 0 0 6.24 21h11.52a2 2 0 0 0 1.74-2.5L14 8V2"/><path d="M8.5 2h7"/><path d="M7 15h10"/></svg>
                     <span>Lab</span>
                 </a>
                 {% if viewer_url %}
-                <a class="nav-link nav-link-external" id="viewerLink" href="{{ viewer_url }}" target="_blank" rel="noopener" title="Agentic Chunking Viewer — how the chunking technology works (opens in a new tab)">
+                <a class="nav-link nav-link-external" id="viewerLink" href="{{ viewer_url }}" target="_blank" rel="noopener" title="Chunking Viewer — yöntemleri ve sonuçlarını karşılaştırın (yeni sekmede açılır)">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M9 20V10"/></svg>
-                    <span>Agentic Chunking Viewer</span>
-                    <span class="nav-status" id="viewerStatus" title="Checking the viewer…"></span>
+                    <span>Chunking Viewer</span>
+                    <span class="nav-status" id="viewerStatus" title="Viewer kontrol ediliyor…"></span>
                 </a>
                 {% endif %}
             </nav>
-            <div class="sidebar-footer">Retrieval-augmented<br>document QA</div>
+            <div class="sidebar-footer">Belgelerinizden<br>kaynaklı cevaplar</div>
         </aside>
         <main class="main">
             {% block content %}{% endblock %}
@@ -49,14 +49,14 @@
     <div class="modal-backdrop" id="confirmModal">
         <div class="modal">
             <div class="modal-header">
-                <div class="modal-title" id="confirmTitle">Confirm</div>
+                <div class="modal-title" id="confirmTitle">Onay</div>
             </div>
             <div class="modal-body">
                 <p id="confirmMessage" style="color: var(--text-2); font-size: 13.5px;"></p>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" id="confirmCancel">Cancel</button>
-                <button class="btn btn-primary" id="confirmOk">Confirm</button>
+                <button class="btn btn-secondary" id="confirmVazgeç">Vazgeç</button>
+                <button class="btn btn-primary" id="confirmOk">Onayla</button>
             </div>
         </div>
     </div>

@@ -32,12 +32,12 @@ async function api(path, options) {
   try {
     response = await fetch(path, init);
   } catch (e) {
-    throw new Error('Network error: ' + e.message);
+    throw new Error('Bağlantı hatası: ' + e.message);
   }
   let body = null;
   try { body = await response.json(); } catch (e) { /* non-JSON body */ }
   if (!response.ok || (body && body.success === false)) {
-    const message = (body && body.error) || ('Request failed (' + response.status + ')');
+    const message = (body && body.error) || ('İstek başarısız (' + response.status + ')');
     const err = new Error(message);
     err.status = response.status;
     err.body = body;
@@ -91,7 +91,7 @@ document.addEventListener('keydown', (event) => {
 function confirmDialog(opts) {
   return new Promise((resolve) => {
     const backdrop = $('#confirmModal');
-    if (!backdrop) { resolve(window.confirm(opts.message || 'Are you sure?')); return; }
+    if (!backdrop) { resolve(window.confirm(opts.message || 'Emin misiniz?')); return; }
     $('#confirmTitle').textContent = opts.title || 'Confirm';
     $('#confirmMessage').textContent = opts.message || '';
     const okBtn = $('#confirmOk');
@@ -138,15 +138,15 @@ function chunkingModeLabel(doc) {
   const snap = doc && doc.pipeline_snapshot;
   const chunker = snap && snap.pipeline && snap.pipeline.chunker;
   if (chunker === 'structure_first') return 'Standard';
-  if (chunker === 'v4') return 'Frozen V4';
-  if (chunker === 'legacy') return 'Semantic (legacy)';
+  if (chunker === 'v4') return 'Dondurulmuş V4';
+  if (chunker === 'legacy') return 'Anlamsal (eski)';
   return null;
 }
 
 function chunkerTypeLabel(type) {
-  if (type === 'structure_first') return 'Standard (structure-first)';
-  if (type === 'v4') return 'Frozen V4';
-  if (type === 'legacy') return 'Semantic (legacy)';
+  if (type === 'structure_first') return 'Standard (yapı öncelikli)';
+  if (type === 'v4') return 'Dondurulmuş V4';
+  if (type === 'legacy') return 'Anlamsal (eski)';
   return type || '—';
 }
 
@@ -181,7 +181,7 @@ async function populateKbSelect(selectEl, opts) {
     selectEl.innerHTML = '<option value="">Failed to load</option>';
     throw e;
   }
-  const placeholder = options.placeholder || 'Select a knowledge base';
+  const placeholder = options.placeholder || 'Bilgi tabanı seçin';
   selectEl.innerHTML = '<option value="">' + escapeHtml(placeholder) + '</option>'
     + kbs.map((kb) => '<option value="' + escapeHtml(kb.kb_id) + '">' + escapeHtml(kb.name) + '</option>').join('');
   const stored = getStoredKb();
@@ -193,7 +193,7 @@ async function populateKbSelect(selectEl, opts) {
 /* Companion viewer status                                             */
 /* ------------------------------------------------------------------ */
 /**
- * Mark the "Agentic Chunking Viewer" link with whether its server answers.
+ * Mark the "Agentic Bölümleme Viewer" link with whether its server answers.
  * The probe runs on the backend (a local address the browser may not be
  * allowed to reach cross-origin); the link itself works regardless.
  */
@@ -214,7 +214,7 @@ async function probeViewerStatus() {
     dot.title = live ? 'Viewer running' : 'Viewer not running — start it with .\start-demo.ps1';
   }
   if (card) {
-    card.textContent = live ? 'Running' : 'Not running';
+    card.textContent = live ? 'Running' : 'Çalışmıyor';
     card.classList.toggle('viewer-state-live', live);
     card.classList.toggle('viewer-state-off', !live);
     card.title = live ? '' : 'Start it with .\start-demo.ps1 (or python -m amsc.viewer_server in the chunk repo)';

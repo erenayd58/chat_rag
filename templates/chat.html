@@ -1,20 +1,20 @@
 {% extends "base.html" %}
-{% block title %}Chat · RAG Console{% endblock %}
+{% block title %}Sohbet · RAG Console{% endblock %}
 
 {% block content %}
 <div class="chat-layout">
     <div class="chat-topbar">
-        <label for="kbSelect" style="font-size:13px; font-weight:550; color:var(--text-2);">Knowledge Base</label>
+        <label for="kbSelect" style="font-size:13px; font-weight:550; color:var(--text-2);">Bilgi tabanı</label>
         <select class="select" id="kbSelect" style="width:260px;"></select>
         <span style="flex:1;"></span>
-        <button class="btn btn-ghost btn-sm" id="clearBtn">Clear conversation</button>
+        <button class="btn btn-ghost btn-sm" id="clearBtn">Sohbeti temizle</button>
     </div>
 
     <div class="chat-scroll" id="chatScroll">
         <div class="chat-thread" id="chatThread">
             <div class="empty-state" id="chatEmpty">
-                <h3>Ask your documents</h3>
-                <p>Select a knowledge base above and ask a question. Answers cite the document sections they are based on.</p>
+                <h3>Dokümanlarınıza sorun</h3>
+                <p>Yukarıdan bir bilgi tabanı seçin ve sorunuzu yazın. Cevap, dayandığı doküman bölümlerini kaynak olarak gösterir.</p>
             </div>
         </div>
     </div>
@@ -22,10 +22,10 @@
     <div class="chat-composer">
         <div class="composer-inner">
             <div class="composer-row">
-                <input class="input" id="queryInput" type="text" placeholder="Ask a question about the documents in this knowledge base…" disabled>
-                <button class="btn btn-primary" id="sendBtn" disabled>Send</button>
+                <input class="input" id="queryInput" type="text" placeholder="Bu bilgi tabanındaki dokümanlara bir soru sorun…" disabled>
+                <button class="btn btn-primary" id="sendBtn" disabled>Gönder</button>
             </div>
-            <div class="composer-hint" id="composerHint">Select a knowledge base to start.</div>
+            <div class="composer-hint" id="composerHint">Başlamak için bir bilgi tabanı seçin.</div>
         </div>
     </div>
 </div>
@@ -34,7 +34,7 @@
 <div class="modal-backdrop" id="chunkModal">
     <div class="modal modal-wide">
         <div class="modal-header">
-            <div class="modal-title" id="chunkModalTitle">Source</div>
+            <div class="modal-title" id="chunkModalTitle">Kaynak parça</div>
             <button class="modal-close" onclick="closeModal('chunkModal')">&times;</button>
         </div>
         <div class="modal-body">
@@ -42,7 +42,7 @@
             <div class="chunk-modal-text" id="chunkModalText"></div>
         </div>
         <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal('chunkModal')">Close</button>
+            <button class="btn btn-secondary" onclick="closeModal('chunkModal')">Kapat</button>
         </div>
     </div>
 </div>

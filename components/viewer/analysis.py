@@ -1,31 +1,39 @@
-"""Package an ingested document so the Viewer v2 can actually analyse it.
+"""One document, one parse, several chunking variants -- packaged for the Viewer.
 
-The Viewer reads one shape: a packaged Deep Analysis tree plus the canonical
-units it was pinned to (``amsc.deep_arm`` writes the tree, ``amsc.viewer_v2``
-turns it into the page's payload). An ingest here already produces every
-expensive input that tree needs, so this module reuses them rather than
-running anything twice:
+The product model this implements:
 
-* the **canonical units** are the ones the chunker normalised for this
-  ingest -- the PDF is never parsed again;
-* on a Deep Analysis upload the **whole run** (deep rows, Standard rows,
-  selection audit, verifier verdicts, proposer audit) comes straight off the
-  chunker, so **no second proposer or verifier call is ever made**;
-* on a Standard upload there is no run to reuse, so the *deterministic*
-  quality contract is what fills the Deep side: ``use_llm=False``, zero
-  provider calls, zero cost. The document is labelled with that status --
-  never passed off as a model-backed run.
+    DOCUMENT   the PDF someone uploaded, identified by its *content*
+    VARIANT    one chunking method run over that document's canonical
 
-Everything else (``run_standard``, the boundary story, the structural quality
-tables) is deterministic CPU work over data already in hand.
+A document is parsed once. Its canonical units are written here and every
+requested method runs over that same file, so three methods cost one parse.
+Re-uploading the same bytes does not make a second document: identity is the
+content hash, so the existing analysis gains the new variants instead. Two
+files with the same name and different bytes stay two documents.
+
+What is never done twice:
+
+* the **parse** -- the canonical is written once and reused by every variant,
+  and by every later variant added to the same document;
+* the **Deep Analysis model calls** -- when the ingest already ran Deep, its
+  whole run (rows, selection audit, verifier verdicts, proposer audit) is
+  taken off the chunker as-is. A Deep variant asked for later, with no run to
+  reuse, runs the deterministic contract instead: ``use_llm=False``, zero
+  provider calls, zero cost, and recorded as exactly that.
+
+Every variant is written by the same packager the benchmark uses
+(``amsc.deep_arm``), so a live arm and a frozen arm are the same shape. No
+retrieval is scored for a live document: it has no gold set, and a number
+without one would be invented.
 
 Nothing here runs at query time, and nothing here writes outside its own
-directory: these are live workspace artifacts, regenerable from an ingest and
-entirely separate from the frozen benchmark trees in the chunk repository.
+root -- these are regenerable workspace artifacts, entirely separate from the
+frozen benchmark trees in the chunk repository.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -36,6 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from components.viewer import methods as M
 from config import paths
 from utils import get_logger
 
@@ -49,7 +58,7 @@ STATUS_RUNNING = "running"
 STATUS_READY = "ready"
 STATUS_FAILED = "failed"
 
-#: How the Deep side of the comparison was produced.
+#: How a Deep variant was produced.
 SOURCE_INGEST = "ingest_deep_run"
 SOURCE_DETERMINISTIC = "deterministic_contract"
 
@@ -57,24 +66,21 @@ _PAYLOAD = "viewer-payload.json"
 _STATE = "state.json"
 _UNITS = "units.jsonl"
 _RUN = "run"
+_VARIANTS = "variants"
 
 _queue: "queue.Queue[str]" = queue.Queue()
 _inflight: set[str] = set()
 _lock = threading.Lock()
 _worker: threading.Thread | None = None
-#: One build at a time per document. The worker is not the only caller -- a
-#: test or a direct request may build too -- and two builds of one document
-#: would fight over the same tree.
+#: One build at a time per document.
 _build_locks: dict[str, threading.Lock] = {}
-#: How the worker recovers the canonical of a document that was ingested
-#: before this packaging existed. Registered by the application, because
-#: only it knows how to reach the parser cache; called on the worker,
-#: because that lookup is far too slow for a request.
+#: How the worker recovers the canonical of a document ingested before this
+#: packaging existed. Registered by the application, called on the worker.
 _unit_resolver = None
 
 
 # --------------------------------------------------------------------------
-# layout
+# identity and layout
 # --------------------------------------------------------------------------
 
 
@@ -82,27 +88,55 @@ def root() -> Path:
     return Path(paths.viewer_live_analysis())
 
 
-def _safe_id(doc_id: str) -> str:
-    """A document id as a directory name, with no way out of the root."""
-    cleaned = "".join(ch if (ch.isalnum() or ch in "-_.") else "_" for ch in str(doc_id or ""))
+def _safe_id(value: str) -> str:
+    """A value as a directory name, with no way out of the root."""
+    cleaned = "".join(ch if (ch.isalnum() or ch in "-_.") else "_" for ch in str(value or ""))
     cleaned = cleaned.strip("._") or "document"
     return cleaned[:120]
 
 
-def document_dir(doc_id: str) -> Path:
-    return root() / _safe_id(doc_id)
+def content_key(content_sha: str) -> str:
+    """The directory name for a document's content hash."""
+    return "doc-" + _safe_id(str(content_sha))[:24]
 
 
-def units_path(doc_id: str) -> Path:
-    return document_dir(doc_id) / _UNITS
+def key_for(doc_id: str, content_sha: str | None = None) -> str:
+    """Which analysis directory this console document belongs to.
+
+    Content first: the same bytes are the same document however many times
+    they were uploaded and whatever the console called each upload. A
+    document whose hash we were never told keeps its own directory, which is
+    also what every record written before content identity existed has.
+    """
+    if content_sha:
+        return content_key(content_sha)
+    for key, state in _all_states().items():
+        if doc_id in (state.get("doc_ids") or []):
+            return key
+    return _safe_id(doc_id)
 
 
-def run_dir(doc_id: str) -> Path:
-    return document_dir(doc_id) / _RUN
+def document_dir(key: str) -> Path:
+    # Sanitised here as well as at the point a key is made: this is the only
+    # function that turns a name into a path, so it is the one place that
+    # must not be able to leave the root, whoever calls it.
+    return root() / _safe_id(key)
 
 
-def payload_path(doc_id: str) -> Path:
-    return document_dir(doc_id) / _PAYLOAD
+def units_path(key: str) -> Path:
+    return document_dir(key) / _UNITS
+
+
+def run_dir(key: str) -> Path:
+    return document_dir(key) / _RUN
+
+
+def variant_dir(key: str, method: str) -> Path:
+    return document_dir(key) / _VARIANTS / _safe_id(method)
+
+
+def payload_path(key: str) -> Path:
+    return document_dir(key) / _PAYLOAD
 
 
 # --------------------------------------------------------------------------
@@ -113,8 +147,7 @@ def payload_path(doc_id: str) -> Path:
 def _write_json(path: Path, payload: Any) -> None:
     # The scratch name is per writer: a state record can be written by the
     # worker and by a request in the same moment, and on Windows two writers
-    # sharing one temporary path collide on the rename rather than merely
-    # racing to it.
+    # sharing one temporary path collide on the rename rather than racing.
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     with tmp.open("w", encoding="utf-8", newline="\n") as handle:
@@ -122,56 +155,85 @@ def _write_json(path: Path, payload: Any) -> None:
     os.replace(tmp, path)
 
 
-def read_state(doc_id: str) -> dict:
-    """This document's analysis state, derived from disk.
-
-    Disk is the authority, not the queue: a console restarted mid-build finds
-    a ``running`` record with no payload and can queue it again.
-    """
-    path = document_dir(doc_id) / _STATE
+def _read_state_file(key: str) -> dict:
+    path = document_dir(key) / _STATE
     if not path.is_file():
-        return {"doc_id": doc_id, "status": STATUS_MISSING}
+        return {"key": key, "status": STATUS_MISSING}
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
-        return {"doc_id": doc_id, "status": STATUS_FAILED, "error": "unreadable state record"}
-    if state.get("status") == STATUS_READY and not payload_path(doc_id).is_file():
+        return {"key": key, "status": STATUS_FAILED, "error": "unreadable state record"}
+    state.setdefault("key", key)
+    state.setdefault("doc_ids", [])
+    state.setdefault("methods", {})
+    state.setdefault("requested", [])
+    if state.get("status") == STATUS_READY and not payload_path(key).is_file():
         state["status"] = STATUS_PENDING
         state["error"] = "the viewer payload is gone; it will be built again"
     return state
 
 
-def _set_state(doc_id: str, **fields: Any) -> dict:
-    state = read_state(doc_id)
-    state.update(fields)
-    state["doc_id"] = doc_id
-    state["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    _write_json(document_dir(doc_id) / _STATE, state)
-    return state
-
-
-def states() -> dict[str, dict]:
+def _all_states() -> dict[str, dict]:
     directory = root()
     if not directory.is_dir():
         return {}
     found: dict[str, dict] = {}
     for child in sorted(directory.iterdir()):
         if child.is_dir() and (child / _STATE).is_file():
-            state = read_state(child.name)
-            found[state.get("doc_id") or child.name] = state
+            found[child.name] = _read_state_file(child.name)
     return found
 
 
-def discard(doc_id: str) -> bool:
-    """Drop one document's live analysis. Frozen trees live elsewhere and are
-    never reachable from here -- this only ever removes a directory this
-    module wrote under its own root."""
-    directory = document_dir(doc_id)
+def read_state(doc_id: str, content_sha: str | None = None) -> dict:
+    """One console document's analysis state, derived from disk."""
+    state = _read_state_file(key_for(doc_id, content_sha))
+    state["doc_id"] = doc_id
+    return state
+
+
+def _set_state(key: str, **fields: Any) -> dict:
+    state = _read_state_file(key)
+    state.update(fields)
+    state["key"] = key
+    state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    _write_json(document_dir(key) / _STATE, state)
+    return state
+
+
+def states() -> dict[str, dict]:
+    """Every console document that has an analysis, keyed by its ``doc_id``.
+
+    One analysis may answer for several console records -- the same PDF
+    uploaded twice is one document -- so a state can appear more than once
+    here, which is exactly what makes the workspace list show one entry per
+    console record without inventing a second analysis for it.
+    """
+    found: dict[str, dict] = {}
+    for key, state in _all_states().items():
+        for doc_id in state.get("doc_ids") or [key]:
+            found[doc_id] = {**state, "doc_id": doc_id}
+    return found
+
+
+def discard(doc_id: str, content_sha: str | None = None) -> bool:
+    """Forget one console record.
+
+    The analysis itself only goes when the last record pointing at it does:
+    deleting one of two uploads of the same PDF must not take the other's
+    analysis with it.
+    """
+    key = key_for(doc_id, content_sha)
+    directory = document_dir(key)
     if not directory.is_dir():
         return False
+    state = _read_state_file(key)
+    remaining = [d for d in (state.get("doc_ids") or []) if d != doc_id]
+    if remaining:
+        _set_state(key, doc_ids=remaining)
+        return True
     shutil.rmtree(directory, ignore_errors=True)
     with _lock:
-        _inflight.discard(_safe_id(doc_id))
+        _inflight.discard(key)
     return True
 
 
@@ -181,12 +243,7 @@ def discard(doc_id: str) -> bool:
 
 
 def _dump_units(units: Sequence[Any], target: Path) -> int:
-    """Write canonical units as the JSONL ``amsc`` reads.
-
-    Accepts the chunker's ``RawDocumentUnit`` objects or plain rows recovered
-    from the parser cache; either way the rows are validated on the way out,
-    so a tree is never pinned to a canonical the loader would reject.
-    """
+    """Write canonical units as the JSONL ``amsc`` reads."""
     from amsc.models import RawDocumentUnit
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -202,25 +259,53 @@ def _dump_units(units: Sequence[Any], target: Path) -> int:
     return count
 
 
+def _count_lines(path: Path) -> int:
+    with path.open("r", encoding="utf-8") as handle:
+        return sum(1 for line in handle if line.strip())
+
+
 def set_unit_resolver(resolver) -> None:
     """Register how to recover an already-ingested document's canonical."""
     global _unit_resolver
     _unit_resolver = resolver
 
 
+def _merge_requested(state: dict, wanted: Sequence[str]) -> list[str]:
+    """The methods this document should end up with, in display order."""
+    have = set(state.get("requested") or []) | set(wanted or ())
+    return [key for key in M.ORDER if key in have]
+
+
 def request_build(*, doc_id: str, label: str, kb_id: str | None = None,
-                  kb_name: str | None = None, chunking_mode: str | None = None) -> dict:
+                  kb_name: str | None = None, chunking_mode: str | None = None,
+                  content_sha: str | None = None,
+                  wanted: Sequence[str] | None = None) -> dict:
     """Queue a document whose canonical still has to be recovered.
 
-    This is the cheap half of :func:`stage`: it records what the document is
-    and queues it. Finding its canonical -- a vector-store read and a scan of
-    the parser cache -- is the worker's job, so a refresh that queues twenty
+    The cheap half of :func:`stage`: it records what the document is and
+    queues it. Finding its canonical -- a vector-store read and a scan of the
+    parser cache -- is the worker's job, so a refresh that queues twenty
     documents still returns at status speed.
     """
-    _set_state(doc_id, status=STATUS_PENDING, label=label, kb_id=kb_id, kb_name=kb_name,
-               chunking_mode=chunking_mode, deep_source=SOURCE_DETERMINISTIC, error=None)
-    enqueue(doc_id)
-    return read_state(doc_id)
+    key = key_for(doc_id, content_sha)
+    state = _read_state_file(key)
+    # An older record carries only its ingest mode; honour that as the
+    # variant set rather than inventing methods it was never given.
+    default = [M.STANDARD] + ([M.DEEP] if chunking_mode == "deep_analysis" else [M.DEEP])
+    _set_state(
+        key,
+        status=STATUS_PENDING,
+        label=label,
+        kb_id=kb_id,
+        kb_name=kb_name,
+        chunking_mode=chunking_mode,
+        content_sha=content_sha or state.get("content_sha"),
+        doc_ids=sorted(set(state.get("doc_ids") or []) | {doc_id}),
+        requested=_merge_requested(state, wanted if wanted is not None else default),
+        error=None,
+    )
+    enqueue(key)
+    return read_state(doc_id, content_sha)
 
 
 def stage(
@@ -228,154 +313,287 @@ def stage(
     doc_id: str,
     label: str,
     units: Iterable[Any],
+    methods: Sequence[str] | None = None,
     deep_result: Any = None,
     kb_id: str | None = None,
     kb_name: str | None = None,
     chunking_mode: str | None = None,
+    content_sha: str | None = None,
 ) -> dict:
     """Put this ingest's reusable outputs on disk and queue the build.
 
     Called from the upload request, so it does serialisation only: writing
-    the canonical and (when the ingest ran one) the Deep Analysis run. The
-    packaging, which is CPU work, happens on the worker.
+    the canonical and (when the ingest ran one) the Deep Analysis run. Every
+    chunker runs on the worker, because that is CPU work and an upload should
+    not wait on it.
     """
-    directory = document_dir(doc_id)
+    key = key_for(doc_id, content_sha)
+    directory = document_dir(key)
     directory.mkdir(parents=True, exist_ok=True)
-    unit_count = _dump_units(list(units), units_path(doc_id))
+    state = _read_state_file(key)
+    # The key is the content, so a canonical already written for this key is
+    # this document's canonical. Writing it again would be pointless work --
+    # and, while a build is reading it, a fight over the same file.
+    if units_path(key).is_file():
+        unit_count = state.get("unit_count") or _count_lines(units_path(key))
+    else:
+        unit_count = _dump_units(list(units), units_path(key))
+    wanted = M.normalise(methods) if methods else _merge_requested(state, [M.STANDARD, M.DEEP])
 
-    source = SOURCE_DETERMINISTIC
+    variants = dict(state.get("methods") or {})
     if deep_result is not None:
         from amsc.deep_run import write_tree
 
-        target = run_dir(doc_id)
+        target = run_dir(key)
+        # A fresh run replaces whatever was there: this is the ingest's own
+        # output and it is the truth about this document's Deep variant.
+        shutil.rmtree(target, ignore_errors=True)
         target.mkdir(parents=True, exist_ok=True)
-        # The units path recorded in the tree stays relative to the analysis
-        # root, so the directory can be copied or mounted somewhere else.
-        write_tree(deep_result, target, units_path=Path(_safe_id(doc_id)) / _UNITS)
-        source = SOURCE_INGEST
+        write_tree(deep_result, target, units_path=Path(key) / _UNITS)
+        variants[M.DEEP] = {"status": STATUS_PENDING, "source": SOURCE_INGEST}
 
     _set_state(
-        doc_id,
+        key,
         status=STATUS_PENDING,
         label=label,
         kb_id=kb_id,
         kb_name=kb_name,
         chunking_mode=chunking_mode,
-        deep_source=source,
+        content_sha=content_sha or state.get("content_sha"),
+        doc_ids=sorted(set(state.get("doc_ids") or []) | {doc_id}),
+        requested=_merge_requested(state, wanted),
+        methods=variants,
         unit_count=unit_count,
         error=None,
     )
-    enqueue(doc_id)
-    return read_state(doc_id)
+    enqueue(key)
+    return read_state(doc_id, content_sha)
+
+
+def add_methods(doc_id: str, wanted: Sequence[str], content_sha: str | None = None) -> dict:
+    """Ask for more variants of a document that already has an analysis.
+
+    This is how a second method reaches a document: not by uploading the PDF
+    again, but by asking for another analysis of the one already here. The
+    canonical is on disk, so nothing is parsed and no variant already built
+    is built again.
+    """
+    key = key_for(doc_id, content_sha)
+    state = _read_state_file(key)
+    if state.get("status") == STATUS_MISSING:
+        raise FileNotFoundError(f"{doc_id} has no analysis to add to")
+    _set_state(key, requested=_merge_requested(state, M.normalise(wanted)),
+               status=STATUS_PENDING, error=None)
+    enqueue(key)
+    return read_state(doc_id, content_sha)
 
 
 # --------------------------------------------------------------------------
-# building (on the worker: deterministic CPU work, never a provider call)
+# building (on the worker: CPU work, and never a second provider call)
 # --------------------------------------------------------------------------
 
 
-def _deterministic_run(doc_id: str) -> Any:
-    """The Deep side of the comparison for a document with no run to reuse.
+def _budget() -> dict[str, int]:
+    from components.chunker.structural_chunker import (
+        HARD_MAX_TOKENS, MIN_TOKENS, SOFT_MAX_TOKENS, TARGET_TOKENS,
+    )
 
-    ``use_llm=False`` is the whole point: this is the deterministic quality
-    contract, so it makes no provider call, costs nothing, and is recorded as
-    such rather than as a model-backed Deep Analysis.
+    return {"min_tokens": MIN_TOKENS, "target_tokens": TARGET_TOKENS,
+            "soft_max_tokens": SOFT_MAX_TOKENS, "hard_max_tokens": HARD_MAX_TOKENS}
+
+
+def _counter():
+    from amsc.tokenization import TiktokenTokenCounter
+
+    from components.chunker.structural_chunker import TOKEN_ENCODING
+
+    return TiktokenTokenCounter(TOKEN_ENCODING)
+
+
+def _chunk_rows(method: str, units: Sequence[Any]) -> list[dict]:
+    """One method's chunk rows over the canonical that is already in hand."""
+    budget = _budget()
+    counter = _counter()
+    if method == M.MARKDOWN:
+        from amsc import markdown_chunker
+
+        return markdown_chunker.chunk_units(
+            units, counter=counter, chunk_size_tokens=700, chunk_overlap_tokens=140,
+            hard_max_tokens=budget["hard_max_tokens"],
+        )
+    if method == M.STANDARD:
+        from amsc import structural_chunker
+
+        return structural_chunker.chunk_units(units, counter=counter, **budget)
+    if method == M.HYBRID:
+        from amsc import hybrid_chunker
+        from amsc.cache import FileEmbeddingCache
+        from amsc.embeddings import (
+            CachedSemanticBoundaryEmbedder, SentenceTransformerBoundaryEmbedder,
+        )
+
+        # The same model, prefix and cache the frozen benchmark's Hybrid arm
+        # used: a live Hybrid variant is that arm, not a lookalike.
+        embedder = CachedSemanticBoundaryEmbedder(
+            SentenceTransformerBoundaryEmbedder.from_pretrained(M.BOUNDARY_MODEL),
+            FileEmbeddingCache(Path(paths.boundary_embedding_cache())),
+        )
+        return hybrid_chunker.chunk_units(units, counter=counter, boundary_embedder=embedder,
+                                          **budget).chunks
+    raise ValueError(f"{method!r} is not a chunker this module runs")
+
+
+def _deterministic_deep(key: str) -> Any:
+    """The Deep variant for a document with no ingest run to reuse.
+
+    ``use_llm=False`` is the whole point: the deterministic quality contract
+    makes no provider call, costs nothing, and is recorded as such rather
+    than passed off as a model-backed run.
     """
     from amsc.deep_pipeline import MODE_DEEP, DeepAnalysisSettings, chunk_document
     from amsc.io import load_jsonl_units
-    from amsc.tokenization import TiktokenTokenCounter
 
     from components.chunker.deep_analysis import deep_config
-    from components.chunker.structural_chunker import (
-        HARD_MAX_TOKENS, MIN_TOKENS, SOFT_MAX_TOKENS, TARGET_TOKENS, TOKEN_ENCODING,
-    )
 
-    units = load_jsonl_units(units_path(doc_id))
-    settings = DeepAnalysisSettings(
-        config=deep_config(
-            min_tokens=MIN_TOKENS,
-            target_tokens=TARGET_TOKENS,
-            soft_max_tokens=SOFT_MAX_TOKENS,
-            hard_max_tokens=HARD_MAX_TOKENS,
-        ),
-        use_llm=False,
-        verify=False,
-    )
-    result = chunk_document(
-        units, mode=MODE_DEEP, settings=settings, counter=TiktokenTokenCounter(TOKEN_ENCODING)
-    )
+    units = load_jsonl_units(units_path(key))
+    settings = DeepAnalysisSettings(config=deep_config(**_budget()), use_llm=False, verify=False)
+    result = chunk_document(units, mode=MODE_DEEP, settings=settings, counter=_counter())
     if result.deep is None:
-        raise RuntimeError(f"the deterministic contract produced no run for {doc_id}")
+        raise RuntimeError(f"the deterministic contract produced no run for {key}")
     return result.deep
 
 
-def _build_lock(doc_id: str) -> threading.Lock:
+def _build_lock(key: str) -> threading.Lock:
     with _lock:
-        return _build_locks.setdefault(_safe_id(doc_id), threading.Lock())
+        return _build_locks.setdefault(key, threading.Lock())
 
 
-def build(doc_id: str) -> dict:
-    """Package a staged document and write the payload the Viewer merges."""
-    with _build_lock(doc_id):
-        return _build(doc_id)
+def build(doc_id_or_key: str, content_sha: str | None = None) -> dict:
+    """Package every requested variant and write the payload the Viewer merges."""
+    key = doc_id_or_key if (document_dir(doc_id_or_key) / _STATE).is_file() \
+        else key_for(doc_id_or_key, content_sha)
+    with _build_lock(key):
+        return _build(key)
 
 
-def _build(doc_id: str) -> dict:
-    state = read_state(doc_id)
-    if state.get("status") == STATUS_MISSING:
-        raise FileNotFoundError(f"{doc_id} has not been staged for the viewer")
-    if not units_path(doc_id).is_file():
-        # Queued by request_build: recover the canonical the ingest chunked.
-        if _unit_resolver is None:
-            raise FileNotFoundError(f"{doc_id} has no canonical units and no way to recover them")
+def _ensure_units(key: str, state: dict) -> dict:
+    if units_path(key).is_file():
+        return state
+    if _unit_resolver is None:
+        raise FileNotFoundError(f"{key} has no canonical units and no way to recover them")
+    doc_ids = state.get("doc_ids") or []
+    units = None
+    for doc_id in doc_ids:
         units = _unit_resolver(doc_id, state.get("kb_id"))
-        if not units:
-            raise FileNotFoundError(
-                f"no canonical units found for {doc_id}; only documents ingested through "
-                "the structured parser can be analysed in the Viewer"
-            )
-        _set_state(doc_id, unit_count=_dump_units(list(units), units_path(doc_id)))
-        state = read_state(doc_id)
+        if units:
+            break
+    if not units:
+        raise FileNotFoundError(
+            "no canonical units found; only documents ingested through the "
+            "structured parser can be analysed in the Viewer"
+        )
+    _set_state(key, unit_count=_dump_units(list(units), units_path(key)))
+    return _read_state_file(key)
 
-    _set_state(doc_id, status=STATUS_RUNNING, error=None)
-    from amsc.deep_arm import package
+
+def _build(key: str) -> dict:
+    state = _read_state_file(key)
+    if state.get("status") == STATUS_MISSING:
+        raise FileNotFoundError(f"{key} has not been staged for the viewer")
+    state = _ensure_units(key, state)
+    _set_state(key, status=STATUS_RUNNING, error=None)
+
+    from amsc.deep_arm import package, package_arm
+    from amsc.io import load_jsonl_units
     from amsc.viewer_v2 import load_corpus
 
-    target = run_dir(doc_id)
-    source = state.get("deep_source") or SOURCE_DETERMINISTIC
-    if not (target / "summary.json").is_file():
-        from amsc.deep_run import write_tree
+    units = load_jsonl_units(units_path(key))
+    requested = state.get("requested") or [M.STANDARD]
+    variants: dict[str, dict] = dict(state.get("methods") or {})
+    deep_wanted = M.DEEP in requested
+    extra: dict[str, Path] = {}
 
-        target.mkdir(parents=True, exist_ok=True)
-        write_tree(_deterministic_run(doc_id), target, units_path=Path(_safe_id(doc_id)) / _UNITS)
-        source = SOURCE_DETERMINISTIC
+    # --- Deep first: its packaging also produces the Standard partition, so
+    # --- Standard never has to be chunked twice for one document.
+    if deep_wanted:
+        target = run_dir(key)
+        source = (variants.get(M.DEEP) or {}).get("source") or SOURCE_DETERMINISTIC
+        if not (target / "summary.json").is_file():
+            from amsc.deep_run import write_tree
 
-    summary = package(target, units_path(doc_id), root=root(), write_standard=True)
-    payload = load_corpus(None, root(), deep_dir=target, label=state.get("label") or doc_id)
-    # What the page needs to keep this document apart from the frozen
-    # benchmark corpus, and to say where it came from.
+            target.mkdir(parents=True, exist_ok=True)
+            write_tree(_deterministic_deep(key), target, units_path=Path(key) / _UNITS)
+            source = SOURCE_DETERMINISTIC
+        summary = package(target, units_path(key), root=root(), write_standard=True)
+        run_summary = json.loads((target / "summary.json").read_text(encoding="utf-8"))
+        variants[M.DEEP] = {
+            "status": STATUS_READY, "source": source,
+            "run_status": run_summary.get("status"), "run_mode": run_summary.get("mode"),
+            "model": run_summary.get("model_id"),
+            "calls": int((run_summary.get("proposer") or {}).get("call_count") or 0)
+            + 2 * int((run_summary.get("verifier") or {}).get("group_count") or 0),
+            "chunk_count": (summary.get("chunk_count") or {}).get("deep"),
+        }
+        variants[M.STANDARD] = {"status": STATUS_READY, "source": "deep_run_standard",
+                                "chunk_count": (summary.get("chunk_count") or {}).get("standard")}
+
+    # --- every other requested method, over the same canonical -------------
+    for method in requested:
+        if method == M.DEEP or (method == M.STANDARD and deep_wanted):
+            continue
+        directory = variant_dir(key, method)
+        if not (directory / "chunks.jsonl").is_file():
+            try:
+                rows = _chunk_rows(method, units)
+            except Exception as error:  # noqa: BLE001 - one variant failing is a state
+                logger.error(f"{method} variant failed for {key}: {error}", exc_info=True)
+                variants[method] = {"status": STATUS_FAILED, "error": f"{type(error).__name__}: {error}"}
+                continue
+            packaged = package_arm(rows, units=units, output_dir=directory, counter=_counter())
+            variants[method] = {"status": STATUS_READY, "chunk_count": packaged.get("chunk_count")}
+        else:
+            variants.setdefault(method, {"status": STATUS_READY})
+        extra[method] = directory
+
+    payload = load_corpus(
+        None, root(),
+        deep_dir=run_dir(key) if deep_wanted else None,
+        units_path=units_path(key),
+        extra_arm_dirs=extra,
+        label=state.get("label") or key,
+    )
+    ready = [m for m in M.ORDER if (variants.get(m) or {}).get("status") == STATUS_READY]
+    deep_variant = variants.get(M.DEEP) or {}
+    # What the page needs to keep this document apart from the frozen corpus,
+    # and to say -- per method -- what actually ran.
     payload["live"] = {
-        "docId": doc_id,
+        "docId": (state.get("doc_ids") or [key])[0],
+        "docIds": state.get("doc_ids") or [],
+        "key": key,
         "kbId": state.get("kb_id"),
         "kbName": state.get("kb_name"),
-        "chunkingMode": state.get("chunking_mode"),
-        "deepSource": source,
+        "requested": requested,
+        "methods": {m: variants.get(m, {"status": STATUS_MISSING}) for m in M.ORDER},
+        "deepSource": deep_variant.get("source"),
         "preparedAt": datetime.now().isoformat(timespec="seconds"),
     }
-    _write_json(payload_path(doc_id), payload)
+    _write_json(payload_path(key), payload)
 
+    failed = [m for m in requested if (variants.get(m) or {}).get("status") == STATUS_FAILED]
     return _set_state(
-        doc_id,
-        status=STATUS_READY,
-        deep_source=source,
-        error=None,
-        chunk_count=summary.get("chunk_count") or {},
-        payload_bytes=payload_path(doc_id).stat().st_size,
+        key,
+        status=STATUS_READY if ready else STATUS_FAILED,
+        methods=variants,
+        ready_methods=ready,
+        failed_methods=failed,
+        deep_source=deep_variant.get("source"),
+        error=None if ready else "no variant could be produced",
+        payload_bytes=payload_path(key).stat().st_size,
     )
 
 
-def payload(doc_id: str) -> dict | None:
-    path = payload_path(doc_id)
+def payload(doc_id: str, content_sha: str | None = None) -> dict | None:
+    path = payload_path(key_for(doc_id, content_sha))
     if not path.is_file():
         return None
     try:
@@ -391,24 +609,21 @@ def payload(doc_id: str) -> dict | None:
 
 def _run_worker() -> None:
     while True:
-        doc_id = _queue.get()
+        key = _queue.get()
         try:
-            build(doc_id)
-            logger.info(f"Viewer analysis ready for {doc_id}")
+            build(key)
+            logger.info(f"Viewer analysis ready for {key}")
         except Exception as error:  # noqa: BLE001 - a failed build is a state, not a crash
-            logger.error(f"Viewer analysis failed for {doc_id}: {error}", exc_info=True)
+            logger.error(f"Viewer analysis failed for {key}: {error}", exc_info=True)
             try:
-                _set_state(
-                    doc_id,
-                    status=STATUS_FAILED,
-                    error=f"{type(error).__name__}: {error}",
-                    traceback=traceback.format_exc(limit=6),
-                )
+                _set_state(key, status=STATUS_FAILED,
+                           error=f"{type(error).__name__}: {error}",
+                           traceback=traceback.format_exc(limit=6))
             except Exception:  # pragma: no cover - the state write is best effort
                 pass
         finally:
             with _lock:
-                _inflight.discard(_safe_id(doc_id))
+                _inflight.discard(key)
             _queue.task_done()
 
 
@@ -420,19 +635,14 @@ def _ensure_worker() -> None:
             _worker.start()
 
 
-def enqueue(doc_id: str) -> str:
-    """Queue a build, at most once at a time per document.
-
-    The upload request returns as soon as the ingest is recorded; packaging
-    happens here, so no HTTP call ever waits on it.
-    """
-    key = _safe_id(doc_id)
+def enqueue(key: str) -> str:
+    """Queue a build, at most once at a time per document."""
     with _lock:
         if key in _inflight:
             return STATUS_PENDING
         _inflight.add(key)
     _ensure_worker()
-    _queue.put(doc_id)
+    _queue.put(key)
     return STATUS_PENDING
 
 
@@ -442,15 +652,25 @@ def pending_count() -> int:
 
 
 def resume_incomplete() -> list[str]:
-    """Re-queue anything a previous process left unfinished.
+    """Queue every document whose analysis did not finish.
 
-    A build interrupted by a restart is recorded as ``running`` with no
-    payload; on the next look it simply runs again. Nothing is lost, because
-    every input it needs is already on disk.
+    Disk is the authority: a console killed mid-build leaves a ``running``
+    record with no payload, and the next start picks it up.
     """
-    resumed = []
-    for doc_id, state in states().items():
-        if state.get("status") in (STATUS_PENDING, STATUS_RUNNING):
-            enqueue(doc_id)
-            resumed.append(doc_id)
-    return resumed
+    queued: list[str] = []
+    for key, state in _all_states().items():
+        if state.get("status") in (STATUS_PENDING, STATUS_RUNNING) or (
+            state.get("status") == STATUS_READY and not payload_path(key).is_file()
+        ):
+            enqueue(key)
+            queued.append(key)
+    return queued
+
+
+def sha_of(path: str | Path) -> str:
+    """The content hash a document is identified by."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()

@@ -1,4 +1,4 @@
-/* Knowledge Base detail page: Overview | Documents | Settings + upload. */
+/* Knowledge Base detail page: Overview | Dokümans | Settings + upload. */
 'use strict';
 
 const KB_ID = $('#kbDetailPage').dataset.kbId;
@@ -24,7 +24,7 @@ async function loadKb() {
     const data = await api('/api/kb/' + encodeURIComponent(KB_ID));
     currentKb = data.kb;
   } catch (e) {
-    $('#kbTitle').textContent = 'Knowledge base not found';
+    $('#kbTitle').textContent = 'Bilgi tabanı bulunamadı';
     toast(e.message, 'error');
     return;
   }
@@ -37,7 +37,7 @@ async function loadKb() {
 
   const chunker = currentKb.chunker && currentKb.chunker.type;
   $('#configRows').innerHTML =
-    '<div class="def-row"><span class="def-key">Chunking profile</span><span class="def-val">' + escapeHtml(chunkerTypeLabel(chunker)) + '</span></div>' +
+    '<div class="def-row"><span class="def-key">Bölümleme profile</span><span class="def-val">' + escapeHtml(chunkerTypeLabel(chunker)) + '</span></div>' +
     '<div class="def-row"><span class="def-key">Retrieval method</span><span class="def-val">' + escapeHtml((currentKb.retrieval_method || 'hybrid').toUpperCase()) + '</span></div>' +
     '<div class="def-row"><span class="def-key">Vector store</span><span class="def-val">' + escapeHtml((currentKb.vector_db_provider || 'chroma').toUpperCase()) + '</span></div>' +
     '<div class="def-row"><span class="def-key">Knowledge base ID</span><span class="def-val mono">' + escapeHtml(KB_ID) + '</span></div>';
@@ -57,7 +57,7 @@ async function loadStats() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Documents tab                                                       */
+/* Dokümans tab                                                       */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -102,22 +102,22 @@ function deepAnalysisDetails(d) {
     });
   }
   const quality =
-    defRow('Boundary smells', fmtPair(d.smell_total)) +
+    defRow('Yapısal kalite problemi', fmtPair(d.smell_total)) +
     defRow('Chunks', fmtPair(d.chunk_count)) +
-    defRow('Structural regressions', escapeHtml(String(d.structural_regression_count == null ? '—' : d.structural_regression_count))) +
+    defRow('Kötüleşen bölüm', escapeHtml(String(d.structural_regression_count == null ? '—' : d.structural_regression_count))) +
     smellRows;
   const llm = d.uses_llm
     ? defRow('Model', escapeHtml(d.model_id || '—')) +
       (d.verifier_model_id && d.verifier_model_id !== d.model_id ? defRow('Verifier model', escapeHtml(d.verifier_model_id)) : '') +
-      (proposer ? defRow('Proposer calls', escapeHtml(String(proposer.answered_count)) + ' answered' + (proposer.failed_count ? ', ' + escapeHtml(String(proposer.failed_count)) + ' failed' : '') + ' of ' + escapeHtml(String(proposer.call_count))) : '') +
+      (proposer ? defRow('Model çağrısı', escapeHtml(String(proposer.answered_count)) + ' answered' + (proposer.failed_count ? ', ' + escapeHtml(String(proposer.failed_count)) + ' failed' : '') + ' of ' + escapeHtml(String(proposer.call_count))) : '') +
       (verifier ? defRow('Verifier', escapeHtml(String(verifier.accepted)) + ' accepted / ' + escapeHtml(String(verifier.reverted)) + ' reverted of ' + escapeHtml(String(verifier.group_count)) + ' change groups') : '') +
-      defRow('Sections changed by the model', escapeHtml(String(sections.changed_by_llm == null ? '—' : sections.changed_by_llm)))
+      defRow('Modelin değiştirdiği bölüm', escapeHtml(String(sections.changed_by_llm == null ? '—' : sections.changed_by_llm)))
     : defRow('Model', 'not used' + (d.model_id ? ' (' + escapeHtml(d.model_id) + ')' : '')) +
-      (proposer ? defRow('Proposer calls', escapeHtml(String(proposer.failed_count)) + ' failed of ' + escapeHtml(String(proposer.call_count))) : '');
+      (proposer ? defRow('Model çağrısı', escapeHtml(String(proposer.failed_count)) + ' failed of ' + escapeHtml(String(proposer.call_count))) : '');
   const contract =
-    defRow('Sections moved by the quality contract', escapeHtml(String(sections.moved_by_contract == null ? '—' : sections.moved_by_contract))) +
-    defRow('Hard token cap', checks.hard_cap_ok === undefined ? '—' : (checks.hard_cap_ok ? 'held' : 'BREACHED') + ' (max ' + escapeHtml(String(checks.max_token_count)) + ' / ' + escapeHtml(String(checks.hard_max_tokens)) + ')') +
-    defRow('Coverage', checks.coverage_ok === undefined ? '—' : (checks.coverage_ok ? 'every unit once' : 'MISMATCH'));
+    defRow('Kalite kuralının taşıdığı bölüm', escapeHtml(String(sections.moved_by_contract == null ? '—' : sections.moved_by_contract))) +
+    defRow('Boyut sınırı', checks.hard_cap_ok === undefined ? '—' : (checks.hard_cap_ok ? 'held' : 'BREACHED') + ' (max ' + escapeHtml(String(checks.max_token_count)) + ' / ' + escapeHtml(String(checks.hard_max_tokens)) + ')') +
+    defRow('Kapsama', checks.coverage_ok === undefined ? '—' : (checks.coverage_ok ? 'every unit once' : 'MISMATCH'));
   return (
     '<div class="deep-detail">' +
       '<div class="deep-detail-head deep-status-' + escapeHtml(d.tone) + '">' + deepStatusIcon(d.tone) + ' ' + escapeHtml(d.headline || d.label) + '</div>' +
@@ -140,7 +140,7 @@ function statusBadge(doc) {
   return '<span class="badge badge-neutral">' + escapeHtml(status) + '</span>';
 }
 
-async function loadDocuments() {
+async function loadDokümans() {
   const container = $('#docsContainer');
   container.innerHTML = '<div class="loading-state"><div class="spinner"></div>Loading documents…</div>';
   let docs;
@@ -155,9 +155,9 @@ async function loadDocuments() {
   if (docs.length === 0) {
     container.innerHTML =
       '<div class="empty-state">' +
-      '<h3>No documents yet</h3>' +
+      '<h3>Henüz doküman yok</h3>' +
       '<p>Upload a PDF into this knowledge base to index it for search and chat.</p>' +
-      '<button class="btn btn-primary" onclick="openUploadModal()">Upload Document</button>' +
+      '<button class="btn btn-primary" onclick="openUploadModal()">Upload Doküman</button>' +
       '</div>';
     return;
   }
@@ -189,7 +189,7 @@ async function loadDocuments() {
         '<td style="color:var(--text-2);">' + fmtSize(doc.file_size) + '</td>' +
         '<td style="white-space:nowrap; text-align:right;">' +
           detailsButton +
-          '<button class="btn btn-ghost btn-sm doc-reprocess" disabled title="Re-upload the file to reprocess it — automatic reprocessing is planned">Reprocess</button>' +
+          '<button class="btn btn-ghost btn-sm doc-reprocess" disabled title="Yeniden işlemek için dosyayı tekrar yükleyin">Reprocess</button>' +
           '<button class="btn btn-danger-ghost btn-sm doc-delete">Delete</button>' +
         '</td>' +
       '</tr>' + detailRow
@@ -199,7 +199,7 @@ async function loadDocuments() {
   container.innerHTML =
     '<table class="table">' +
       '<thead><tr>' +
-        '<th>Document</th><th>Status</th><th>Chunking</th><th>Chunks</th><th>Indexed at</th><th>Size</th><th style="text-align:right;">Actions</th>' +
+        '<th>Doküman</th><th>Status</th><th>Bölümleme</th><th>Chunks</th><th>Indexed at</th><th>Size</th><th style="text-align:right;">Actions</th>' +
       '</tr></thead>' +
       '<tbody>' + rows + '</tbody>' +
     '</table>';
@@ -212,7 +212,7 @@ async function loadDocuments() {
       const open = detail.hidden;
       detail.hidden = !open;
       btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-      btn.textContent = open ? 'Hide details' : 'Details';
+      btn.textContent = open ? 'Ayrıntıyı gizle' : 'Details';
     });
   });
 
@@ -222,7 +222,7 @@ async function loadDocuments() {
       const doc = docs[Number(row.dataset.index)];
       const name = (doc.metadata && doc.metadata.original_filename) || doc.file_name;
       const ok = await confirmDialog({
-        title: 'Delete document',
+        title: 'Dokümanı sil',
         message: 'Delete "' + name + '" and its ' + (doc.chunk_count || 0) + ' chunks from this knowledge base?',
         confirmLabel: 'Delete',
         danger: true
@@ -230,11 +230,11 @@ async function loadDocuments() {
       if (!ok) return;
       try {
         await api('/api/documents/' + encodeURIComponent(doc.doc_id) + '?kb_id=' + encodeURIComponent(KB_ID), { method: 'DELETE' });
-        toast('Document deleted', 'success');
-        loadDocuments();
+        toast('Doküman silindi', 'success');
+        loadDokümans();
         loadStats();
       } catch (e) {
-        toast('Delete failed: ' + e.message, 'error');
+        toast('Silme başarısız: ' + e.message, 'error');
       }
     });
   });
@@ -248,30 +248,86 @@ let selectedFile = null;
 function openUploadModal() {
   selectedFile = null;
   $('#fileInput').value = '';
-  $('#chooseFileBtn').textContent = 'Choose a file…';
+  $('#chooseFileBtn').textContent = 'Dosya seç…';
   $('#uploadSubmit').disabled = true;
   $('#uploadError').innerHTML = '';
   $('#uploadProgress').style.display = 'none';
   openModal('uploadModal');
+  loadMethods().then(renderMethods);
 }
 
-// Reflect the chosen chunking mode on the option cards.
-$all('input[name="chunkMode"]').forEach((radio) => {
-  radio.addEventListener('change', () => {
-    $('#optStandard').classList.toggle('selected', radio.value === 'standard' && radio.checked);
-    $('#optDeep').classList.toggle('selected', radio.value === 'deep_analysis' && radio.checked);
-    if (radio.checked && radio.value === 'standard') $('#optDeep').classList.remove('selected');
-    if (radio.checked && radio.value === 'deep_analysis') $('#optStandard').classList.remove('selected');
+/* ------------------------------------------------------------------ */
+/* Bölümleme methods                                                     */
+/* One upload, one parse: every method ticked here runs over the same    */
+/* canonical text, and the Viewer compares them under one document.      */
+/* ------------------------------------------------------------------ */
+let METHODS = [];
+
+async function loadMethods() {
+  if (METHODS.length) return METHODS;
+  try {
+    const data = await api('/api/demo/methods');
+    METHODS = data.methods || [];
+  } catch (e) {
+    METHODS = [];
+  }
+  return METHODS;
+}
+
+function renderMethods() {
+  const box = $('#methodList');
+  if (!METHODS.length) {
+    box.innerHTML = '<div class="field-hint">Yöntem listesi okunamadı.</div>';
+    return;
+  }
+  box.innerHTML = METHODS.map((m) => {
+    const checked = m.available && m.key === 'structure-only' ? ' checked' : '';
+    return '<label class="method-option' + (m.available ? '' : ' disabled') + '">' +
+      '<input type="checkbox" name="method" value="' + escapeHtml(m.key) + '"' +
+      (m.available ? '' : ' disabled') + checked + '>' +
+      '<span class="method-body">' +
+        '<span class="method-name">' + escapeHtml(m.label) +
+          (m.uses_model ? '<span class="badge badge-accent">model destekli</span>' : '') +
+          (m.available ? '' : '<span class="badge">kullanılamıyor</span>') +
+        '</span>' +
+        '<span class="method-desc">' + escapeHtml(m.available ? m.summary : m.reason) + '</span>' +
+      '</span></label>';
+  }).join('');
+  $all('#methodList input[name="method"]').forEach((box2) => {
+    box2.addEventListener('change', syncMethodState);
   });
-});
+  syncMethodState();
+}
+
+function chosenMethods() {
+  return $all('#methodList input[name="method"]:checked').map((el) => el.value);
+}
+
+function syncMethodState() {
+  const picked = chosenMethods();
+  $all('#methodList .method-option').forEach((el) => {
+    const input = el.querySelector('input');
+    el.classList.toggle('selected', Boolean(input && input.checked));
+  });
+  const hint = $('#methodHint');
+  if (!picked.length) {
+    hint.textContent = 'En az bir yöntem seçin.';
+  } else if (picked.length === 1) {
+    hint.textContent = 'Doküman bir kez okunur. Karşılaştırma için ikinci bir yöntem seçebilirsiniz.';
+  } else {
+    hint.textContent = 'Doküman bir kez okunur; ' + picked.length +
+      " yöntem aynı metin üzerinde çalışır ve Viewer'da yan yana karşılaştırılır.";
+  }
+  $('#uploadSubmit').disabled = !selectedFile || !picked.length;
+}
 
 $('#uploadBtn').addEventListener('click', openUploadModal);
 $('#chooseFileBtn').addEventListener('click', () => $('#fileInput').click());
 
 $('#fileInput').addEventListener('change', (event) => {
   selectedFile = event.target.files[0] || null;
-  $('#chooseFileBtn').textContent = selectedFile ? selectedFile.name : 'Choose a file…';
-  $('#uploadSubmit').disabled = !selectedFile;
+  $('#chooseFileBtn').textContent = selectedFile ? selectedFile.name : 'Dosya seç…';
+  syncMethodState();
 });
 
 $('#uploadSubmit').addEventListener('click', async () => {
@@ -285,24 +341,27 @@ $('#uploadSubmit').addEventListener('click', async () => {
   cancel.disabled = true;
   progress.style.display = 'block';
 
-  const deepAnalysis = (document.querySelector('input[name="chunkMode"]:checked') || {}).value === 'deep_analysis';
+  const picked = chosenMethods();
   const form = new FormData();
   form.append('file', selectedFile);
   form.append('kb_id', KB_ID);
-  form.append('deep_analysis', deepAnalysis ? 'true' : 'false');
+  picked.forEach((key) => form.append('methods', key));
+  $('#uploadProgressNote').textContent = picked.length > 1
+    ? 'Doküman okunuyor, ardından ' + picked.length + ' yöntem çalıştırılıyor…'
+    : 'Doküman okunuyor ve indeksleniyor…';
 
   try {
     const data = await api('/api/documents/upload', { method: 'POST', form: form });
     closeModal('uploadModal');
-    let note = data.filename + ' indexed — ' + data.chunks_created + ' chunks created';
+    let note = data.filename + ' yüklendi — ' + data.chunks_created + ' parça';
     let tone = 'success';
     if (data.chunking_mode === 'deep_analysis' && data.deep_analysis) {
       const d = data.deep_analysis;
-      note += '. Deep Analysis: ' + d.label;
+      note += ' · Deep Analysis: ' + d.label;
       if (d.tone !== 'success') tone = '';
     }
     toast(note, tone);
-    loadDocuments();
+    loadDokümans();
     loadStats();
   } catch (e) {
     errorBox.innerHTML = '<div class="error-state" style="margin-top:12px;">' + escapeHtml(e.message) + '</div>';
@@ -328,7 +387,7 @@ $('#settingsSave').addEventListener('click', async () => {
   try {
     const extra = Object.assign({}, (currentKb && currentKb.extra) || {}, { description: description });
     await api('/api/kb/' + encodeURIComponent(KB_ID), { method: 'PUT', json: { name: name, extra: extra } });
-    toast('Settings saved', 'success');
+    toast('Ayarlar kaydedildi', 'success');
     loadKb();
   } catch (e) {
     errorBox.innerHTML = '<div class="error-state" style="margin-bottom:12px;">' + escapeHtml(e.message) + '</div>';
@@ -337,7 +396,7 @@ $('#settingsSave').addEventListener('click', async () => {
 
 $('#deleteKbBtn').addEventListener('click', async () => {
   const ok = await confirmDialog({
-    title: 'Delete knowledge base',
+    title: 'Bilgi tabanını sil',
     message: 'Delete "' + ((currentKb && currentKb.name) || 'this knowledge base') + '" and its search index? This cannot be undone.',
     confirmLabel: 'Delete',
     danger: true
@@ -345,10 +404,10 @@ $('#deleteKbBtn').addEventListener('click', async () => {
   if (!ok) return;
   try {
     await api('/api/kb/' + encodeURIComponent(KB_ID), { method: 'DELETE' });
-    toast('Knowledge base deleted', 'success');
+    toast('Bilgi tabanı silindi', 'success');
     window.location.href = '/';
   } catch (e) {
-    toast('Delete failed: ' + e.message, 'error');
+    toast('Silme başarısız: ' + e.message, 'error');
   }
 });
 
@@ -360,7 +419,7 @@ function indexStateBadge(state) {
   if (state === 'empty') return '<span class="badge badge-neutral">Empty</span>';
   if (state === 'not_applicable') return '<span class="badge badge-neutral">Not used by this profile</span>';
   if (state === 'no_dense_index') return '<span class="badge badge-warn"><span class="dot"></span>No semantic index</span>';
-  if (state === 'reindex_required') return '<span class="badge badge-warn"><span class="dot"></span>Re-index required</span>';
+  if (state === 'reindex_required') return '<span class="badge badge-warn"><span class="dot"></span>Yeniden indeksle required</span>';
   return '<span class="badge badge-neutral">' + escapeHtml(state || '—') + '</span>';
 }
 
@@ -380,10 +439,10 @@ async function loadEmbeddingIndex() {
   const current = index.current || {};
   rows.innerHTML =
     defRow('Status', indexStateBadge(index.state)) +
-    defRow('Current embedding model', escapeHtml(current.model || '—') + (current.dimension ? ' · ' + escapeHtml(String(current.dimension)) + ' dims' : '')) +
-    defRow('Stored vectors from', escapeHtml(stored.model || (stored.chunk_count ? 'unknown model' : '—')) + (stored.dimension ? ' · ' + escapeHtml(String(stored.dimension)) + ' dims' : '')) +
-    defRow('Stored chunks', escapeHtml(String(stored.chunk_count == null ? '—' : stored.chunk_count))) +
-    defRow('Fingerprint (stored / current)', '<span class="mono">' + escapeHtml((stored.fingerprint || '—') + ' / ' + (current.fingerprint || '—')) + '</span>');
+    defRow('Geçerli embedding modeli', escapeHtml(current.model || '—') + (current.dimension ? ' · ' + escapeHtml(String(current.dimension)) + ' dims' : '')) +
+    defRow('Kayıtlı vektörler', escapeHtml(stored.model || (stored.chunk_count ? 'unknown model' : '—')) + (stored.dimension ? ' · ' + escapeHtml(String(stored.dimension)) + ' dims' : '')) +
+    defRow('Kayıtlı parça', escapeHtml(String(stored.chunk_count == null ? '—' : stored.chunk_count))) +
+    defRow('Parmak izi (kayıtlı / geçerli)', '<span class="mono">' + escapeHtml((stored.fingerprint || '—') + ' / ' + (current.fingerprint || '—')) + '</span>');
   note.textContent = index.reason || '';
   const canReindex = index.state !== 'not_applicable' && (stored.chunk_count || 0) > 0;
   button.disabled = !canReindex;
@@ -393,20 +452,20 @@ async function loadEmbeddingIndex() {
 
 $('#reindexBtn').addEventListener('click', async () => {
   const ok = await confirmDialog({
-    title: 'Re-index embeddings',
+    title: 'Vektörleri yeniden üret',
     message: 'Rebuild the semantic index of this knowledge base with the current embedding model? Every stored chunk is embedded again; documents and chunks are unchanged.',
-    confirmLabel: 'Re-index'
+    confirmLabel: 'Yeniden indeksle'
   });
   if (!ok) return;
   const button = $('#reindexBtn');
   const note = $('#reindexNote');
   button.disabled = true;
-  note.textContent = 'Re-indexing… this embeds every chunk and can take a while.';
+  note.textContent = 'Yeniden indeksleniyor… her parça yeniden vektörleniyor, bu biraz sürebilir.';
   try {
     const data = await api('/api/kb/' + encodeURIComponent(KB_ID) + '/reindex-embeddings', { method: 'POST', json: {} });
-    toast('Re-indexed ' + data.result.chunks + ' chunks with ' + data.result.model + ' (' + data.result.seconds + ' s)', 'success');
+    toast('Yeniden indekslendi: ' + data.result.chunks + ' chunks with ' + data.result.model + ' (' + data.result.seconds + ' s)', 'success');
   } catch (e) {
-    toast('Re-index failed: ' + e.message, 'error');
+    toast('Yeniden indeksleme başarısız: ' + e.message, 'error');
   } finally {
     loadEmbeddingIndex();
   }
@@ -415,5 +474,5 @@ $('#reindexBtn').addEventListener('click', async () => {
 /* ------------------------------------------------------------------ */
 loadKb();
 loadStats();
-loadDocuments();
+loadDokümans();
 loadEmbeddingIndex();

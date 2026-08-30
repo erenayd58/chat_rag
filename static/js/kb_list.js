@@ -10,7 +10,7 @@ async function loadKbPage() {
     kbs = kbData.knowledge_bases || [];
     documents = docData.documents || [];
   } catch (e) {
-    container.innerHTML = '<div class="error-state">Could not load knowledge bases: ' + escapeHtml(e.message) + '</div>';
+    container.innerHTML = '<div class="error-state">Bilgi tabanları yüklenemedi: ' + escapeHtml(e.message) + '</div>';
     return;
   }
 
@@ -57,7 +57,7 @@ async function loadKbPage() {
         '</div>' +
         '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">' +
           '<span style="font-size:11.5px; color:var(--text-3);">' +
-            (stats.latest ? 'Updated ' + fmtDate(stats.latest) : 'No documents yet') +
+            (stats.latest ? 'Güncellendi ' + fmtDate(stats.latest) : 'Henüz doküman yok') +
           '</span>' +
           '<span class="badge badge-neutral">' + escapeHtml(chunkerTypeLabel(chunker)) + '</span>' +
         '</div>' +
@@ -83,7 +83,7 @@ async function loadKbPage() {
       e.stopPropagation();
       const stats = byKb[kbId] || { docs: 0 };
       const ok = await confirmDialog({
-        title: 'Delete knowledge base',
+        title: 'Bilgi tabanını sil',
         message: 'Delete "' + kb.name + '"' + (stats.docs ? ' and its ' + stats.docs + ' indexed document' + (stats.docs === 1 ? '' : 's') : '') + '? This removes its search index and cannot be undone.',
         confirmLabel: 'Delete',
         danger: true
@@ -91,10 +91,10 @@ async function loadKbPage() {
       if (!ok) return;
       try {
         await api('/api/kb/' + encodeURIComponent(kbId), { method: 'DELETE' });
-        toast('Knowledge base deleted', 'success');
+        toast('Bilgi tabanı silindi', 'success');
         loadKbPage();
       } catch (err) {
-        toast('Delete failed: ' + err.message, 'error');
+        toast('Silme başarısız: ' + err.message, 'error');
       }
     });
   });
@@ -133,7 +133,7 @@ function setupCreateKb() {
         }
       });
       closeModal('createKbModal');
-      toast('Knowledge base created', 'success');
+      toast('Bilgi tabanı oluşturuldu', 'success');
       window.location.href = '/kb/' + encodeURIComponent(data.kb.kb_id);
     } catch (e) {
       errorBox.innerHTML = '<div class="error-state">' + escapeHtml(e.message) + '</div>';

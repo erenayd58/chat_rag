@@ -178,7 +178,18 @@ Viewer's refresh (`?prepare=1`) only *queues* what is missing. Each document's
 state — `missing` / `pending` / `running` / `ready` / `failed` — travels with
 it in the workspace snapshot, so the Viewer lists a ready document in its own
 document picker and shows one that is still being prepared as a disabled entry
-saying so. A build interrupted by a restart
+saying so.
+
+An upload chooses **which chunking methods to analyse the document with**
+(`methods=markdown&methods=structure-only&methods=agentic`, or the older
+`deep_analysis=true`). The PDF is parsed once; every chosen method runs over
+that one canonical and is packaged as its own arm, so the Viewer can compare
+them side by side under a single document. Identity is the file's content
+hash: uploading the same PDF again adds variants to the document that is
+already there instead of making a second one, and
+`POST /api/demo/viewer-analysis/<doc_id>/methods` adds a method later without
+re-reading the file. `GET /api/demo/methods` says which methods this machine
+can actually run, and why one cannot. A build interrupted by a restart
 is picked up again from disk. Deleting a document here deletes its analysis;
 the chunk repository's frozen benchmark trees are never reachable from this
 path. Everything lives under `artifacts/viewer-live/` (git-ignored) and is

@@ -41,7 +41,7 @@ def test_the_sidebar_links_to_the_configured_viewer(client, monkeypatch):
     assert 'id="viewerLink"' in page
     assert 'href="http://127.0.0.1:8765/"' in page
     assert 'target="_blank"' in page and 'rel="noopener"' in page
-    assert "Agentic Chunking Viewer" in page
+    assert "Chunking Viewer" in page
     assert 'id="viewerCardState"' in page  # the Lab card
 
 

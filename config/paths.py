@@ -90,6 +90,16 @@ def viewer_live_analysis() -> str:
     return _resolve("viewer-live", "./artifacts/viewer-live")
 
 
+def boundary_embedding_cache() -> str:
+    """Per-text vector cache of the semantic boundary model.
+
+    Kept apart from the retrieval embedding cache on purpose: the two use
+    different models for different jobs, and one must never answer for the
+    other.
+    """
+    return _resolve("cache/boundary-embeddings", ".cache/boundary-embeddings")
+
+
 def embedding_cache() -> str:
     """Per-text vector cache of the OpenAI-compatible embedding provider
     (one ``.npy`` per exact text, per model). Regenerable."""

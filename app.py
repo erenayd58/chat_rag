@@ -173,9 +173,18 @@ def workspace_snapshot() -> dict:
                 'status': viewer.get('status'),
                 'deep_source': viewer.get('deep_source'),
                 'unit_count': viewer.get('unit_count'),
-                'chunk_count': viewer.get('chunk_count'),
                 'error': viewer.get('error'),
                 'updated_at': viewer.get('updated_at'),
+                # Which chunking methods this document actually has, and what
+                # each of them cost. The Viewer offers exactly these.
+                'requested': viewer.get('requested') or [],
+                'ready_methods': viewer.get('ready_methods') or [],
+                'failed_methods': viewer.get('failed_methods') or [],
+                'methods': viewer.get('methods') or {},
+                # The same PDF uploaded twice is one analysis; this is how a
+                # caller can tell that two records are one document.
+                'analysis_key': viewer.get('key'),
+                'shared_with': [d for d in (viewer.get('doc_ids') or []) if d != doc_id],
             },
         }
         by_kb.setdefault(doc.get('kb_id') or '', []).append(entry)
@@ -299,22 +308,25 @@ def recover_canonical_units(doc_id: str, kb_id: str = None):
 
 
 def stage_viewer_analysis(doc_id: str, *, label: str, kb_id: str = None, kb_name: str = None,
-                          chunking_mode: str = None, units=None, deep_result=None) -> dict:
+                          chunking_mode: str = None, units=None, deep_result=None,
+                          methods=None, content_sha: str = None) -> dict:
     """Hand one document's ingest outputs to the Viewer packager.
 
     With ``units`` this is the upload path: the ingest's own canonical (and,
-    on a Deep Analysis upload, its own run) are written and queued. Without
-    them it is the catch-up path for a document ingested earlier: only the
-    request is recorded, and the worker recovers the canonical.
+    on a Deep Analysis upload, its own run) are written and queued, together
+    with every other chunking method the upload asked for. Without them it is
+    the catch-up path for a document ingested earlier: only the request is
+    recorded, and the worker recovers the canonical.
     """
     from components.viewer import analysis
 
     if units is None:
         return analysis.request_build(doc_id=doc_id, label=label, kb_id=kb_id,
-                                      kb_name=kb_name, chunking_mode=chunking_mode)
+                                      kb_name=kb_name, chunking_mode=chunking_mode,
+                                      content_sha=content_sha, wanted=methods)
     return analysis.stage(
-        doc_id=doc_id, label=label, units=units, deep_result=deep_result,
-        kb_id=kb_id, kb_name=kb_name, chunking_mode=chunking_mode,
+        doc_id=doc_id, label=label, units=units, deep_result=deep_result, methods=methods,
+        kb_id=kb_id, kb_name=kb_name, chunking_mode=chunking_mode, content_sha=content_sha,
     )
 
 
@@ -358,6 +370,41 @@ def _install_viewer_resolver():
 
 
 _install_viewer_resolver()
+
+
+@app.route('/api/demo/methods', methods=['GET'])
+def demo_methods():
+    """The chunking methods this deployment can actually run.
+
+    The upload form and the Viewer both read this, so neither can offer a
+    method the machine cannot produce, and an unavailable one carries the
+    reason rather than quietly disappearing.
+    """
+    from components.viewer import methods as viewer_methods
+
+    return jsonify({'success': True, 'methods': viewer_methods.catalogue()})
+
+
+@app.route('/api/demo/viewer-analysis/<doc_id>/methods', methods=['POST'])
+def demo_add_methods(doc_id):
+    """Add chunking variants to a document that is already here.
+
+    This is how a second method reaches a document -- not by uploading the
+    PDF again. The canonical is on disk, so nothing is parsed twice and no
+    variant already built is rebuilt.
+    """
+    from components.viewer import analysis
+    from components.viewer import methods as viewer_methods
+
+    wanted = (request.json or {}).get('methods')
+    try:
+        state = analysis.add_methods(doc_id, viewer_methods.normalise(wanted))
+        return jsonify({'success': True, 'state': state})
+    except FileNotFoundError as error:
+        return jsonify({'success': False, 'error': str(error)}), 404
+    except Exception as error:  # noqa: BLE001
+        logger.error(f"Adding variants to {doc_id} failed: {error}", exc_info=True)
+        return jsonify({'success': False, 'error': str(error)}), 500
 
 
 @app.route('/api/demo/viewer-analysis/<doc_id>', methods=['GET', 'POST'])
@@ -1499,15 +1546,31 @@ def upload_document():
                     'error': f'Knowledge base "{kb_id}" not found'
                 }), 404
 
-            # Ingest-time chunking mode. Deep Analysis (the amsc.deep_pipeline
-            # quality pipeline with an LLM proposer and verifier) is a
-            # per-document, ingest-only decision — never a query-time toggle
-            # and never written into the KB's chunker config. A missing or
-            # failing model provider does not refuse the upload: the
-            # deterministic quality contract runs alone and the document is
-            # labelled with that status, never passed off as Standard.
-            deep_raw = (request.form.get('deep_analysis') or 'false').strip().lower()
-            deep_analysis = deep_raw in {'1', 'true', 'yes', 'on'}
+            # Which chunking methods to analyse this document with. One
+            # upload, one parse, one canonical -- then every method the user
+            # ticked runs over that same canonical, so three methods cost one
+            # parse. The methods are an analysis choice; what gets *indexed*
+            # for retrieval is still the knowledge base's own chunker, and
+            # this does not change it.
+            from components.viewer import methods as viewer_methods
+
+            selected = viewer_methods.normalise(
+                request.form.getlist('methods') or request.form.get('methods')
+            )
+            # Deep Analysis (the amsc.deep_pipeline quality pipeline with an
+            # LLM proposer and verifier) is a per-document, ingest-only
+            # decision — never a query-time toggle and never written into the
+            # KB's chunker config. A missing or failing model provider does
+            # not refuse the upload: the deterministic quality contract runs
+            # alone and the document is labelled with that status, never
+            # passed off as Standard.
+            deep_raw = (request.form.get('deep_analysis') or '').strip().lower()
+            if deep_raw:  # the older single-mode form still works
+                deep_analysis = deep_raw in {'1', 'true', 'yes', 'on'}
+                selected = viewer_methods.normalise(
+                    [viewer_methods.STANDARD] + ([viewer_methods.DEEP] if deep_analysis else [])
+                )
+            deep_analysis = viewer_methods.DEEP in selected
             chunking_mode = 'deep_analysis' if deep_analysis else 'standard'
 
             user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
@@ -1604,12 +1667,19 @@ def upload_document():
             viewer_state = None
             try:
                 chunker = getattr(user_pipeline, 'chunker', None)
+                from components.viewer import analysis as viewer_analysis_mod
+
                 viewer_state = stage_viewer_analysis(
                     doc_id,
                     label=file.filename,
                     kb_id=kb_id,
                     kb_name=kb.get('name'),
                     chunking_mode=chunking_mode,
+                    methods=selected,
+                    # Identity is the document's content: the same PDF
+                    # uploaded again is the same document, gaining variants
+                    # rather than becoming a second entry.
+                    content_sha=viewer_analysis_mod.sha_of(temp_path),
                     units=getattr(chunker, 'last_canonical_units', None),
                     deep_result=getattr(chunker, 'last_deep_result', None) if deep_analysis else None,
                 )
@@ -1622,9 +1692,12 @@ def upload_document():
                     user_pipeline.chunker.last_canonical_units = None
                     user_pipeline.chunker.last_deep_result = None
 
-            message = 'Document uploaded and processed successfully'
-            if deep_summary is not None:
-                message = f"Document indexed — Deep Analysis: {deep_summary['label']}"
+            message = 'Doküman yüklendi ve indekslendi'
+            if len(selected) > 1:
+                message = ('Doküman yüklendi · '
+                           + ', '.join(viewer_methods.labels(selected)) + ' analizleri hazırlanıyor')
+            elif deep_summary is not None:
+                message = f"Doküman indekslendi — Deep Analysis: {deep_summary['label']}"
             return jsonify({
                 'success': True,
                 'message': message,

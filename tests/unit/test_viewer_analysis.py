@@ -86,6 +86,125 @@ def _deep_run(units):
     return result.deep
 
 
+# --- one document, several variants ----------------------------------------
+
+
+def test_one_upload_runs_every_selected_method_over_one_canonical(workspace):
+    """Three methods, one parse. The canonical is written once and reused."""
+    analysis.stage(doc_id="multi", label="Cok yontemli", units=_corpus(),
+                   methods=["markdown", "structure-only", "agentic"],
+                   kb_id="kb1", kb_name="probe-kb", content_sha="c0ffee")
+    analysis._queue.join()
+    state = analysis.read_state("multi", "c0ffee")
+    assert state["status"] == analysis.STATUS_READY
+    assert state["ready_methods"] == ["markdown", "structure-only", "agentic"]
+
+    payload = analysis.payload("multi", "c0ffee")
+    assert sorted(payload["arms"]) == ["agentic", "markdown", "structure-only"]
+    # Each arm is a real chunking of the same units, not a copy of another.
+    counts = {arm: len(payload["arms"][arm]["chunks"]) for arm in payload["arms"]}
+    assert all(count > 0 for count in counts.values()), counts
+    assert payload["arms"]["markdown"]["chunks"] != payload["arms"]["structure-only"]["chunks"]
+    # One parse: exactly one canonical file for the whole document.
+    key = analysis.key_for("multi", "c0ffee")
+    assert list(analysis.document_dir(key).glob("*.jsonl")) == [analysis.units_path(key)]
+
+
+def test_only_the_selected_methods_are_produced(workspace):
+    """A method that was not asked for is absent -- never invented."""
+    analysis.stage(doc_id="one", label="Tek yontem", units=_corpus(),
+                   methods=["structure-only"], content_sha="beef")
+    analysis._queue.join()
+    payload = analysis.payload("one", "beef")
+    assert list(payload["arms"]) == ["structure-only"]
+    assert payload["meta"]["deep"] is None, "no Deep panel for a document with no Deep variant"
+    assert payload["live"]["methods"]["agentic"]["status"] == analysis.STATUS_MISSING
+
+
+def test_the_same_bytes_are_one_document_however_often_they_are_uploaded(workspace):
+    """A second upload of the same PDF enriches the document it already is."""
+    analysis.stage(doc_id="first", label="Ayni belge.pdf", units=_corpus(),
+                   methods=["structure-only"], content_sha="same-bytes")
+    analysis._queue.join()
+    analysis.stage(doc_id="second", label="Ayni belge.pdf", units=_corpus(),
+                   methods=["markdown"], content_sha="same-bytes")
+    analysis._queue.join()
+
+    assert analysis.key_for("first", "same-bytes") == analysis.key_for("second", "same-bytes")
+    directories = [d.name for d in workspace.iterdir() if d.is_dir()]
+    assert len(directories) == 1, f"the same PDF made {len(directories)} documents: {directories}"
+    payload = analysis.payload("second", "same-bytes")
+    assert sorted(payload["arms"]) == ["markdown", "structure-only"], (
+        "the second upload's method joins the first's, in one document"
+    )
+    # Both console records point at the one analysis.
+    assert sorted(analysis.states()) == ["first", "second"]
+    assert analysis.states()["first"]["key"] == analysis.states()["second"]["key"]
+
+
+def test_two_files_with_one_name_stay_two_documents(workspace):
+    """Identity is the content, so a different PDF is a different document."""
+    analysis.stage(doc_id="a", label="rapor.pdf", units=_corpus(sections=2),
+                   methods=["structure-only"], content_sha="aaa")
+    analysis.stage(doc_id="b", label="rapor.pdf", units=_corpus(sections=3),
+                   methods=["structure-only"], content_sha="bbb")
+    analysis._queue.join()
+    assert analysis.key_for("a", "aaa") != analysis.key_for("b", "bbb")
+    assert len(analysis.payload("a", "aaa")["pages"]) == 2
+    assert len(analysis.payload("b", "bbb")["pages"]) == 3
+
+
+def test_a_variant_can_be_added_later_without_reparsing(workspace):
+    """Scenario 3: ask for another method; nothing is parsed or rebuilt."""
+    analysis.stage(doc_id="grow", label="Buyuyen belge", units=_corpus(),
+                   methods=["structure-only"], content_sha="grow1")
+    analysis._queue.join()
+    key = analysis.key_for("grow", "grow1")
+    before = analysis.units_path(key).stat().st_mtime_ns
+    markdown_before = analysis.variant_dir(key, "markdown").exists()
+
+    analysis.add_methods("grow", ["markdown"], "grow1")
+    analysis._queue.join()
+
+    assert not markdown_before
+    assert analysis.units_path(key).stat().st_mtime_ns == before, "the canonical was rewritten"
+    payload = analysis.payload("grow", "grow1")
+    assert sorted(payload["arms"]) == ["markdown", "structure-only"]
+    assert analysis.read_state("grow", "grow1")["ready_methods"] == ["markdown", "structure-only"]
+
+
+def test_deleting_one_upload_keeps_the_others_analysis(workspace):
+    analysis.stage(doc_id="first", label="Ayni.pdf", units=_corpus(),
+                   methods=["structure-only"], content_sha="shared")
+    analysis.stage(doc_id="second", label="Ayni.pdf", units=_corpus(),
+                   methods=["structure-only"], content_sha="shared")
+    analysis._queue.join()
+    analysis.discard("first", "shared")
+    assert analysis.payload("second", "shared") is not None
+    analysis.discard("second", "shared")
+    assert analysis.payload("second", "shared") is None
+
+
+def test_a_variant_that_cannot_run_is_recorded_not_faked(workspace, monkeypatch):
+    """A chunker that fails leaves a failed variant and no arm at all."""
+    real = analysis._chunk_rows
+
+    def explode(method, units):
+        if method == "markdown":
+            raise RuntimeError("no markdown for you")
+        return real(method, units)
+
+    monkeypatch.setattr(analysis, "_chunk_rows", explode)
+    analysis.stage(doc_id="partial", label="Kismi", units=_corpus(),
+                   methods=["markdown", "structure-only"], content_sha="partial")
+    analysis._queue.join()
+    state = analysis.read_state("partial", "partial")
+    assert state["status"] == analysis.STATUS_READY
+    assert state["ready_methods"] == ["structure-only"]
+    assert state["failed_methods"] == ["markdown"]
+    assert list(analysis.payload("partial", "partial")["arms"]) == ["structure-only"]
+
+
 # --- what the Viewer gets --------------------------------------------------
 
 

@@ -11,8 +11,8 @@ function setComposerEnabled(enabled, hint) {
   $('#queryInput').disabled = !enabled;
   $('#sendBtn').disabled = !enabled;
   $('#composerHint').textContent = hint || (enabled
-    ? 'Answers are generated from the indexed documents only.'
-    : 'Select a knowledge base to start.');
+    ? 'Cevaplar yalnız indekslenmiş dokümanlardan üretilir.'
+    : 'Başlamak için bir bilgi tabanı seçin.');
 }
 
 async function refreshDocModes(kbId) {
@@ -93,10 +93,10 @@ function renderSources(sources) {
     const legs = sourceLegsLabel(source);
     const heading = source.heading || source.section;
     return (
-      '<div class="source-card source-card-clickable' + (source.used ? ' source-card-used' : '') + '" data-source-index="' + index + '" role="button" tabindex="0" title="Show the chunk text">' +
+      '<div class="source-card source-card-clickable' + (source.used ? ' source-card-used' : '') + '" data-source-index="' + index + '" role="button" tabindex="0" title="Parça metnini göster">' +
         '<div class="source-head">' +
           (source.label ? '<span class="source-label">' + escapeHtml(source.label) + '</span>' : '') +
-          '<span class="source-doc">' + escapeHtml(source.document || 'Document') + '</span>' +
+          '<span class="source-doc">' + escapeHtml(source.document || 'Doküman') + '</span>' +
           (pages ? '<span class="badge badge-neutral">' + escapeHtml(pages) + '</span>' : '') +
           (mode ? '<span class="badge badge-accent">' + escapeHtml(mode) + '</span>' : '') +
           (source.used ? '<span class="badge badge-success">Used in answer</span>' : '') +
@@ -119,12 +119,12 @@ function openSourceModal(source) {
   const facts = [
     ['Section', source.heading || source.section || '—'],
     ['Pages', pages || '—'],
-    ['Chunking', mode || '—'],
-    ['Found by', sourceLegsLabel(source) || '—'],
-    ['Fused rank', source.rank ? String(source.rank) : '—'],
-    ['Dense rank / lexical rank', (source.dense_rank || '—') + ' / ' + (source.bm25_rank || '—')],
-    ['Fusion score (RRF)', (source.score === null || source.score === undefined) ? '—' : Number(source.score).toFixed(4)],
-    ['Chunk id', source.chunk_id || '—'],
+    ['Bölümleme', mode || '—'],
+    ['Bulan yöntem', sourceLegsLabel(source) || '—'],
+    ['Birleşik sıra', source.rank ? String(source.rank) : '—'],
+    ['Anlamsal sıra / kelime sırası', (source.dense_rank || '—') + ' / ' + (source.bm25_rank || '—')],
+    ['Birleşik skor', (source.score === null || source.score === undefined) ? '—' : Number(source.score).toFixed(4)],
+    ['Parça kimliği', source.chunk_id || '—'],
   ];
   $('#chunkModalFacts').innerHTML = facts.map((row) =>
     '<div class="def-row"><span class="def-key">' + escapeHtml(row[0]) + '</span><span class="def-val mono">' + escapeHtml(String(row[1])) + '</span></div>'
@@ -138,7 +138,7 @@ function answerNotices(metadata) {
   let html = '';
   if (metadata.reindex_required) {
     html += '<div class="msg-notice-inline">Semantic search is off for this knowledge base — its vectors were built with another embedding model. ' +
-      'Keyword results were used. Re-index it under the knowledge base\'s <strong>Settings</strong>.</div>';
+      'Keyword results were used. Yeniden indeksle it under the knowledge base\'s <strong>Settings</strong>.</div>';
   }
   const answer = metadata.answer || {};
   if (answer.fallback_used) {
@@ -218,7 +218,7 @@ async function sendQuestion() {
     if (e.body && e.body.generation_unavailable) {
       addNotice(
         '<strong>Answer generation is currently unavailable</strong> — the language model could not be reached. ' +
-        'Document retrieval still works: you can inspect what would have been retrieved in the <a href="/lab">Lab</a>.' +
+        'Doküman retrieval still works: you can inspect what would have been retrieved in the <a href="/lab">Lab</a>.' +
         '<details class="details-box"><summary>Details</summary><div class="details-body">' + escapeHtml(e.message) + '</div></details>'
       );
     } else {
@@ -237,8 +237,8 @@ $('#queryInput').addEventListener('keydown', (e) => {
 
 $('#clearBtn').addEventListener('click', async () => {
   const ok = await confirmDialog({
-    title: 'Clear conversation',
-    message: 'Clear the current conversation history?',
+    title: 'Sohbeti temizle',
+    message: 'Sohbet geçmişi silinsin mi?',
     confirmLabel: 'Clear'
   });
   if (!ok) return;
@@ -262,7 +262,7 @@ $('#kbSelect').addEventListener('change', async () => {
   try {
     await populateKbSelect($('#kbSelect'));
   } catch (e) {
-    toast('Could not load knowledge bases: ' + e.message, 'error');
+    toast('Bilgi tabanları yüklenemedi: ' + e.message, 'error');
   }
   const kbId = currentKbId();
   setComposerEnabled(!!kbId);

@@ -1,21 +1,21 @@
 {% extends "base.html" %}
-{% block title %}Knowledge Bases · RAG Console{% endblock %}
+{% block title %}Bilgi tabanları · RAG Console{% endblock %}
 
 {% block content %}
 <div class="page">
     <div class="page-header">
         <div>
-            <h1 class="page-title">Knowledge Bases</h1>
-            <p class="page-desc">Each knowledge base holds its own documents and search index.</p>
+            <h1 class="page-title">Bilgi tabanları</h1>
+            <p class="page-desc">Each bilgi tabanı holds its own documents and search index.</p>
         </div>
         <button class="btn btn-primary" id="newKbBtn">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-            New Knowledge Base
+            New Bilgi tabanı
         </button>
     </div>
 
     <div id="kbContainer">
-        <div class="loading-state"><div class="spinner"></div>Loading knowledge bases…</div>
+        <div class="loading-state"><div class="spinner"></div>Bilgi tabanları yükleniyor…</div>
     </div>
 </div>
 
@@ -23,23 +23,23 @@
 <div class="modal-backdrop" id="createKbModal">
     <div class="modal">
         <div class="modal-header">
-            <div class="modal-title">New Knowledge Base</div>
+            <div class="modal-title">New Bilgi tabanı</div>
             <button class="modal-close" onclick="closeModal('createKbModal')">&times;</button>
         </div>
         <div class="modal-body">
             <div class="field">
-                <label class="field-label" for="kbNameInput">Name</label>
-                <input class="input" id="kbNameInput" type="text" placeholder="e.g. KKB Faaliyet Raporları" maxlength="120">
+                <label class="field-label" for="kbNameInput">Ad</label>
+                <input class="input" id="kbNameInput" type="text" placeholder="örn. KKB Faaliyet Raporları" maxlength="120">
             </div>
             <div class="field">
-                <label class="field-label" for="kbDescInput">Description <span style="color: var(--text-3); font-weight: 400;">(optional)</span></label>
-                <textarea class="textarea" id="kbDescInput" placeholder="What this knowledge base contains"></textarea>
+                <label class="field-label" for="kbDescInput">Açıklama <span style="color: var(--text-3); font-weight: 400;">(isteğe bağlı)</span></label>
+                <textarea class="textarea" id="kbDescInput" placeholder="What this bilgi tabanı contains"></textarea>
             </div>
             <div id="createKbError"></div>
         </div>
         <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal('createKbModal')">Cancel</button>
-            <button class="btn btn-primary" id="createKbSubmit">Create</button>
+            <button class="btn btn-secondary" onclick="closeModal('createKbModal')">Vazgeç</button>
+            <button class="btn btn-primary" id="createKbSubmit">Oluştur</button>
         </div>
     </div>
 </div>

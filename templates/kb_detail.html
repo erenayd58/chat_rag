@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Knowledge Base · RAG Console{% endblock %}
+{% block title %}Bilgi tabanı · RAG Console{% endblock %}
 
 {% block content %}
 <div class="page" id="kbDetailPage" data-kb-id="{{ kb_id }}">
     <div class="breadcrumb">
-        <a href="/">Knowledge Bases</a>
+        <a href="/">Bilgi tabanları</a>
         <span>/</span>
         <span id="crumbName">…</span>
     </div>
@@ -15,129 +15,119 @@
         </div>
         <button class="btn btn-primary" id="uploadBtn">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
-            Upload Document
+            Doküman yükle
         </button>
     </div>
 
     <div class="tabs">
-        <button class="tab active" data-tab="overview">Overview</button>
-        <button class="tab" data-tab="documents">Documents</button>
-        <button class="tab" data-tab="settings">Settings</button>
+        <button class="tab active" data-tab="overview">Genel bakış</button>
+        <button class="tab" data-tab="documents">Dokümanlar</button>
+        <button class="tab" data-tab="settings">Ayarlar</button>
     </div>
 
     <!-- Overview -->
     <div class="tab-panel active" id="panel-overview">
         <div class="stats-row" id="statTiles">
-            <div class="card stat-tile"><div class="stat-label">Documents</div><div class="stat-value" id="statDocs">—</div></div>
-            <div class="card stat-tile"><div class="stat-label">Chunks</div><div class="stat-value" id="statChunks">—</div></div>
-            <div class="card stat-tile"><div class="stat-label">Corpus size</div><div class="stat-value" id="statSize">—</div></div>
-            <div class="card stat-tile"><div class="stat-label">Last indexed</div><div class="stat-value" id="statLatest" style="font-size:14px; margin-top:8px;">—</div></div>
+            <div class="card stat-tile"><div class="stat-label">Dokümanlar</div><div class="stat-value" id="statDocs">—</div></div>
+            <div class="card stat-tile"><div class="stat-label">Parça</div><div class="stat-value" id="statParça">—</div></div>
+            <div class="card stat-tile"><div class="stat-label">Toplam boyut</div><div class="stat-value" id="statSize">—</div></div>
+            <div class="card stat-tile"><div class="stat-label">Son indeksleme</div><div class="stat-value" id="statLatest" style="font-size:14px; margin-top:8px;">—</div></div>
         </div>
         <div class="card" style="margin-top:16px;">
-            <div class="card-header"><div class="card-title">Configuration</div></div>
+            <div class="card-header"><div class="card-title">Yapılandırma</div></div>
             <div class="card-pad" id="configRows">
-                <div class="loading-state"><div class="spinner"></div>Loading…</div>
+                <div class="loading-state"><div class="spinner"></div>Yükleniyor…</div>
             </div>
         </div>
     </div>
 
-    <!-- Documents -->
+    <!-- Dokümanlar -->
     <div class="tab-panel" id="panel-documents">
         <div class="card">
             <div class="table-wrap" id="docsContainer">
-                <div class="loading-state"><div class="spinner"></div>Loading documents…</div>
+                <div class="loading-state"><div class="spinner"></div>Dokümanlar yükleniyor…</div>
             </div>
         </div>
     </div>
 
-    <!-- Settings -->
+    <!-- Ayarlar -->
     <div class="tab-panel" id="panel-settings">
         <div class="card">
-            <div class="card-header"><div class="card-title">General</div></div>
+            <div class="card-header"><div class="card-title">Genel</div></div>
             <div class="card-pad">
                 <div class="field">
-                    <label class="field-label" for="settingsName">Name</label>
+                    <label class="field-label" for="settingsName">Ad</label>
                     <input class="input" id="settingsName" type="text" maxlength="120" style="max-width:420px;">
                 </div>
                 <div class="field">
-                    <label class="field-label" for="settingsDesc">Description</label>
+                    <label class="field-label" for="settingsDesc">Açıklama</label>
                     <textarea class="textarea" id="settingsDesc" style="max-width:420px;"></textarea>
                 </div>
                 <div id="settingsError"></div>
-                <button class="btn btn-primary" id="settingsSave">Save changes</button>
+                <button class="btn btn-primary" id="settingsKaydet">Değişiklikleri kaydet</button>
             </div>
         </div>
 
         <div class="card" style="margin-top:16px;" id="embeddingIndexCard">
-            <div class="card-header"><div class="card-title">Embedding index</div></div>
+            <div class="card-header"><div class="card-title">Embedding indeksi</div></div>
             <div class="card-pad">
                 <p style="font-size:12.5px; color:var(--text-2); margin:0 0 12px; max-width:720px;">
-                    Semantic search compares question vectors with the vectors stored for this knowledge base. Both must come from the same embedding model;
-                    when the configured model changes, the stored vectors are rebuilt here — the documents and their chunks are kept as they are.
+                    Anlamsal arama, sorunun vektörünü bu bilgi tabanında saklanan vektörlerle karşılaştırır. İkisi de aynı embedding modelinden gelmelidir;
+                    model değiştiğinde vektörler burada yeniden üretilir; dokümanlar ve parçaları olduğu gibi kalır.
                 </p>
-                <div id="embeddingIndexRows"><div class="loading-state"><div class="spinner"></div>Checking…</div></div>
+                <div id="embeddingIndexRows"><div class="loading-state"><div class="spinner"></div>Kontrol ediliyor…</div></div>
                 <div style="display:flex; align-items:center; gap:12px; margin-top:12px; flex-wrap:wrap;">
-                    <button class="btn btn-secondary" id="reindexBtn" disabled>Re-index with current model</button>
+                    <button class="btn btn-secondary" id="reindexBtn" disabled>Geçerli modelle yeniden indeksle</button>
                     <span id="reindexNote" style="font-size:12.5px; color:var(--text-2);"></span>
                 </div>
             </div>
         </div>
 
         <div class="card danger-zone" style="margin-top:16px;">
-            <div class="card-header"><div class="card-title" style="color:var(--danger);">Danger zone</div></div>
+            <div class="card-header"><div class="card-title" style="color:var(--danger);">Dikkat</div></div>
             <div class="card-pad" style="display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap;">
-                <div style="font-size:13px; color:var(--text-2);">Deleting a knowledge base removes its record and its search index. Documents cannot be recovered.</div>
-                <button class="btn btn-danger" id="deleteKbBtn">Delete knowledge base</button>
+                <div style="font-size:13px; color:var(--text-2);">Bilgi tabanını silmek kaydını ve arama indeksini kaldırır. Dokümanlar geri getirilemez.</div>
+                <button class="btn btn-danger" id="deleteKbBtn">Bilgi tabanını sil</button>
             </div>
         </div>
     </div>
 </div>
 
-<!-- Upload modal -->
+<!-- Yükle modal -->
 <div class="modal-backdrop" id="uploadModal">
     <div class="modal">
         <div class="modal-header">
-            <div class="modal-title">Upload Document</div>
+            <div class="modal-title">Doküman yükle</div>
             <button class="modal-close" onclick="closeModal('uploadModal')">&times;</button>
         </div>
         <div class="modal-body">
             <div class="field">
-                <label class="field-label">File</label>
+                <label class="field-label">Dosya</label>
                 <input type="file" id="fileInput" accept=".pdf,.txt,.md,.docx,.png,.jpg,.jpeg" style="display:none;">
-                <button class="btn btn-secondary" id="chooseFileBtn" style="width:100%; justify-content:flex-start;">Choose a file…</button>
+                <button class="btn btn-secondary" id="chooseFileBtn" style="width:100%; justify-content:flex-start;">Dosya seç…</button>
                 <div class="field-hint">PDF, TXT, MD, DOCX, PNG, JPG</div>
             </div>
 
             <div class="field">
-                <label class="field-label">Chunking mode</label>
-                <label class="option-card selected" id="optStandard">
-                    <input type="radio" name="chunkMode" value="standard" checked>
-                    <div>
-                        <div class="option-title">Standard</div>
-                        <div class="option-desc">Structure-only chunking. Fast and deterministic — boundaries follow the document's own structure.</div>
-                    </div>
-                </label>
-                <label class="option-card" id="optDeep">
-                    <input type="radio" name="chunkMode" value="deep_analysis">
-                    <div>
-                        <div class="option-title">Deep Analysis <span class="badge badge-accent">LLM-assisted</span></div>
-                        <div class="option-desc">Structure-first chunking refined by a deterministic quality contract, with a backend language model proposing boundaries and a verifier confirming each change during ingest. Slower; if the model is unavailable the deterministic quality pass completes on its own and the document says so.</div>
-                    </div>
-                </label>
-                <div class="field-hint">Chunking mode is chosen per document at upload. It cannot be changed at query time.</div>
+                <label class="field-label">Chunking yöntemleri</label>
+                <div id="methodList" class="method-list"></div>
+                <div class="field-hint" id="methodHint">
+                    Doküman bir kez okunur; seçtiğiniz her yöntem aynı metin üzerinde
+                    ayrı ayrı çalışır ve Viewer'da yan yana karşılaştırılabilir.
+                </div>
             </div>
 
             <div id="uploadProgress" style="display:none;">
                 <div class="progress-indeterminate"></div>
-                <div style="font-size:12.5px; color:var(--text-2); margin-top:8px;">
-                    Processing document… parsing, chunking and indexing can take a while for large PDFs.
+                <div style="font-size:12.5px; color:var(--text-2); margin-top:8px;" id="uploadProgressNote">
+                    Doküman işleniyor…
                 </div>
             </div>
             <div id="uploadError"></div>
         </div>
         <div class="modal-footer">
-            <button class="btn btn-secondary" id="uploadCancel" onclick="closeModal('uploadModal')">Cancel</button>
-            <button class="btn btn-primary" id="uploadSubmit" disabled>Upload &amp; Process</button>
+            <button class="btn btn-secondary" id="uploadVazgeç" onclick="closeModal('uploadModal')">Vazgeç</button>
+            <button class="btn btn-primary" id="uploadSubmit" disabled>Yükle ve analiz et</button>
         </div>
     </div>
 </div>
