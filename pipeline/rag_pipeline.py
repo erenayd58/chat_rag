@@ -998,6 +998,7 @@ class RAGPipeline:
                 "deduplicated": bundle.deduplicated,
                 "expanded_neighbors": bundle.expanded,
                 "dropped_over_budget": bundle.dropped_over_budget,
+                "dropped_ranked_hits": bundle.dropped_ranked_hits,
             },
             "embedding": identity,
             "chunking_modes": sorted({row["chunking_mode"] for row in sources}),
