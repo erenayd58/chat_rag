@@ -446,6 +446,60 @@ def demo_viewer_payload(doc_id):
     return jsonify({'success': True, 'doc_id': doc_id, 'payload': payload})
 
 
+@app.route('/api/demo/viewer-analysis/<doc_id>/chunks', methods=['GET'])
+def demo_viewer_chunks(doc_id):
+    """One live document's chunk rows, per chunking method.
+
+    The Viewer's own server reads this to build a retrieval index over a
+    document that lives here, so "Dokumana sor" works on a freshly uploaded
+    PDF instead of sending the reader back to this console's chat. Rows only:
+    the same JSONL the chunker wrote and the benchmark reads, so a live
+    document is retrieved over exactly the representation a frozen one is.
+
+    ``?method=`` selects one method; omitting it returns every ready one.
+    """
+    from components.viewer import analysis
+    from components.viewer import methods as viewer_methods
+
+    try:
+        state = analysis.read_state(doc_id)
+        if state.get('status') == analysis.STATUS_MISSING:
+            return jsonify({'success': False, 'state': state,
+                            'error': f'no viewer analysis for {doc_id}'}), 404
+        wanted = (request.args.get('method') or '').strip()
+        ready = state.get('ready_methods') or []
+        chosen = [wanted] if wanted else list(ready)
+        unknown = [m for m in chosen if m not in viewer_methods.METHODS]
+        if unknown:
+            return jsonify({'success': False,
+                            'error': f"unknown chunking method {unknown[0]!r}"}), 400
+
+        arms = {}
+        for method in chosen:
+            rows = analysis.chunk_rows(doc_id, method)
+            if rows is None:
+                continue
+            arms[method] = {
+                'kind': viewer_methods.METHODS[method].engine,
+                'label': viewer_methods.label(method),
+                'chunk_count': len(rows),
+                'rows': rows,
+            }
+        if not arms:
+            return jsonify({'success': False, 'state': state,
+                            'error': f'no packaged chunks for {doc_id}'}), 404
+        return jsonify({
+            'success': True,
+            'doc_id': doc_id,
+            'label': state.get('label') or doc_id,
+            'key': state.get('key'),
+            'arms': arms,
+        })
+    except Exception as e:
+        logger.error(f"Chunk rows request failed for {doc_id}: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/models', methods=['GET'])
 def model_chain():
     """The configured model chain (agentic chunking, embedding, answer),

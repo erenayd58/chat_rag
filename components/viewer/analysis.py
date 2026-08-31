@@ -592,6 +592,46 @@ def _build(key: str) -> dict:
     )
 
 
+def chunks_path(key: str, method: str) -> Path | None:
+    """Where one method's packaged ``chunks.jsonl`` actually is.
+
+    Deep Analysis writes its own run tree, and packaging it also writes the
+    Standard partition beside it; every other method is packaged as a
+    variant. The two Standard homes are tried in the order a build would
+    have written them, so a document that got Standard on its own and one
+    that got it out of a Deep run answer the same way.
+    """
+    if method == M.DEEP:
+        candidates = [run_dir(key) / "arm" / "chunks.jsonl"]
+    elif method == M.STANDARD:
+        candidates = [
+            variant_dir(key, method) / "chunks.jsonl",
+            run_dir(key) / "standard" / "chunks.jsonl",
+        ]
+    else:
+        candidates = [variant_dir(key, method) / "chunks.jsonl"]
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def chunk_rows(doc_id: str, method: str, content_sha: str | None = None) -> list[dict] | None:
+    """One method's chunk rows for a live document, as the chunker wrote them.
+
+    The rows the retrieval index reads are exactly the rows the benchmark
+    reads, so a live document queried in the Viewer is retrieved over the
+    same representation a frozen one is. ``None`` means this document has no
+    such variant on disk.
+    """
+    key = key_for(doc_id, content_sha)
+    path = chunks_path(key, method)
+    if path is None:
+        return None
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
 def payload(doc_id: str, content_sha: str | None = None) -> dict | None:
     path = payload_path(key_for(doc_id, content_sha))
     if not path.is_file():
