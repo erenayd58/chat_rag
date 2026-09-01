@@ -61,6 +61,8 @@ STATUS_FAILED = "failed"
 #: How a Deep variant was produced.
 SOURCE_INGEST = "ingest_deep_run"
 SOURCE_DETERMINISTIC = "deterministic_contract"
+#: Standard as a by-product of Deep packaging, not chunked on its own.
+SOURCE_DEEP_STANDARD = "deep_run_standard"
 
 _PAYLOAD = "viewer-payload.json"
 _STATE = "state.json"
@@ -496,6 +498,62 @@ def _ensure_units(key: str, state: dict) -> dict:
     return _read_state_file(key)
 
 
+def _canonical_document_id(key: str) -> str | None:
+    """The document id every artifact in this analysis must agree on.
+
+    The directory is the content, and ``stage`` keeps the canonical units that
+    were written first, so those units carry this analysis's identity. The same
+    PDF uploaded again is the same document under a new upload id, and it is
+    held to the identity already here rather than bringing its own.
+    """
+    path = units_path(key)
+    if not path.is_file():
+        return None
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                return (json.loads(line) or {}).get("document_id")
+    return None
+
+
+def _adopt_run_identity(key: str) -> None:
+    """Make the Deep run in this directory answer to the directory's document.
+
+    A Deep run is produced by one upload's ingest; a second upload of the same
+    bytes lands in the same content-addressed directory carrying a different
+    upload id. Packaging refuses to build an arm for a document other than the
+    canonical's -- rightly, because a run and a canonical that disagree are a
+    real error -- but inside one content key they cannot be different
+    documents. So the run is stamped with the canonical's identity as it is
+    adopted, under the same rule the canonical itself is kept by. The check is
+    not skipped: a run whose content really differs hashes differently, lands
+    under another key, and is still refused there.
+    """
+    canonical = _canonical_document_id(key)
+    summary_path = run_dir(key) / "summary.json"
+    if canonical is None or not summary_path.is_file():
+        return
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if summary.get("document_id") == canonical:
+        return
+    logger.info(
+        f"{key}: adopting the deep run of {summary.get('document_id')!r} as "
+        f"{canonical!r} -- same content, another upload"
+    )
+    summary["document_id"] = canonical
+    _write_json(summary_path, summary)
+
+
+def _packaged_methods(key: str) -> list[str]:
+    """The methods this analysis can actually serve.
+
+    State records what a build believed; only a chunks file on disk makes a
+    method answerable. Advertising one the Viewer then cannot fetch is how a
+    document comes to look ready and refuse every question asked of it.
+    """
+    return [method for method in M.ORDER if chunks_path(key, method) is not None]
+
+
 def _build(key: str) -> dict:
     state = _read_state_file(key)
     if state.get("status") == STATUS_MISSING:
@@ -511,35 +569,51 @@ def _build(key: str) -> dict:
     requested = state.get("requested") or [M.STANDARD]
     variants: dict[str, dict] = dict(state.get("methods") or {})
     deep_wanted = M.DEEP in requested
+    #: Deep's packaging is what writes the Standard partition, so everything
+    #: that would otherwise be skipped for Deep's sake keys off whether Deep
+    #: actually packaged -- not off whether it was asked for.
+    deep_ready = False
     extra: dict[str, Path] = {}
 
     # --- Deep first: its packaging also produces the Standard partition, so
     # --- Standard never has to be chunked twice for one document.
     if deep_wanted:
-        target = run_dir(key)
-        source = (variants.get(M.DEEP) or {}).get("source") or SOURCE_DETERMINISTIC
-        if not (target / "summary.json").is_file():
-            from amsc.deep_run import write_tree
+        try:
+            target = run_dir(key)
+            source = (variants.get(M.DEEP) or {}).get("source") or SOURCE_DETERMINISTIC
+            if not (target / "summary.json").is_file():
+                from amsc.deep_run import write_tree
 
-            target.mkdir(parents=True, exist_ok=True)
-            write_tree(_deterministic_deep(key), target, units_path=Path(key) / _UNITS)
-            source = SOURCE_DETERMINISTIC
-        summary = package(target, units_path(key), root=root(), write_standard=True)
-        run_summary = json.loads((target / "summary.json").read_text(encoding="utf-8"))
-        variants[M.DEEP] = {
-            "status": STATUS_READY, "source": source,
-            "run_status": run_summary.get("status"), "run_mode": run_summary.get("mode"),
-            "model": run_summary.get("model_id"),
-            "calls": int((run_summary.get("proposer") or {}).get("call_count") or 0)
-            + 2 * int((run_summary.get("verifier") or {}).get("group_count") or 0),
-            "chunk_count": (summary.get("chunk_count") or {}).get("deep"),
-        }
-        variants[M.STANDARD] = {"status": STATUS_READY, "source": "deep_run_standard",
-                                "chunk_count": (summary.get("chunk_count") or {}).get("standard")}
+                target.mkdir(parents=True, exist_ok=True)
+                write_tree(_deterministic_deep(key), target, units_path=Path(key) / _UNITS)
+                source = SOURCE_DETERMINISTIC
+            _adopt_run_identity(key)
+            summary = package(target, units_path(key), root=root(), write_standard=True)
+            run_summary = json.loads((target / "summary.json").read_text(encoding="utf-8"))
+            variants[M.DEEP] = {
+                "status": STATUS_READY, "source": source,
+                "run_status": run_summary.get("status"), "run_mode": run_summary.get("mode"),
+                "model": run_summary.get("model_id"),
+                "calls": int((run_summary.get("proposer") or {}).get("call_count") or 0)
+                + 2 * int((run_summary.get("verifier") or {}).get("group_count") or 0),
+                "chunk_count": (summary.get("chunk_count") or {}).get("deep"),
+            }
+            variants[M.STANDARD] = {"status": STATUS_READY, "source": SOURCE_DEEP_STANDARD,
+                                    "chunk_count": (summary.get("chunk_count") or {}).get("standard")}
+            deep_ready = True
+        except Exception as error:  # noqa: BLE001 - one arm failing is a state
+            logger.error(f"deep variant failed for {key}: {error}", exc_info=True)
+            variants[M.DEEP] = {"status": STATUS_FAILED,
+                                "error": f"{type(error).__name__}: {error}"}
+            # Standard was Deep's to write and Deep never got there. Drop the
+            # claim so the loop below chunks it like any other method; a
+            # Standard that was produced on its own earlier is left alone.
+            if (variants.get(M.STANDARD) or {}).get("source") == SOURCE_DEEP_STANDARD:
+                variants.pop(M.STANDARD, None)
 
     # --- every other requested method, over the same canonical -------------
     for method in requested:
-        if method == M.DEEP or (method == M.STANDARD and deep_wanted):
+        if method == M.DEEP or (method == M.STANDARD and deep_ready):
             continue
         directory = variant_dir(key, method)
         if not (directory / "chunks.jsonl").is_file():
@@ -557,12 +631,13 @@ def _build(key: str) -> dict:
 
     payload = load_corpus(
         None, root(),
-        deep_dir=run_dir(key) if deep_wanted else None,
+        deep_dir=run_dir(key) if deep_ready else None,
         units_path=units_path(key),
         extra_arm_dirs=extra,
         label=state.get("label") or key,
     )
-    ready = [m for m in M.ORDER if (variants.get(m) or {}).get("status") == STATUS_READY]
+    ready = [m for m in _packaged_methods(key)
+             if (variants.get(m) or {}).get("status") == STATUS_READY]
     deep_variant = variants.get(M.DEEP) or {}
     # What the page needs to keep this document apart from the frozen corpus,
     # and to say -- per method -- what actually ran.
@@ -658,6 +733,7 @@ def _run_worker() -> None:
             try:
                 _set_state(key, status=STATUS_FAILED,
                            error=f"{type(error).__name__}: {error}",
+                           ready_methods=_packaged_methods(key),
                            traceback=traceback.format_exc(limit=6))
             except Exception:  # pragma: no cover - the state write is best effort
                 pass

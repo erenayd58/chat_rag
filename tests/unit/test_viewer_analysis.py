@@ -19,9 +19,10 @@ from components.viewer import analysis
 # --- a small canonical corpus, built here so no fixture file can drift ------
 
 
-def _unit(order, unit_id, unit_type, text, page, *, level=None, path=()):
+def _unit(order, unit_id, unit_type, text, page, *, level=None, path=(),
+          document_id="probe-doc"):
     row = {
-        "document_id": "probe-doc", "unit_id": unit_id, "order": order, "text": text,
+        "document_id": document_id, "unit_id": unit_id, "order": order, "text": text,
         "type": unit_type, "section_path": list(path), "source": {"page": page, "block": order},
     }
     if level is not None:
@@ -29,16 +30,18 @@ def _unit(order, unit_id, unit_type, text, page, *, level=None, path=()):
     return row
 
 
-def _corpus(sections=3, paragraphs=6):
+def _corpus(sections=3, paragraphs=6, document_id="probe-doc"):
     units, order = [], 0
     for section in range(1, sections + 1):
         order += 1
         title = f"{section}. BOLUM BASLIGI"
-        units.append(_unit(order, f"h-{order:04d}", "heading", title, section, level=1, path=[title]))
+        units.append(_unit(order, f"h-{order:04d}", "heading", title, section, level=1,
+                           path=[title], document_id=document_id))
         for para in range(paragraphs):
             order += 1
             body = (f"Bu {section}. bolumun {para + 1}. paragrafidir. " * 14).strip()
-            units.append(_unit(order, f"p-{order:04d}", "paragraph", body, section, path=[title]))
+            units.append(_unit(order, f"p-{order:04d}", "paragraph", body, section,
+                               path=[title], document_id=document_id))
     return units
 
 
@@ -338,3 +341,81 @@ def test_a_document_with_no_recoverable_canonical_fails_clearly(workspace, monke
     state = analysis.read_state("probe-doc")
     assert state["status"] == analysis.STATUS_FAILED
     assert "structured parser" in state["error"]
+
+
+# --- one document, several uploads of it -----------------------------------
+#
+# The analysis directory is the content, but a Deep run is produced by one
+# upload's ingest and carries that upload's id. The two identities must not be
+# allowed to disagree, and one arm that cannot be built must not take the
+# document's other arms with it.
+
+
+def test_the_same_pdf_uploaded_again_still_packages_every_method(workspace):
+    """The same bytes under a new upload id are still one working document.
+
+    The second upload lands on the first upload's canonical while bringing a
+    Deep run stamped with its own id. That disagreement used to abort the
+    build at the Deep step -- and take Markdown, which has nothing to do with
+    Deep, down with it -- leaving a document that advertised arms the Viewer
+    could not then fetch.
+    """
+    wanted = ["markdown", "structure-only", "agentic"]
+    first = _corpus(document_id="upload-1")
+    analysis.stage(doc_id="upload-1", label="Ayni.pdf", units=first, methods=wanted,
+                   deep_result=_deep_run(first), content_sha="same-bytes")
+    analysis._queue.join()
+
+    second = _corpus(document_id="upload-2")
+    analysis.stage(doc_id="upload-2", label="Ayni.pdf", units=second, methods=wanted,
+                   deep_result=_deep_run(second), content_sha="same-bytes")
+    analysis._queue.join()
+
+    key = analysis.key_for("upload-2", "same-bytes")
+    state = analysis.read_state("upload-2", "same-bytes")
+    assert state["status"] == analysis.STATUS_READY, state.get("error")
+    assert state["failed_methods"] == []
+    assert [d.name for d in workspace.iterdir() if d.is_dir()] == [key]
+
+    # Deep packaged: the run was adopted under the canonical's identity rather
+    # than refused for carrying the second upload's name.
+    assert state["methods"]["agentic"]["status"] == analysis.STATUS_READY
+    run_summary = json.loads((analysis.run_dir(key) / "summary.json").read_text(encoding="utf-8"))
+    assert run_summary["document_id"] == "upload-1", "the run answers to the canonical"
+
+    # Every method that was asked for is ready, and ready means fetchable.
+    assert state["ready_methods"] == wanted
+    for method in state["ready_methods"]:
+        assert analysis.chunks_path(key, method) is not None, f"{method} says ready with no chunks"
+        assert analysis.chunk_rows("upload-2", method, "same-bytes"), f"{method} serves no rows"
+
+
+def test_a_deep_failure_leaves_the_other_methods_standing(workspace, monkeypatch):
+    """One arm failing is a state, not the end of the document.
+
+    Markdown does not depend on Deep and must survive it. Standard does --
+    Deep's packaging is what writes it -- so with Deep gone it is chunked on
+    its own instead of being advertised and missing.
+    """
+    import amsc.deep_arm as deep_arm
+
+    def refuse(*args, **kwargs):
+        raise ValueError("the deep tree was built for someone else")
+
+    monkeypatch.setattr(deep_arm, "package", refuse)
+    units = _corpus()
+    analysis.stage(doc_id="probe-doc", label="Probe belgesi", units=units,
+                   methods=["markdown", "structure-only", "agentic"],
+                   deep_result=_deep_run(units))
+    analysis._queue.join()
+
+    key = analysis.key_for("probe-doc")
+    state = analysis.read_state("probe-doc")
+    assert state["status"] == analysis.STATUS_READY, "a failed arm is not a failed document"
+    assert state["methods"]["agentic"]["status"] == analysis.STATUS_FAILED
+    assert state["failed_methods"] == ["agentic"]
+
+    assert state["ready_methods"] == ["markdown", "structure-only"]
+    assert analysis.chunks_path(key, "agentic") is None, "nothing packaged, nothing advertised"
+    for method in state["ready_methods"]:
+        assert analysis.chunk_rows("probe-doc", method), f"{method} serves no rows"
