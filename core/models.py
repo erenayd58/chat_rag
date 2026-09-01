@@ -24,6 +24,17 @@ class DocumentChunk:
     metadata: Optional[Dict[str, Any]] = None
     embedding: Optional[np.ndarray] = None
 
+    @property
+    def search_text(self) -> Optional[str]:
+        """A retrieval-only rendering of a table this chunk carries.
+
+        Produced by the Deep Analysis chunker and carried in metadata, so it
+        survives a round trip through the vector store without widening this
+        record. Retrieval may read it; the answer context and every citation
+        read ``content``, which is the document's own text.
+        """
+        return (self.metadata or {}).get("search_text") or None
+
 
 @dataclass
 class RetrievalResult:

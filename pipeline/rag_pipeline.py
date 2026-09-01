@@ -559,8 +559,11 @@ class RAGPipeline:
                             chunk.metadata.update(additional_metadata)
             elif self.retrieval_profile in ('benchmark_aligned', 'hybrid_rrf'):
                 print("  - Generating embeddings...")
+                # A table embeds as its rendering rather than as its pipes:
+                # one vector cannot carry both, and the rendering is the half
+                # a question resembles. Answer context still reads ``content``.
                 matrix = self.embedding_model.encode_documents(
-                    [chunk.content for chunk in chunks]
+                    [chunk.search_text or chunk.content for chunk in chunks]
                 )
                 for chunk, embedding in zip(chunks, matrix, strict=True):
                     chunk.embedding = embedding
@@ -1063,7 +1066,9 @@ class RAGPipeline:
             return {"chunks": 0, "dimension": manifest.get("embedding_dimension"),
                     "model": manifest.get("embedding_model"), "fingerprint": manifest.get("embedding_fingerprint"),
                     "seconds": round(time.perf_counter() - started, 2)}
-        matrix = self.embedding_model.encode_documents([chunk.content for chunk in chunks])
+        matrix = self.embedding_model.encode_documents(
+            [chunk.search_text or chunk.content for chunk in chunks]
+        )
         vectors = [row.tolist() for row in matrix]
         self.vector_db.replace_all(chunks, vectors)
         self.hybrid_retriever.build_index(self.vector_db.get_all_chunks())

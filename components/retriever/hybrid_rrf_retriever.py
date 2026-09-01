@@ -61,6 +61,19 @@ def _identity(embedding_model: Any) -> Dict[str, Any]:
     }
 
 
+def _lexical_text(chunk: DocumentChunk) -> str:
+    """What BM25 indexes for one chunk.
+
+    Deep Analysis renders a table it carries into a searchable form; it is
+    indexed *beside* the raw markdown, never instead of it, so every term
+    that matched before still matches and the rendering can only add.
+    """
+    search_text = chunk.search_text
+    if not search_text:
+        return chunk.content
+    return chunk.content + "\n" + search_text
+
+
 class HybridRRFRetriever:
     """Dense (stored vectors) + BM25 (frozen, folded) + RRF."""
 
@@ -174,7 +187,8 @@ class HybridRRFRetriever:
             (chunk.doc_id, int(chunk.chunk_index)): chunk for chunk in ordered
         }
         self._bm25 = (
-            DeterministicBM25([fold_turkish(chunk.content) for chunk in ordered], k1=BM25_K1, b=BM25_B)
+            DeterministicBM25([fold_turkish(_lexical_text(chunk)) for chunk in ordered],
+                              k1=BM25_K1, b=BM25_B)
             if ordered else None
         )
         self._index_status = None

@@ -268,6 +268,13 @@ class StructuralChunker(BaseChunker):
                         # the chunk has no heading: Chroma rejects None and a
                         # missing key reads the same as an older record.
                         "heading": row.get("heading"),
+                        # Deep Analysis renders a table it carries into a
+                        # searchable form; retrieval may read it instead of, or
+                        # beside, the raw markdown. Written only when a row
+                        # actually has one, so Standard's metadata is the exact
+                        # set it always was.
+                        **({"search_text": row["search_text"]}
+                           if row.get("search_text") else {}),
                         # Chroma keeps scalar metadata only and silently drops
                         # list values, so provenance is serialised the same way
                         # FrozenV4Chunker serialises its own.
