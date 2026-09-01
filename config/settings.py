@@ -99,7 +99,13 @@ class Settings:
         self.embedding_dimensions = int(_dims) if _dims else None
 
         # Context assembly for the answer model (hybrid_rrf profile).
-        self.context_max_tokens = int(os.getenv("CONTEXT_MAX_TOKENS", "3200"))
+        # The generation context budget: how many tokens of retrieved chunk text
+        # the answer model is given. Measured to be the binding constraint on how
+        # much retrieved evidence reaches the model -- E2 (top_k) and E3 (rerank)
+        # both ran into it -- while the answer models in use carry 200k-262k token
+        # windows, so 3200 was spending 1.5% of the window and dropping evidence
+        # retrieval had already found.
+        self.context_max_tokens = int(os.getenv("CONTEXT_MAX_TOKENS", "8000"))
         self.context_max_sources = int(os.getenv("CONTEXT_MAX_SOURCES", "8"))
         self.context_expand_neighbors = (
             os.getenv("CONTEXT_EXPAND_NEIGHBORS", "true").strip().lower() in {"1", "true", "yes", "on"}

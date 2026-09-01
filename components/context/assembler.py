@@ -21,7 +21,12 @@ traceable context. The rules, in order:
    does not fit is dropped and counted, never truncated mid-text. Ranked
    hits dropped this way are counted separately from neighbours that could
    not be afforded: the first is a loss, the second is the budget working.
-5. Every chunk appears once with a stable label ``S1..Sn`` in context
+5. Reading order is admission order: every hit, in rank order, then the
+   expansions. Laying each hit beside its own neighbours would undo rule 2
+   one layer up -- a neighbour of rank 1 would read ahead of the hit at
+   rank 5, and the more budget expansion wins the deeper the lowest-ranked
+   evidence is buried. An expansion names the hit it continues instead.
+6. Every chunk appears once with a stable label ``S1..Sn`` in context
    order, so a citation in the answer maps back to exactly one chunk, one
    heading and one page list.
 
@@ -142,7 +147,7 @@ class ContextBundle:
     labels: Dict[str, ContextSource] = field(default_factory=dict)
 
 
-def _render(source: ContextSource) -> str:
+def _render(source: ContextSource, seed_label: Optional[str] = None) -> str:
     chunk = source.chunk
     header = [f"Belge: {chunk.doc_title}"]
     heading = _heading(chunk)
@@ -151,6 +156,10 @@ def _render(source: ContextSource) -> str:
     pages = _pages(chunk)
     if pages:
         header.append("Sayfa: " + ", ".join(str(page) for page in pages))
+    if seed_label:
+        # An expansion no longer sits beside the hit that pulled it in, so it
+        # says which one it continues. The link survives; the hits keep the top.
+        header.append(f"Devam: {seed_label}")
     return f"[{source.label}] " + " | ".join(header) + "\n" + (chunk.content or "").strip()
 
 
@@ -233,27 +242,23 @@ def assemble_context(
                 if added is not None:
                     expanded += 1
 
-    # Admission order is not reading order. The budget is now offered to the
-    # hits first, but the model should still read a section's continuation
-    # beside the hit that pulled it in, exactly as before -- so the labels are
-    # laid out seed-then-its-neighbours, in rank order.
-    ordered: List[ContextSource] = []
-    placed: set = set()
-    for source in chosen:
-        if source.expanded_from is not None:
-            continue
-        ordered.append(source)
-        placed.add(id(source))
-        for candidate in chosen:
-            if candidate.expanded_from == source.chunk.chunk_id:
-                ordered.append(candidate)
-                placed.add(id(candidate))
-    # An expansion whose seed is somehow gone keeps its place rather than
-    # vanishing from a context it was already counted into.
-    ordered.extend(s for s in chosen if id(s) not in placed)
+    # Reading order is admission order. ``chosen`` already holds every ranked
+    # hit in rank order followed by the neighbours, because that is the order
+    # the two passes filled it in. Interleaving each hit with its own
+    # neighbours would undo pass 1 one layer up: a neighbour of rank 1 would
+    # read ahead of the hit at rank 5, and every expansion admitted above it
+    # would push that hit further down -- so the more budget expansion is
+    # given, the deeper the lowest-ranked evidence is buried. The hits keep
+    # the top of the context; an expansion names the hit it continues instead
+    # of sitting next to it.
+    ordered = chosen
     for index, source in enumerate(ordered, start=1):
         source.label = f"S{index}"
-    text = "\n\n".join(_render(source) for source in ordered)
+    seed_labels = {source.chunk.chunk_id: source.label for source in ordered}
+    text = "\n\n".join(
+        _render(source, seed_labels.get(source.expanded_from))
+        for source in ordered
+    )
     return ContextBundle(
         sources=ordered,
         text=text,
