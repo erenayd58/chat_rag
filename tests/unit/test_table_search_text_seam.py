@@ -1,9 +1,9 @@
 """Where a table's searchable rendering is allowed to be read.
 
 Deep Analysis renders a table it carries into a second representation. It is a
-retrieval aid and nothing else: BM25 reads it beside the raw markdown, the
-dense leg reads it instead, and the answer context and every citation keep
-reading the document's own text.
+retrieval aid and nothing else: both legs read it beside the raw markdown --
+never instead of it -- and the answer context and every citation keep reading
+the document's own text.
 """
 
 from __future__ import annotations
@@ -18,8 +18,9 @@ from components.chunker.structural_chunker import (
     TARGET_TOKENS,
     StructuralChunker,
 )
+from components.context.assembler import TABLE_VIEW_HEADER, assemble_context
 from components.retriever.hybrid_rrf_retriever import _lexical_text
-from core.models import DocumentChunk
+from core.models import DocumentChunk, RetrievalResult
 
 
 TABLE = "\n".join([
@@ -45,12 +46,22 @@ def _deterministic_configuration():
     ))
 
 
-def _chunk(content="RAW", search_text=None):
-    metadata = {"search_text": search_text} if search_text is not None else {}
+def _chunk(content="RAW", search_text=None, table_view=None):
+    metadata = {}
+    if search_text is not None:
+        metadata["search_text"] = search_text
+    if table_view is not None:
+        metadata["table_view"] = table_view
     return DocumentChunk(
         chunk_id="c1", content=content, doc_id="d", doc_title="t",
         chunk_index=0, total_chunks=1, metadata=metadata,
     )
+
+
+def _context(chunk):
+    result = RetrievalResult(chunk=chunk, score=1.0, retrieval_method="hybrid_rrf", rank=0)
+    return assemble_context([result], max_tokens=8000, max_sources=8,
+                            neighbor=None, expand_neighbors=False)
 
 
 def test_the_rendering_is_read_from_metadata_and_is_optional():
@@ -63,12 +74,20 @@ def test_the_rendering_is_read_from_metadata_and_is_optional():
     assert _chunk(search_text="").search_text is None
 
 
-def test_bm25_reads_the_rendering_beside_the_markdown_never_instead_of_it():
-    """Additive on purpose: a term that matched the raw table still matches."""
-    indexed = _lexical_text(_chunk(content="|Lisans|77|", search_text="Lisans: Oran (%) = 77"))
-    assert "|Lisans|77|" in indexed, "the raw table is still indexed"
-    assert "Oran (%) = 77" in indexed, "and the rendering is indexed with it"
-    assert _lexical_text(_chunk(content="|Lisans|77|")) == "|Lisans|77|"
+def test_both_legs_read_the_rendering_beside_the_markdown_never_instead_of_it():
+    """Additive on purpose: a term that matched the raw table still matches,
+    and the sentences a table sits under stay in the chunk's own vector."""
+    carrying = _chunk(content="|Lisans|77|", search_text="Lisans: Oran (%) = 77")
+    for indexed in (_lexical_text(carrying), carrying.retrieval_text):
+        assert "|Lisans|77|" in indexed, "the raw table is still indexed"
+        assert "Oran (%) = 77" in indexed, "and the rendering is indexed with it"
+    # One representation, read by both legs.
+    assert _lexical_text(carrying) == carrying.retrieval_text
+    # A chunk with no rendering -- every Standard and Markdown chunk -- is
+    # indexed as exactly its own content, byte for byte.
+    plain = _chunk(content="|Lisans|77|")
+    assert _lexical_text(plain) == "|Lisans|77|"
+    assert plain.retrieval_text == "|Lisans|77|"
 
 
 def test_the_deep_chunker_carries_the_rendering_and_leaves_the_text_alone():
@@ -104,3 +123,34 @@ def test_the_standard_chunker_writes_no_rendering():
     chunks = StructuralChunker().chunk_text("", "doc", "rapor.pdf", parsed_units=units)
     assert chunks, "the document still chunks"
     assert all(chunk.search_text is None for chunk in chunks)
+
+
+def test_the_answer_context_reads_the_table_reading_beside_the_raw_table():
+    """The reading is an aid, never the record: the document's own table stays
+    above it, it is marked as derived, and the budget pays for it."""
+    chunk = _chunk(content="|Lisans|77|", table_view="Oran (%): Lisans = 77")
+    bundle = _context(chunk)
+
+    assert "|Lisans|77|" in bundle.text, "the document's own table is still there"
+    assert TABLE_VIEW_HEADER in bundle.text, "and the reading says it is derived"
+    assert "Oran (%): Lisans = 77" in bundle.text
+    assert bundle.text.index("|Lisans|77|") < bundle.text.index(TABLE_VIEW_HEADER)
+    assert bundle.token_count > _context(_chunk(content="|Lisans|77|")).token_count
+
+
+def test_a_chunk_with_no_reading_renders_exactly_what_it_always_did():
+    """Every Standard and Markdown chunk, and every table Deep could not read
+    with certainty: the context is the chunk's own text and nothing else."""
+    bundle = _context(_chunk(content="|Lisans|77|"))
+    assert bundle.text.endswith("|Lisans|77|")
+    assert TABLE_VIEW_HEADER not in bundle.text
+
+
+def test_the_reading_is_for_the_answer_only_and_is_never_indexed():
+    """Retrieval reads content and the search rendering; the table reading is
+    a context aid and stays out of both legs."""
+    chunk = _chunk(content="|Lisans|77|", search_text="Lisans: Oran (%) = 77",
+                   table_view="Oran (%): Lisans = 77")
+    assert "Oran (%): Lisans = 77" not in chunk.retrieval_text
+    assert "Oran (%): Lisans = 77" not in _lexical_text(chunk)
+    assert _chunk(content="x").table_view is None

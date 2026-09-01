@@ -41,7 +41,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from amsc.table_view import CONTEXT_HEADER
+
 from core.models import DocumentChunk, RetrievalResult
+
+#: A derived reading is offered as one, never as the document's own words. The
+#: raw table stays above it and remains what a citation points at. Taken from
+#: the module that produces the reading, so this chat and the Viewer's own
+#: introduce it with the same sentence.
+TABLE_VIEW_HEADER = CONTEXT_HEADER
 
 _counter = None
 
@@ -147,6 +155,24 @@ class ContextBundle:
     labels: Dict[str, ContextSource] = field(default_factory=dict)
 
 
+def _body(chunk: DocumentChunk) -> str:
+    """The chunk as the answer model reads it.
+
+    The document's own text, and -- only where Deep Analysis could read the
+    chunk's table with certainty -- that table's rendering beneath it. A table
+    can reach the context in a shape where no single line carries a label, its
+    value and its period together; the rendering writes those three on one
+    line, so a number cannot be read out from under the wrong column. Every
+    chunk without one, which is every Standard and Markdown chunk, renders
+    exactly as it always did.
+    """
+    content = (chunk.content or "").strip()
+    view = chunk.table_view
+    if not view:
+        return content
+    return content + "\n\n" + TABLE_VIEW_HEADER + "\n" + view
+
+
 def _render(source: ContextSource, seed_label: Optional[str] = None) -> str:
     chunk = source.chunk
     header = [f"Belge: {chunk.doc_title}"]
@@ -160,7 +186,7 @@ def _render(source: ContextSource, seed_label: Optional[str] = None) -> str:
         # An expansion no longer sits beside the hit that pulled it in, so it
         # says which one it continues. The link survives; the hits keep the top.
         header.append(f"Devam: {seed_label}")
-    return f"[{source.label}] " + " | ".join(header) + "\n" + (chunk.content or "").strip()
+    return f"[{source.label}] " + " | ".join(header) + "\n" + _body(chunk)
 
 
 def assemble_context(
@@ -195,7 +221,9 @@ def assemble_context(
             dropped += 1
             dropped_hits += 1 if result is not None else 0
             return None
-        tokens = estimate_tokens(chunk.content or "")
+        # The budget counts what is actually rendered, so a table's reading is
+        # paid for rather than smuggled past the limit.
+        tokens = estimate_tokens(_body(chunk))
         if spent + tokens > max_tokens and chosen:
             dropped += 1
             dropped_hits += 1 if result is not None else 0

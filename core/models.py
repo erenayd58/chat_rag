@@ -35,6 +35,33 @@ class DocumentChunk:
         """
         return (self.metadata or {}).get("search_text") or None
 
+    @property
+    def retrieval_text(self) -> str:
+        """What retrieval indexes for this chunk, on either leg.
+
+        The rendering is indexed *beside* ``content``, never instead of it, so
+        every term that matched before still matches and the sentences a table
+        sits under stay in its vector. A chunk with no rendering -- every
+        Standard and Markdown chunk -- indexes exactly ``content``, byte for
+        byte, as it always did.
+        """
+        search_text = self.search_text
+        if not search_text:
+            return self.content
+        return self.content + "\n" + search_text
+
+    @property
+    def table_view(self) -> Optional[str]:
+        """A readable rendering of the one table this chunk carries.
+
+        Produced by the Deep Analysis chunker, and only where the table's own
+        structure made every label/value/period pairing certain. It is a
+        reading aid for the answer model: it rides in the context *beneath*
+        ``content`` and clearly marked as derived, it is never indexed, and a
+        citation still points at ``content``, which is the document's own text.
+        """
+        return (self.metadata or {}).get("table_view") or None
+
 
 @dataclass
 class RetrievalResult:

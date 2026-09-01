@@ -66,12 +66,11 @@ def _lexical_text(chunk: DocumentChunk) -> str:
 
     Deep Analysis renders a table it carries into a searchable form; it is
     indexed *beside* the raw markdown, never instead of it, so every term
-    that matched before still matches and the rendering can only add.
+    that matched before still matches and the rendering can only add. The
+    dense leg reads the same representation, so one chunk is searched for
+    under one text on both legs.
     """
-    search_text = chunk.search_text
-    if not search_text:
-        return chunk.content
-    return chunk.content + "\n" + search_text
+    return chunk.retrieval_text
 
 
 class HybridRRFRetriever:

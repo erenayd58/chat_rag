@@ -275,6 +275,12 @@ class StructuralChunker(BaseChunker):
                         # set it always was.
                         **({"search_text": row["search_text"]}
                            if row.get("search_text") else {}),
+                        # Deep Analysis also renders a table it can read with
+                        # certainty into a form the answer model reads beside
+                        # the raw markdown. Written only when a row has one, so
+                        # Standard's metadata is the exact set it always was.
+                        **({"table_view": row["table_view"]}
+                           if row.get("table_view") else {}),
                         # Chroma keeps scalar metadata only and silently drops
                         # list values, so provenance is serialised the same way
                         # FrozenV4Chunker serialises its own.

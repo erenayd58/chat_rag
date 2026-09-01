@@ -559,11 +559,13 @@ class RAGPipeline:
                             chunk.metadata.update(additional_metadata)
             elif self.retrieval_profile in ('benchmark_aligned', 'hybrid_rrf'):
                 print("  - Generating embeddings...")
-                # A table embeds as its rendering rather than as its pipes:
-                # one vector cannot carry both, and the rendering is the half
-                # a question resembles. Answer context still reads ``content``.
+                # A table embeds as its pipes *and* its rendering: the
+                # rendering is the half a question resembles, the markdown
+                # keeps the sentences and row labels it was derived from, and
+                # a chunk must never be searched for under less than its own
+                # text. Answer context still reads ``content`` alone.
                 matrix = self.embedding_model.encode_documents(
-                    [chunk.search_text or chunk.content for chunk in chunks]
+                    [chunk.retrieval_text for chunk in chunks]
                 )
                 for chunk, embedding in zip(chunks, matrix, strict=True):
                     chunk.embedding = embedding
@@ -912,7 +914,13 @@ class RAGPipeline:
         "kaynaklarda bulunan en yakın bilgiyi kısaca belirt. Bu cümleyi yalnızca hiçbir "
         "bölüm cevaplanamıyorsa kullan; kısmen cevaplanabiliyorsa 5. kurala uy.\n"
         "7. Sorunun dilinde, doğal ve öz bir dille cevap ver; Türkçe soruya Türkçe cevap ver.\n"
-        "8. Cevabı düz metin olarak yaz; JSON, başlık veya kaynak listesi ekleme."
+        "8. Cevabı düz metin olarak yaz; JSON, başlık veya kaynak listesi ekleme.\n"
+        "9. Çok dönemli bir tablodan (birden fazla yıl veya sütun içeren) sayı kullanırken "
+        "sayının hangi döneme/sütuna ait olduğunu kaynakta doğrula ve cevabında belirt. Bir "
+        "sayının ait olduğu dönem kesin olarak belirlenemiyorsa o sayıyı hiçbir döneme "
+        "atfetme ve bunu söyle; yakın duruyor diye eşleştirme yapma. Bir kaynak parçada "
+        "tablodan türetilmiş bir okuma bloğu varsa sayı-dönem eşleşmesinde onu esas al, "
+        "alıntıyı yine kaynağın kendi metnine dayandır."
     )
     INSUFFICIENT_MARKERS = (
         "yeterli bilgi yok",
@@ -1067,7 +1075,7 @@ class RAGPipeline:
                     "model": manifest.get("embedding_model"), "fingerprint": manifest.get("embedding_fingerprint"),
                     "seconds": round(time.perf_counter() - started, 2)}
         matrix = self.embedding_model.encode_documents(
-            [chunk.search_text or chunk.content for chunk in chunks]
+            [chunk.retrieval_text for chunk in chunks]
         )
         vectors = [row.tolist() for row in matrix]
         self.vector_db.replace_all(chunks, vectors)
