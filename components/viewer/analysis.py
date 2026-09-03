@@ -321,6 +321,7 @@ def stage(
     kb_name: str | None = None,
     chunking_mode: str | None = None,
     content_sha: str | None = None,
+    parse_seconds: float | None = None,
 ) -> dict:
     """Put this ingest's reusable outputs on disk and queue the build.
 
@@ -366,6 +367,9 @@ def stage(
         requested=_merge_requested(state, wanted),
         methods=variants,
         unit_count=unit_count,
+        # The ingest's own measured parse time; a re-stage without a fresh
+        # parse keeps the value already recorded for this canonical.
+        parse_seconds=parse_seconds if parse_seconds else state.get("parse_seconds"),
         error=None,
     )
     enqueue(key)
@@ -561,6 +565,8 @@ def _build(key: str) -> dict:
     state = _ensure_units(key, state)
     _set_state(key, status=STATUS_RUNNING, error=None)
 
+    from time import perf_counter
+
     from amsc.deep_arm import package, package_arm
     from amsc.io import load_jsonl_units
     from amsc.viewer_v2 import load_corpus
@@ -597,9 +603,27 @@ def _build(key: str) -> dict:
                 "calls": int((run_summary.get("proposer") or {}).get("call_count") or 0)
                 + 2 * int((run_summary.get("verifier") or {}).get("group_count") or 0),
                 "chunk_count": (summary.get("chunk_count") or {}).get("deep"),
+                # Minimal telemetry: the run's own recorded wall time, so the
+                # viewer's benchmark can show what Deep actually cost here.
+                "seconds": round(sum(
+                    v for v in (run_summary.get("timing_seconds") or {}).values()
+                    if isinstance(v, (int, float))
+                ), 2) or None,
             }
-            variants[M.STANDARD] = {"status": STATUS_READY, "source": SOURCE_DEEP_STANDARD,
-                                    "chunk_count": (summary.get("chunk_count") or {}).get("standard")}
+            # Deep's packaging wrote the Standard partition, so Standard was
+            # never chunked -- and never timed -- on its own. Run the same
+            # deterministic walk once more purely as a measurement: the
+            # partition is byte-identical by contract, the rows are discarded,
+            # and the number is a real chunking time on this machine.
+            std_variant = {"status": STATUS_READY, "source": SOURCE_DEEP_STANDARD,
+                           "chunk_count": (summary.get("chunk_count") or {}).get("standard")}
+            try:
+                started = perf_counter()
+                _chunk_rows(M.STANDARD, units)
+                std_variant["seconds"] = round(perf_counter() - started, 2)
+            except Exception:  # noqa: BLE001 - a timing probe must never fail a build
+                pass
+            variants[M.STANDARD] = std_variant
             deep_ready = True
         except Exception as error:  # noqa: BLE001 - one arm failing is a state
             logger.error(f"deep variant failed for {key}: {error}", exc_info=True)
@@ -617,6 +641,7 @@ def _build(key: str) -> dict:
             continue
         directory = variant_dir(key, method)
         if not (directory / "chunks.jsonl").is_file():
+            started = perf_counter()
             try:
                 rows = _chunk_rows(method, units)
             except Exception as error:  # noqa: BLE001 - one variant failing is a state
@@ -624,7 +649,11 @@ def _build(key: str) -> dict:
                 variants[method] = {"status": STATUS_FAILED, "error": f"{type(error).__name__}: {error}"}
                 continue
             packaged = package_arm(rows, units=units, output_dir=directory, counter=_counter())
-            variants[method] = {"status": STATUS_READY, "chunk_count": packaged.get("chunk_count")}
+            # Minimal telemetry: how long this method's chunking + packaging
+            # actually took, so the viewer's benchmark can compare the methods
+            # on real numbers. Behaviour is otherwise unchanged.
+            variants[method] = {"status": STATUS_READY, "chunk_count": packaged.get("chunk_count"),
+                                "seconds": round(perf_counter() - started, 2)}
         else:
             variants.setdefault(method, {"status": STATUS_READY})
         extra[method] = directory
@@ -636,6 +665,16 @@ def _build(key: str) -> dict:
         extra_arm_dirs=extra,
         label=state.get("label") or key,
     )
+    # The ingest's measured parse time, in the same shape the frozen trees
+    # carry theirs, so the Viewer's debug pipeline can show it. Only ever a
+    # real measurement; without one the field stays absent.
+    if state.get("parse_seconds"):
+        payload.setdefault("meta", {}).setdefault("timing", {}).setdefault("parse", {
+            "parse_ms": round(float(state["parse_seconds"]) * 1000, 1),
+            "unit_count": state.get("unit_count"),
+            "measured": True,
+            "note": "chat_rag ingest parse (text + structured units + metadata), measured once at upload",
+        })
     ready = [m for m in _packaged_methods(key)
              if (variants.get(m) or {}).get("status") == STATUS_READY]
     deep_variant = variants.get(M.DEEP) or {}

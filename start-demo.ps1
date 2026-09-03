@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Start the demo: the chat_rag product and the chunk Viewer v2, in one go.
+    Start the demo: the chat_rag product and the chunk Viewer v3, in one go.
 
 .DESCRIPTION
     Starts two separate servers as background processes, waits until each one
@@ -10,7 +10,7 @@
     .\stop-demo.ps1.
 
       chat_rag product   ->  venv\Scripts\python.exe app.py           (Flask, FLASK_PORT)
-      chunk Viewer v2    ->  py -3.11 -m amsc.viewer_server ...       (stdlib server, --port)
+      chunk Viewer v3    ->  py -3.11 -m amsc.viewer_server ...       (stdlib server, --port)
 
     The chunk repository is found next to this one (..\chunk) unless -ChunkPath
     or the CHUNK_REPO environment variable says otherwise. Logs go to
@@ -18,11 +18,11 @@
     to .demo\state.json for stop-demo.ps1. Nothing from .env is printed.
 
 .PARAMETER ChunkPath
-    Path of the chunk repository (the Viewer v2 sources and artifacts).
+    Path of the chunk repository (the Viewer sources and artifacts).
 .PARAMETER ProductPort
     Port for chat_rag (default 5005, the application's own default).
 .PARAMETER ViewerPort
-    Port for the Viewer v2 server (default 8765, its own default).
+    Port for the Viewer v3 server (default 8765, its own default).
 .PARAMETER NoBrowser
     Do not open a browser when the demo is ready.
 .PARAMETER OpenViewer
@@ -229,7 +229,9 @@ if (-not $chunkRepo) {
     Fail 'chunk repo' "not found. Looked at -ChunkPath, CHUNK_REPO and $(Join-Path (Split-Path $Root -Parent) 'chunk')"
     exit 1
 }
-$viewerHtml = Join-Path $chunkRepo 'artifacts\viewer-v2\index.html'
+# Viewer v3 is the default product page; Viewer v2 stays in the repo as a
+# manual fallback (serve it yourself with --viewer artifacts\viewer-v2\index.html).
+$viewerHtml = Join-Path $chunkRepo 'artifacts\viewer-v3\index.html'
 $viewerConfig = Join-Path $chunkRepo 'configs\rag-poc.yaml'
 Info 'chunk repo' $chunkRepo
 
@@ -249,7 +251,7 @@ $viewerPythonLabel = if ($viewerPython.Pre.Count) { "$($viewerPython.Exe) $($vie
 Info 'viewer python' $viewerPythonLabel
 
 if (-not (Test-Path $viewerHtml)) {
-    Fail 'viewer page' "$viewerHtml is missing. Build it in the chunk repo (see docs/viewer-v2-poc.md: python -m amsc.viewer_v2 ...)"
+    Fail 'viewer page' "$viewerHtml is missing. Build it once in the chunk repo (see docs/viewer-v3.md: py -3.11 -m amsc.viewer_v3 ...)"
     exit 1
 }
 
@@ -284,20 +286,20 @@ try {
     $keyNote = if ($env:OPENROUTER_API_KEY) { 'provider key present (from environment or .env; not shown)' } else { 'no OPENROUTER_API_KEY - Viewer chat runs BM25-only, no answers' }
     Info 'provider key' $keyNote
 
-    # ---------------------------------------------------- chunk Viewer v2
+    # ---------------------------------------------------- chunk Viewer v3
     $viewerOwner = Get-PortOwner $ViewerPort
     if ($viewerOwner) {
         if (Test-ViewerHealth (Get-Health $ViewerUrl)) {
             $previous = Get-PreviousLaunch 'viewer' $viewerOwner
             if ($previous) {
-                Ok 'chunk Viewer' "$ViewerUrl  (already running, started by start-demo earlier, pid $($previous.pid))"
+                Ok 'Viewer v3' "$ViewerUrl  (already running, started by start-demo earlier, pid $($previous.pid))"
                 $state.services += @{ name = 'viewer'; pid = [int]$previous.pid; port = $ViewerPort; url = $ViewerUrl; started_by_launcher = $true; log = $previous.log; err = $previous.err; command = $previous.command }
             } else {
-                Ok 'chunk Viewer' "$ViewerUrl  (already running, pid $viewerOwner)"
+                Ok 'Viewer v3' "$ViewerUrl  (already running, pid $viewerOwner)"
                 $state.services += @{ name = 'viewer'; pid = $viewerOwner; port = $ViewerPort; url = $ViewerUrl; started_by_launcher = $false }
             }
         } else {
-            Fail 'chunk Viewer' "port $ViewerPort is taken by something else: $(Describe-Process $viewerOwner). Stop it or use -ViewerPort."
+            Fail 'Viewer v3' "port $ViewerPort is taken by something else: $(Describe-Process $viewerOwner). Stop it or use -ViewerPort."
             $allReady = $false
         }
     } else {
@@ -311,8 +313,8 @@ try {
         if (-not $env:OPENROUTER_API_KEY) { $viewerArgs += '--no-answer' }
         $viewerProc = Start-Process -FilePath $viewerPython.Exe -ArgumentList $viewerArgs -WorkingDirectory $chunkRepo `
             -RedirectStandardOutput $vOut -RedirectStandardError $vErr -WindowStyle Hidden -PassThru
-        if (Wait-Ready -Name 'chunk Viewer' -Url $ViewerUrl -Recognise ${function:Test-ViewerHealth} -Process $viewerProc -ErrLog $vErr -OutLog $vOut -Timeout $TimeoutSeconds) {
-            Ok 'chunk Viewer' "$ViewerUrl  (pid $($viewerProc.Id))"
+        if (Wait-Ready -Name 'Viewer v3' -Url $ViewerUrl -Recognise ${function:Test-ViewerHealth} -Process $viewerProc -ErrLog $vErr -OutLog $vOut -Timeout $TimeoutSeconds) {
+            Ok 'Viewer v3' "$ViewerUrl  (pid $($viewerProc.Id))"
             $state.services += @{ name = 'viewer'; pid = $viewerProc.Id; port = $ViewerPort; url = $ViewerUrl; started_by_launcher = $true; log = $vOut; err = $vErr; command = "$viewerPythonLabel $($viewerArgs -join ' ')" }
         } else {
             $allReady = $false

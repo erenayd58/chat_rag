@@ -302,7 +302,14 @@ class RAGPipeline:
                 doc_title = os.path.basename(file_path)
             
             print(f"Parsing file: {file_path}")
-            
+
+            # Minimal telemetry: how long the parser actually took on this
+            # file (text + structured units + metadata). Read by the upload
+            # route for the Viewer's debug/benchmark screens; changes nothing
+            # about what is parsed or how.
+            from time import perf_counter
+            _parse_started = perf_counter()
+
             # Parse the file
             document_text = self.parser_factory.parse_file(file_path)
 
@@ -318,6 +325,7 @@ class RAGPipeline:
 
             # Get metadata from parser
             parser_metadata = self.parser_factory.get_metadata(file_path)
+            self.last_parse_seconds = round(perf_counter() - _parse_started, 2)
             
             # Merge metadata
             merged_metadata = additional_metadata or {}

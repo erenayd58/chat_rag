@@ -92,7 +92,7 @@ if (Test-Path $StatePath) {
     $state = Get-Content $StatePath -Raw | ConvertFrom-Json
     foreach ($service in @($state.services)) {
         $name = [string]$service.name
-        $label = if ($name -eq 'viewer') { 'chunk Viewer' } else { 'chat_rag' }
+        $label = if ($name -eq 'viewer') { 'Viewer v3' } else { 'chat_rag' }
         $handled[$name] = $true
         if ($service.started_by_launcher) {
             Stop-Service -Name $label -ProcessId ([int]$service.pid) -Signature $Signatures[$name]
@@ -108,7 +108,7 @@ if (Test-Path $StatePath) {
 }
 
 if ($All) {
-    foreach ($entry in @(@{ name = 'product'; port = $ProductPort; label = 'chat_rag' }, @{ name = 'viewer'; port = $ViewerPort; label = 'chunk Viewer' })) {
+    foreach ($entry in @(@{ name = 'product'; port = $ProductPort; label = 'chat_rag' }, @{ name = 'viewer'; port = $ViewerPort; label = 'Viewer v3' })) {
         if ($handled[$entry.name]) { continue }
         $conn = Get-NetTCPConnection -LocalPort $entry.port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($conn) {

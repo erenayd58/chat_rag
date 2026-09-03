@@ -309,7 +309,8 @@ def recover_canonical_units(doc_id: str, kb_id: str = None):
 
 def stage_viewer_analysis(doc_id: str, *, label: str, kb_id: str = None, kb_name: str = None,
                           chunking_mode: str = None, units=None, deep_result=None,
-                          methods=None, content_sha: str = None) -> dict:
+                          methods=None, content_sha: str = None,
+                          parse_seconds: float = None) -> dict:
     """Hand one document's ingest outputs to the Viewer packager.
 
     With ``units`` this is the upload path: the ingest's own canonical (and,
@@ -327,6 +328,7 @@ def stage_viewer_analysis(doc_id: str, *, label: str, kb_id: str = None, kb_name
     return analysis.stage(
         doc_id=doc_id, label=label, units=units, deep_result=deep_result, methods=methods,
         kb_id=kb_id, kb_name=kb_name, chunking_mode=chunking_mode, content_sha=content_sha,
+        parse_seconds=parse_seconds,
     )
 
 
@@ -1736,6 +1738,9 @@ def upload_document():
                     content_sha=viewer_analysis_mod.sha_of(temp_path),
                     units=getattr(chunker, 'last_canonical_units', None),
                     deep_result=getattr(chunker, 'last_deep_result', None) if deep_analysis else None,
+                    # Measured by the pipeline at this very upload; None for
+                    # paths that never parsed (then the Viewer shows no time).
+                    parse_seconds=getattr(user_pipeline, 'last_parse_seconds', None),
                 )
             except Exception as viewer_error:  # noqa: BLE001
                 logger.warning(f"Could not stage {doc_id} for the viewer: {viewer_error}")
