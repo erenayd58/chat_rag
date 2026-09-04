@@ -32,6 +32,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 
 import pytest
 
@@ -51,10 +52,20 @@ _PREFIX = "chat_rag-tests-"
 
 # Windows keeps the session's log file and Chroma's sqlite handle open until
 # the interpreter exits, so the previous session's directory usually survives
-# its own cleanup. Sweep those leftovers here, before making this session's.
+# its own cleanup. Sweep those leftovers here, before making this session's --
+# but only ones old enough that no live session can own them, because two
+# pytest runs at once would otherwise delete each other's state root.
+_STALE_AFTER_SECONDS = 3600
 for _stale in os.listdir(tempfile.gettempdir()):
-    if _stale.startswith(_PREFIX):
-        shutil.rmtree(os.path.join(tempfile.gettempdir(), _stale), ignore_errors=True)
+    if not _stale.startswith(_PREFIX):
+        continue
+    _path = os.path.join(tempfile.gettempdir(), _stale)
+    try:
+        _idle = time.time() - os.path.getmtime(_path)
+    except OSError:
+        continue
+    if _idle > _STALE_AFTER_SECONDS:
+        shutil.rmtree(_path, ignore_errors=True)
 
 SESSION_ROOT = tempfile.mkdtemp(prefix=_PREFIX)
 
