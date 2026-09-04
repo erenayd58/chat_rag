@@ -15,6 +15,7 @@ __pycache__/
 .gold_set.json
 *.bak
 *.json.*.bak
+*.json.corrupt-*
 
 # Secrets. The compose file supplies configuration through env_file instead.
 .env

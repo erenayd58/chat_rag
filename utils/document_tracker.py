@@ -5,10 +5,33 @@ Document tracking system to avoid re-ingesting documents
 import json
 import os
 import hashlib
+import threading
 from typing import Dict, Set, Optional, List
 from datetime import datetime
 
 from config import paths
+
+
+#: One lock per ledger file, shared by every tracker pointed at it.
+#:
+#: The upload route builds a fresh ``DocumentTracker`` per request and the
+#: workspace snapshot builds one per page refresh, so several trackers for one
+#: file are live in a single process at a time. Reads take this lock as well as
+#: writes: a read outside it can land on a rename in progress -- on Windows the
+#: open then fails outright -- and an unreadable ledger loads as an empty one,
+#: which the next write would persist over every record that was really there.
+_FILE_LOCKS: Dict[str, threading.RLock] = {}
+_FILE_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(tracking_file: str) -> threading.RLock:
+    """The lock guarding one ledger file, created on first use."""
+    key = os.path.normcase(os.path.abspath(tracking_file))
+    with _FILE_LOCKS_GUARD:
+        lock = _FILE_LOCKS.get(key)
+        if lock is None:
+            lock = _FILE_LOCKS[key] = threading.RLock()
+        return lock
 
 
 class DocumentTracker:
@@ -26,32 +49,128 @@ class DocumentTracker:
         self.ingested_docs: Dict[str, Dict] = {}
         self._load_tracking_data()
     
+    def _read_records(self) -> Dict[str, Dict]:
+        """The ledger as it is on disk right now.
+
+        Raises rather than guessing. What an unreadable ledger means is the
+        caller's decision, and for a writer it must never mean "empty".
+        """
+        if not os.path.exists(self.tracking_file):
+            return {}
+        with open(self.tracking_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("the ingest ledger is not a JSON object")
+        return data
+
     def _load_tracking_data(self):
         """Load tracking data from file"""
-        if os.path.exists(self.tracking_file):
+        with _lock_for(self.tracking_file):
             try:
-                with open(self.tracking_file, 'r') as f:
-                    self.ingested_docs = json.load(f)
+                self.ingested_docs = self._read_records()
             except Exception as e:
+                # Constructing a tracker must not raise: the console builds one
+                # per request. The file is left exactly as it is -- only a write
+                # sets it aside, and only once the content is certainly at fault.
                 print(f"Warning: Could not load tracking file: {e}")
                 self.ingested_docs = {}
-        else:
-            self.ingested_docs = {}
-    
-    def _save_tracking_data(self):
-        """Save tracking data to file"""
+
+    def _write_records(self, records: Dict[str, Dict]) -> None:
+        """Replace the ledger in one step.
+
+        Written to a scratch name unique to this writer and moved into place,
+        so a reader sees either the whole previous ledger or the whole new one,
+        and an interrupted process leaves the previous file untouched instead
+        of a half-written one.
+        """
+        # Historically this file sat in the working directory, which always
+        # exists. A configured data directory does not, until something makes it.
+        parent = os.path.dirname(os.path.abspath(self.tracking_file))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = f"{self.tracking_file}.{os.getpid()}.{threading.get_ident()}.tmp"
         try:
-            # Historically this file sat in the working directory, which always
-            # exists. A configured data directory does not, until something
-            # makes it.
-            parent = os.path.dirname(os.path.abspath(self.tracking_file))
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            with open(self.tracking_file, 'w') as f:
-                json.dump(self.ingested_docs, f, indent=2)
-        except Exception as e:
-            print(f"Warning: Could not save tracking file: {e}")
-    
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(records, f, indent=2)
+                f.flush()
+                # The rename is atomic on its own; this is what stops a power
+                # failure from surviving the rename but not the contents.
+                os.fsync(f.fileno())
+            os.replace(tmp, self.tracking_file)
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+
+    def _set_aside_unreadable(self, error: Exception) -> Dict[str, Dict]:
+        """Keep a ledger whose contents cannot be parsed, and start a new one.
+
+        The previous behaviour was to load nothing and let the next write
+        replace the unreadable file, which destroyed whatever a person might
+        still have recovered from it. Renaming costs nothing and keeps it.
+        """
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        spoiled = f"{self.tracking_file}.corrupt-{stamp}"
+        try:
+            os.replace(self.tracking_file, spoiled)
+            print(f"Warning: the ingest ledger could not be parsed ({error}); "
+                  f"it has been kept as {spoiled} and a new one started")
+        except OSError as move_error:
+            print(f"Warning: the ingest ledger could not be parsed ({error}) "
+                  f"and could not be set aside ({move_error})")
+        return {}
+
+    def _mutate(self, change) -> bool:
+        """Apply one change to the ledger on disk, under that file's lock.
+
+        The records are re-read inside the lock rather than taken from this
+        instance's memory. Two uploads that each built a tracker before either
+        saved would otherwise write their own snapshot in turn, and the second
+        would drop the first document -- the lost update this exists to stop.
+
+        ``change`` may return ``False`` to say it changed nothing, which leaves
+        the file alone.
+        """
+        with _lock_for(self.tracking_file):
+            try:
+                records = self._read_records()
+            except OSError as e:
+                # The ledger is there and this process could not read it.
+                # Writing now would replace records that still exist, so the
+                # change is refused rather than applied over them.
+                print(f"Warning: Could not read tracking file, leaving it alone: {e}")
+                return False
+            except Exception as e:
+                records = self._set_aside_unreadable(e)
+            applied = change(records)
+            if applied is not False:
+                try:
+                    self._write_records(records)
+                except Exception as e:
+                    print(f"Warning: Could not save tracking file: {e}")
+                    applied = False
+            # This instance now reflects the ledger, not only its own change.
+            self.ingested_docs = records
+            return applied is not False
+
+    def _save_tracking_data(self):
+        """Persist the records this instance holds.
+
+        For callers that edit ``ingested_docs`` directly. It replaces the whole
+        ledger with this instance's view, so it can still drop a record written
+        elsewhere since it loaded; the methods below go through :meth:`_mutate`,
+        which re-reads first and cannot.
+        """
+        snapshot = dict(self.ingested_docs)
+
+        def overwrite(records: Dict[str, Dict]) -> None:
+            records.clear()
+            records.update(snapshot)
+
+        self._mutate(overwrite)
+
     def _compute_file_hash(self, file_path: str) -> str:
         """
         Compute hash of file content
@@ -140,7 +259,7 @@ class DocumentTracker:
             # leaves no way for the two to disagree.
             pipeline_snapshot = {**pipeline_snapshot, 'document_sha256': file_hash}
 
-        self.ingested_docs[abs_path] = {
+        record = {
             'doc_id': doc_id,
             'file_hash': file_hash,
             'chunk_count': chunk_count,
@@ -153,7 +272,10 @@ class DocumentTracker:
             'pipeline_snapshot': pipeline_snapshot
         }
 
-        self._save_tracking_data()
+        def add(records: Dict[str, Dict]) -> None:
+            records[abs_path] = record
+
+        self._mutate(add)
     
     def get_ingested_files(self) -> Set[str]:
         """
@@ -185,9 +307,12 @@ class DocumentTracker:
             file_path: Path to the document
         """
         abs_path = os.path.abspath(file_path)
-        if abs_path in self.ingested_docs:
-            del self.ingested_docs[abs_path]
-            self._save_tracking_data()
+
+        def drop(records: Dict[str, Dict]) -> bool:
+            # False leaves the ledger alone when there was nothing to remove.
+            return records.pop(abs_path, None) is not None
+
+        self._mutate(drop)
     
     def get_statistics(self, kb_id: Optional[str] = None) -> Dict:
         """
@@ -224,8 +349,10 @@ class DocumentTracker:
     
     def clear_all(self):
         """Clear all tracking data"""
-        self.ingested_docs = {}
-        self._save_tracking_data()
+        def empty(records: Dict[str, Dict]) -> None:
+            records.clear()
+
+        self._mutate(empty)
 
     def get_all_documents(self, kb_id: Optional[str] = None) -> List[Dict]:
         """

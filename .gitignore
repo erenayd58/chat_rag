@@ -34,8 +34,11 @@ ENV/
 # Vector database
 chroma_db/
 
-# Document tracking
+# Document tracking. A .corrupt-<timestamp> copy is what the tracker keeps
+# when it finds a ledger it cannot parse, so the records stay recoverable;
+# it is runtime state like the ledger itself.
 .ingested_documents.json
+*.json.corrupt-*
 
 # IDE
 .vscode/

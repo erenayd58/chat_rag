@@ -1,31 +1,32 @@
 """The ingest ledger under two writers, and under a crash mid-write.
 
-``DocumentTracker`` loads the whole ledger into memory on construction and
-writes the whole ledger back from that memory on every change, with a plain
+``DocumentTracker`` used to load the whole ledger into memory on construction
+and write the whole ledger back from that memory on every change, with a plain
 ``open(path, "w")`` and no lock. The upload route constructs a fresh tracker
-per request. Two requests that both constructed their tracker before either
-saved therefore each write a ledger that lacks the other's record.
+per request, so two requests that each built one before either saved wrote a
+ledger that lacked the other's record.
 
-These tests state the contract the ledger *should* honour and are marked
-``xfail(strict=True)``: today they fail deterministically, which is the
-evidence; once the ledger is fixed they will pass, and ``strict`` turns that
-into a failure until the marker is removed. Nothing here touches the
-developer's ``.ingested_documents.json`` -- every tracker is pointed at a
-file under ``tmp_path``.
+Phase 1A reproduced both failures deterministically here as strict xfails.
+Phase 1B made them pass: every mutation now re-reads the ledger inside a lock
+on that file, applies its own change and replaces the file in one step, so a
+concurrent writer's record survives and an interrupted write leaves the
+previous ledger intact. These tests are what hold that.
+
+Nothing here touches the developer's ``.ingested_documents.json`` -- every
+tracker is pointed at a file under ``tmp_path``.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import pathlib
 import threading
 
 import pytest
 
 from utils import DocumentTracker
 from utils import document_tracker as tracker_module
-
-LEDGER_RACE = "Phase 1B: the ledger is an unlocked whole-file read-modify-write; a concurrent writer's record is lost"
-LEDGER_TORN_WRITE = "Phase 1B: the ledger is rewritten in place; a crash mid-write leaves an unparseable file the loader resets to empty"
 
 
 @pytest.fixture
@@ -50,7 +51,6 @@ def _records(ledger: str) -> dict:
 # --------------------------------------------------------------- two writers
 
 
-@pytest.mark.xfail(strict=True, reason=LEDGER_RACE)
 def test_two_overlapping_uploads_both_keep_their_records(ledger, documents):
     """Two requests, each with its own tracker, both constructed before either
     saved -- exactly the upload route's per-request ``DocumentTracker()``."""
@@ -63,11 +63,12 @@ def test_two_overlapping_uploads_both_keep_their_records(ledger, documents):
     assert {row["doc_id"] for row in _records(ledger).values()} == {"doc-a", "doc-b"}
 
 
-@pytest.mark.xfail(strict=True, reason=LEDGER_RACE)
 def test_n_simultaneous_uploads_leave_n_records(ledger, documents):
-    """The same lost update from threads: every writer loads before any
-    writer saves (the barrier guarantees it), so each saves a one-record
-    ledger and the last one to finish is the only record left."""
+    """The same collision from threads, at the width the dev server allows.
+
+    The barrier guarantees every writer has loaded before any writer saves,
+    which is precisely the state that used to leave one record behind.
+    """
     writers = 8
     paths = [documents(f"t{index}") for index in range(writers)]
     trackers = [DocumentTracker(ledger) for _ in range(writers)]
@@ -91,26 +92,40 @@ def test_n_simultaneous_uploads_leave_n_records(ledger, documents):
     assert len(_records(ledger)) == writers
 
 
-def test_the_per_request_tracker_saves_only_what_it_loaded(ledger, documents):
-    """The mechanism behind the two failures above, stated plainly so a fix
-    that changes it is a visible decision: a tracker writes its own memory,
-    it does not merge with what is on disk at save time."""
+def test_a_stale_tracker_merges_instead_of_replacing(ledger, documents):
+    """The mechanism the two tests above rest on.
+
+    A save re-reads the ledger and applies only its own change to it, so a
+    record written since this tracker loaded is still there afterwards -- and
+    the instance's own view is refreshed to the ledger rather than left
+    claiming a document it just dropped.
+    """
     DocumentTracker(ledger).mark_as_ingested(file_path=documents("a"), doc_id="doc-a", chunk_count=1)
-    stale = DocumentTracker(ledger)  # loaded with doc-a
+    stale = DocumentTracker(ledger)  # loaded holding doc-a only
     DocumentTracker(ledger).mark_as_ingested(file_path=documents("b"), doc_id="doc-b", chunk_count=1)
     assert {row["doc_id"] for row in _records(ledger).values()} == {"doc-a", "doc-b"}
 
     stale.mark_as_ingested(file_path=documents("c"), doc_id="doc-c", chunk_count=1)
-    on_disk = {row["doc_id"] for row in _records(ledger).values()}
-    assert "doc-c" in on_disk and "doc-a" in on_disk
-    # Whether doc-b survives is the whole question; today it does not.
-    assert on_disk == set(stale.ingested_docs[path]["doc_id"] for path in stale.ingested_docs)
+
+    assert {row["doc_id"] for row in _records(ledger).values()} == {"doc-a", "doc-b", "doc-c"}
+    assert {row["doc_id"] for row in stale.ingested_docs.values()} == {"doc-a", "doc-b", "doc-c"}
+
+
+def test_removing_a_document_leaves_every_other_record_alone(ledger, documents):
+    """Removal is a change to the ledger, not a rewrite of one view of it."""
+    first = documents("a")
+    DocumentTracker(ledger).mark_as_ingested(file_path=first, doc_id="doc-a", chunk_count=1)
+    stale = DocumentTracker(ledger)
+    DocumentTracker(ledger).mark_as_ingested(file_path=documents("b"), doc_id="doc-b", chunk_count=1)
+
+    stale.remove_document(first)
+
+    assert {row["doc_id"] for row in _records(ledger).values()} == {"doc-b"}
 
 
 # ----------------------------------------------------------- torn write
 
 
-@pytest.mark.xfail(strict=True, reason=LEDGER_TORN_WRITE)
 def test_a_crash_mid_write_does_not_destroy_the_ledger(ledger, documents, monkeypatch):
     DocumentTracker(ledger).mark_as_ingested(file_path=documents("a"), doc_id="doc-a", chunk_count=1)
     assert {row["doc_id"] for row in _records(ledger).values()} == {"doc-a"}
@@ -130,14 +145,57 @@ def test_a_crash_mid_write_does_not_destroy_the_ledger(ledger, documents, monkey
     # either the old ledger survived, or the new one was written completely.
     survivors = {row["doc_id"] for row in DocumentTracker(ledger).ingested_docs.values()}
     assert "doc-a" in survivors
+    # And the half-written bytes must not be sitting anywhere a reader looks.
+    assert _records(ledger), "the ledger itself was left unreadable"
+    assert not list(pathlib.Path(ledger).parent.glob("*.tmp")), "a scratch file was left behind"
 
 
 def test_the_loader_resets_an_unreadable_ledger_to_empty_silently(ledger, tmp_path, capsys):
-    """What happens after such a crash today, so the consequence is on
-    record: the loader does not raise, it starts over with nothing."""
+    """Constructing a tracker never raises, whatever the file holds.
+
+    Writes are atomic now, so this state no longer follows from an interrupted
+    write; it is what a ledger damaged from outside looks like. Loading still
+    reports nothing rather than failing, and the write that follows keeps the
+    file instead of replacing it -- see the quarantine test below.
+    """
     tmp_path.joinpath("state").mkdir()
     with open(ledger, "w", encoding="utf-8") as handle:
         handle.write('{"only": {"doc_id": "half-wr')
     tracker = DocumentTracker(ledger)
     assert tracker.ingested_docs == {}
     assert "Could not load tracking file" in capsys.readouterr().out
+
+
+def test_a_ledger_that_cannot_be_read_is_never_written_over(ledger, documents, monkeypatch):
+    """An OS-level read failure is transient -- on Windows another process
+    renaming the file over it is enough. Treating that as an empty ledger and
+    writing would replace every record that is still there, so the change is
+    refused instead."""
+    DocumentTracker(ledger).mark_as_ingested(file_path=documents("a"), doc_id="doc-a", chunk_count=1)
+    before = _records(ledger)
+
+    tracker = DocumentTracker(ledger)
+
+    def refuse(self):
+        raise PermissionError("the ledger is open in another process")
+
+    monkeypatch.setattr(DocumentTracker, "_read_records", refuse)
+    tracker.mark_as_ingested(file_path=documents("b"), doc_id="doc-b", chunk_count=1)
+
+    assert _records(ledger) == before, "an unreadable ledger was overwritten"
+
+
+def test_an_unparseable_ledger_is_kept_rather_than_destroyed(ledger, documents, tmp_path):
+    """A ledger whose contents cannot be parsed is not something the next
+    write should land on top of. It is moved aside under a name that says what
+    it is, so whatever it held stays recoverable, and a new one is started."""
+    os.makedirs(os.path.dirname(ledger), exist_ok=True)
+    with open(ledger, "w", encoding="utf-8") as handle:
+        handle.write('{"C:/rapor.pdf": {"doc_id": "doc-from-before", "chunk_co')
+
+    DocumentTracker(ledger).mark_as_ingested(file_path=documents("new"), doc_id="doc-new", chunk_count=1)
+
+    assert {row["doc_id"] for row in _records(ledger).values()} == {"doc-new"}
+    kept = sorted(tmp_path.joinpath("state").glob("ingested_documents.json.corrupt-*"))
+    assert len(kept) == 1, f"the unreadable ledger was not kept: {kept}"
+    assert "doc-from-before" in kept[0].read_text(encoding="utf-8")
