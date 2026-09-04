@@ -220,6 +220,71 @@ def test_a_sigterm_handler_is_installed_where_the_platform_has_one():
         installed(signal.SIGTERM, None)
 
 
+# ------------------------------------------------- start-up on any console
+
+
+def test_the_banner_survives_a_console_that_cannot_spell_it():
+    """Start-up must not depend on who launched the process.
+
+    On Windows a redirected stream falls back to the machine's code page --
+    cp1254 on a Turkish install -- and anything outside it raises
+    UnicodeEncodeError. The banner is printed before the server binds, so
+    ``python -m wsgi > server.log`` died at start-up with a traceback rather
+    than serving. It never showed here because the demo launcher sets
+    PYTHONIOENCODING and the image sets it too: the application was relying on
+    being started by something that knew to.
+
+    Not really about the banner. A document title or a knowledge base name with
+    a character the code page cannot spell would do the same, anywhere in the
+    start-up path -- which is why the fix widens the stream rather than
+    flattening the text.
+    """
+    import io
+    import sys
+
+    narrow = io.TextIOWrapper(io.BytesIO(), encoding="cp1254", errors="strict")
+    original = sys.stdout
+    sys.stdout = narrow
+    try:
+        flask_app.enable_console_utf8()
+        flask_app.startup_banner()
+        sys.stdout.flush()
+    finally:
+        sys.stdout = original
+
+    narrow.seek(0)
+    assert narrow.buffer.getvalue(), "the banner printed nothing at all"
+
+
+def test_the_widening_is_not_done_on_import():
+    """It changes a global, so only an entrypoint may ask for it.
+
+    Importing ``app`` happens in every test in this suite and in anything that
+    embeds the application; reconfiguring the process's streams as a side
+    effect of an import would be a surprise none of them asked for.
+    """
+    import inspect
+
+    source = inspect.getsource(flask_app)
+    calls = [line for line in source.splitlines()
+             if "enable_console_utf8()" in line and not line.strip().startswith("def ")]
+    assert calls, "nothing calls it"
+    for line in calls:
+        assert line.startswith("    "), (
+            f"enable_console_utf8() is called at module level: {line!r}"
+        )
+
+
+def test_the_production_entrypoint_widens_before_it_prints():
+    import inspect
+
+    source = inspect.getsource(wsgi.main)
+    assert "enable_console_utf8()" in source
+    assert source.index("enable_console_utf8()") < source.index("startup_banner()"), (
+        "the banner is printed before the stream can carry it"
+    )
+
+
 # ------------------------------------------------------------- the container
 
 

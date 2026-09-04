@@ -7,6 +7,7 @@ import gc
 import json
 import os
 import secrets
+import sys
 import tempfile
 # Set OpenMP environment variables BEFORE importing any ML libraries
 # This prevents OMP errors when multiple embedding models are instantiated
@@ -2013,6 +2014,33 @@ def experiment_rank_chunks():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def enable_console_utf8() -> None:
+    """Let this process write any character to stdout without dying.
+
+    Called by the entrypoints, never on import, because it changes a global.
+
+    On Windows an interactive console already handles UTF-8, but a *redirected*
+    stream falls back to the machine's code page -- cp1254 on a Turkish
+    install, which is what this is developed on. Anything outside it then
+    raises UnicodeEncodeError, and the banner below is printed before the
+    server binds, so `python -m wsgi > server.log` died at start-up with a
+    traceback instead of serving. It was invisible here only because the demo
+    launcher sets PYTHONIOENCODING and the container image sets it too: the
+    application depended on being launched by something that knew.
+
+    It is not really about the banner. A document title, a knowledge base name
+    or a model id with a character the code page cannot spell would do exactly
+    the same thing, anywhere in the start-up path.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            # Not a reconfigurable text stream (a pytest capture, a pipe
+            # someone replaced). Nothing to do, and nothing worth failing for.
+            pass
+
+
 def startup_banner() -> None:
     """What this process is configured to do, printed once before it serves.
 
@@ -2102,6 +2130,7 @@ if __name__ == '__main__':
     # pretends otherwise: a deployment runs `python -m wsgi`, which serves this
     # same `app` object on waitress, in one process, with no debugger and no
     # reloader to switch off.
+    enable_console_utf8()
     startup_banner()
     resume_background_work()
 

@@ -12,14 +12,20 @@ resources = [
     ('corpora/stopwords', 'stopwords')
 ]
 
+# Output is plain ASCII on purpose. This is the one setup step the README asks
+# a new engineer to run by hand, and it used to print check marks: with stdout
+# redirected to a file on a Windows console whose code page is not UTF-8 --
+# cp1254 on a Turkish install -- printing one raises UnicodeEncodeError and the
+# documented step fails with a traceback, having done its work. A setup script
+# that cannot report its own success is worse than a plain one.
 for path, name in resources:
     try:
         nltk.data.find(path)
-        print(f"✓ {name} already installed")
+        print(f"ok       {name} already installed")
     except LookupError:
-        print(f"⬇ Downloading {name}...")
+        print(f"fetching {name}...")
         nltk.download(name, quiet=False)
-        print(f"✓ {name} downloaded")
+        print(f"ok       {name} downloaded")
 
-print("\n✓ All NLTK resources ready!")
+print("\nAll NLTK resources ready.")
 

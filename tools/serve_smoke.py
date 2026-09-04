@@ -68,7 +68,12 @@ def _environment(data_dir: str, port: int) -> dict:
     # answer a health check. Whether the product's dependencies satisfy its
     # imports has nothing to do with model files.
     env.setdefault("RETRIEVAL_PROFILE", "bm25_only")
-    env["PYTHONIOENCODING"] = "utf-8"
+    # PYTHONIOENCODING is deliberately *not* set. The server's output is a pipe
+    # here, so on a Windows console whose code page is not UTF-8 this is the
+    # case that used to crash the entrypoint before it bound. Setting it would
+    # hide that; leaving it unset is what makes this smoke prove the start-up
+    # path needs no help from whoever launched it.
+    env.pop("PYTHONIOENCODING", None)
     return env
 
 

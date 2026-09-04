@@ -119,6 +119,9 @@ def main(argv: list[str] | None = None) -> int:
 
     options = server_options()
 
+    # Before the first print: a redirected stream on a non-UTF-8 console would
+    # otherwise raise on the banner, and the banner comes before the bind.
+    _app.enable_console_utf8()
     _app.startup_banner()
     _app.resume_background_work()
 
