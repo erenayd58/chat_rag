@@ -72,6 +72,15 @@ WORKDIR /app
 COPY --chown=app:app . .
 USER app
 
+# Fail the build here, not at the first request, when requirements.txt pins an
+# amsc revision the product code has outgrown. This is invisible in a developer
+# checkout, where amsc is an editable install of the sibling chunk repository,
+# and it is exactly how a clean image came to build and then not start.
+# The data directory is overridden for this step alone: /data is the volume
+# mount point, and a build must not leave a vector store in that layer.
+RUN CHAT_RAG_DATA_DIR=/tmp/import-smoke python tools/import_smoke.py \
+ && rm -rf /tmp/import-smoke
+
 EXPOSE 5005
 
 # Deliberately cheap: it answers from the Flask app itself and touches no

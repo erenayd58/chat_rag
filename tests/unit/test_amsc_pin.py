@@ -8,11 +8,13 @@ itself, through the sibling checkout's git history, whether every
 ``from amsc.<module> import <name>`` in the product code resolves there. It
 needs no network and no fresh environment.
 
-It is marked ``xfail(strict=True)``: the pin is known to be stale, and the
-marker documents that. Bumping the pin to a revision that carries every
-symbol makes the test pass, at which point ``strict`` demands the marker go.
-Without a ``chunk`` checkout beside this one (or ``CHUNK_REPO``) the test
-skips rather than guessing.
+Without a ``chunk`` checkout beside this one (or ``CHUNK_REPO``) the tests
+skip rather than guessing.
+
+A pin can be wrong in two ways, and both are checked: it can name a revision
+that lacks a symbol the product imports (the failure Phase 1A reproduced), or
+it can name a revision that exists only on the developer's machine -- which
+breaks a clean install exactly as visibly, and only when someone else builds.
 """
 
 from __future__ import annotations
@@ -28,7 +30,6 @@ ROOT = Path(__file__).resolve().parents[2]
 REQUIREMENTS = ROOT / "requirements.txt"
 PIN = re.compile(r"amsc-poc\s*@\s*git\+\S+?@([0-9a-f]{7,40})")
 IMPORT = re.compile(r"^\s*from\s+(amsc(?:\.[\w]+)*)\s+import\s+([^\n#]+)", re.M)
-STALE_PIN = "Phase 1B: requirements.txt pins amsc 8222a21, which predates table_view, table_search_text, deep_arm.package_arm and viewer_v3"
 
 
 def _chunk_repo() -> Path | None:
@@ -103,7 +104,6 @@ def test_the_product_imports_a_known_set_of_amsc_symbols():
     assert "amsc.deep_pipeline" in wanted and "chunk_document" in wanted["amsc.deep_pipeline"]
 
 
-@pytest.mark.xfail(strict=True, reason=STALE_PIN)
 def test_the_pinned_amsc_revision_provides_every_symbol_the_product_imports(chunk_repo):
     missing = _missing_at(chunk_repo, _pinned_commit(), _product_imports())
     assert missing == [], f"pinned {_pinned_commit()[:7]} lacks: {missing}"
@@ -114,3 +114,19 @@ def test_the_checked_out_amsc_revision_provides_every_symbol_the_product_imports
     editable install actually serves -- this is the masking, made visible."""
     head = _git(chunk_repo, "rev-parse", "HEAD").stdout.strip()
     assert _missing_at(chunk_repo, head, _product_imports()) == []
+
+
+def test_the_pinned_revision_is_one_a_clean_install_can_actually_fetch(chunk_repo):
+    """A pin only has to exist *somewhere* to satisfy the symbol check above,
+    and a commit that was never pushed satisfies it on this machine and on no
+    other. Checked against the local remote-tracking refs, so it needs no
+    network; it skips when the checkout has none."""
+    commit = _pinned_commit()
+    remotes = _git(chunk_repo, "branch", "-r", "--contains", commit)
+    if remotes.returncode != 0:
+        pytest.skip("this chunk checkout has no remote-tracking refs to check against")
+    branches = [line.strip() for line in remotes.stdout.splitlines() if line.strip()]
+    assert branches, (
+        f"pinned {commit[:7]} is on no remote branch in this checkout: a clean "
+        "install cannot fetch it. Push the branch, or pin a revision that is pushed."
+    )
