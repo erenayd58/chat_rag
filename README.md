@@ -566,6 +566,36 @@ python tools/import_smoke.py   # the declared dependencies satisfy every import
 python tools/serve_smoke.py    # `python -m wsgi` binds, answers /api/health, stops
 ```
 
+### Does a clean clone work?
+
+Green tests do not answer that. They once stayed green through a
+`requirements.txt` that could not be installed at all, because every machine
+running them already had the package and an editable checkout of the sibling
+library. So there is a separate gate, and it is one command:
+
+```bash
+python tools/verify_reproducibility.py
+```
+
+It clones this repository from the remote, checks the clone carries no state
+from your machine, installs the pinned `amsc` revision into a fresh Python 3.11
+environment, imports it, builds the Viewer v3 product shell from it, then
+builds and runs the container and asks it for `/api/health`. Every check
+reports PASS, FAIL or SKIP -- SKIP means a capability is missing (no Docker, no
+Python 3.11, no network) or a tier was not asked for, never that something was
+checked and forgiven.
+
+| Flag | What it adds |
+|---|---|
+| `--with-host-install` | installs `requirements.txt` into a fresh venv on this machine as well (several minutes, ~1 GB of wheels) |
+| `--local` | clones this checkout instead of the remote, to run the gate before pushing |
+| `--no-docker` | skips the container checks |
+| `--keep` | leaves the temporary clone and environments behind for inspection |
+
+The same command runs in CI on every push to `main` and
+`refactor/productionization` (`.github/workflows/reproducibility.yml`), so what
+fails there fails here too, with the same output.
+
 ## Quick Start
 
 ### 1. Installation (5 minutes)

@@ -1,0 +1,65 @@
+# Does a clean clone still install, start and answer?
+#
+# The test suites answer whether the code is right. They cannot answer this
+# one, and did not: a dependency line lost its newline, `pip install -r
+# requirements.txt` failed outright, and five hundred green tests said nothing
+# about it for a whole phase, because every machine that ran them already had
+# the package installed. Nothing was checking the claim another engineer
+# depends on, so nothing caught it.
+#
+# This workflow runs exactly the gate a developer runs -- one command, no CI
+# logic of its own -- so what fails here is reproducible locally, and the gate
+# is maintained in one place rather than two.
+#
+# Deliberately not here: `--with-host-install`. Installing requirements.txt
+# into a bare venv on the runner would repeat what the image build already does
+# from a genuinely clean base, at roughly the same cost. Developers run that
+# tier locally when they want to prove the host path.
+
+name: reproducibility
+
+on:
+  push:
+    branches: [main, refactor/productionization]
+  pull_request:
+  workflow_dispatch:
+
+# A second push supersedes the first; the gate takes long enough that queueing
+# them is waste.
+concurrency:
+  group: reproducibility-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    # The image build installs torch, chromadb, faiss and the parsers from
+    # scratch; that is the bulk of the time and it is the point.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The gate clones this repository again, from the remote, and a clone
+          # of a shallow clone is a needless edge. The history is under 1 MiB.
+          fetch-depth: 0
+
+      # The interpreter the clean environments are built with. The image runs
+      # 3.11 and amsc-poc declares >=3.11,<3.14, so the gate looks for 3.11.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Reproducibility gate
+        # A pull_request checkout is a synthetic merge commit that exists on no
+        # branch of the remote, so the "is this pushed?" check cannot apply to
+        # it; --local clones this checkout instead, which still proves the
+        # tracked source is sufficient. On push, the strict form runs.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            python tools/verify_reproducibility.py --local
+          else
+            python tools/verify_reproducibility.py
+          fi
