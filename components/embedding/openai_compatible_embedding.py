@@ -146,9 +146,21 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
             dimensions=dimensions,
             concurrency=max(1, int(concurrency)),
         )
+        # Every request this makes counts against the process-wide embedding
+        # budget (EMBEDDING_MAX_INFLIGHT). These are provider-facing calls
+        # exactly like Deep Analysis's, and they multiply from more places:
+        # every ingest embeds its chunks, a re-index embeds a whole knowledge
+        # base from a request thread, and a query embeds itself. The wrapper
+        # sits on the transport rather than on this class because that is the
+        # level at which one call is one HTTP request -- ResilientBatches
+        # below hands it exactly one batch at a time.
+        from components.ingest.limits import LimitedEmbeddingTransport, embedding_budget
+
+        self._transport = transport
+        self._limited = LimitedEmbeddingTransport(transport, embedding_budget())
         # Batching and the rejected-batch fallback live here; the transport
         # underneath only ever sees one batch at a time.
-        self._provider = ResilientBatches(transport, batch_size=batch_size)
+        self._provider = ResilientBatches(self._limited, batch_size=batch_size)
         self._cache = CachedEmbeddings(self._provider, cache_dir)
         self._dimension: Optional[int] = dimensions
         self.last_usage = None
@@ -167,6 +179,10 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
             "api_key_env": self.api_key_env,
             "dimension": self._dimension,
             "fingerprint": self.fingerprint,
+            # This provider is remote, so its calls are budgeted. A local
+            # sentence-transformers model reports no budget because it makes
+            # no request; its cost is CPU on the worker that asked for it.
+            "budgeted": True,
         }
 
     def get_name(self) -> str:

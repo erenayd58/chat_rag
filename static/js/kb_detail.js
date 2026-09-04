@@ -322,6 +322,7 @@ function syncMethodState() {
 }
 
 $('#uploadBtn').addEventListener('click', openUploadModal);
+refreshActiveJobs();
 $('#chooseFileBtn').addEventListener('click', () => $('#fileInput').click());
 
 $('#fileInput').addEventListener('change', (event) => {
@@ -345,32 +346,154 @@ $('#uploadSubmit').addEventListener('click', async () => {
   const form = new FormData();
   form.append('file', selectedFile);
   form.append('kb_id', KB_ID);
+  // The upload is a job: the request returns as soon as it is queued and
+  // the page polls its status, so a long Deep Analysis never holds the
+  // browser's request open and a busy server says so instead of hanging.
+  form.append('async', '1');
   picked.forEach((key) => form.append('methods', key));
-  $('#uploadProgressNote').textContent = picked.length > 1
-    ? 'Doküman okunuyor, ardından ' + picked.length + ' yöntem çalıştırılıyor…'
-    : 'Doküman okunuyor ve indeksleniyor…';
+  $('#uploadProgressNote').textContent = 'Doküman gönderiliyor…';
 
   try {
-    const data = await api('/api/documents/upload', { method: 'POST', form: form });
-    closeModal('uploadModal');
-    let note = data.filename + ' yüklendi — ' + data.chunks_created + ' parça';
-    let tone = 'success';
-    if (data.chunking_mode === 'deep_analysis' && data.deep_analysis) {
-      const d = data.deep_analysis;
-      note += ' · Deep Analysis: ' + d.label;
-      if (d.tone !== 'success') tone = '';
+    const accepted = await api('/api/documents/upload', { method: 'POST', form: form });
+    if (accepted.attached) {
+      toast('Aynı doküman zaten işleniyor; bu yükleme ona bağlandı.', '');
     }
-    toast(note, tone);
+    if (accepted.busy) {
+      // The server is answering asynchronously because its synchronous
+      // waiting slots are full; the job is accepted and running regardless.
+      $('#uploadProgressNote').textContent = 'Sunucu meşgul; yükleme sıraya alındı…';
+    }
+    const job = await followIngestJob(accepted.job_id, picked.length, (note) => {
+      $('#uploadProgressNote').textContent = note;
+    });
+    if (job.status === 'succeeded') {
+      closeModal('uploadModal');
+      announceIngested(job.result || {});
+    } else {
+      errorBox.innerHTML = '<div class="error-state" style="margin-top:12px;">' +
+        escapeHtml(jobFailureMessage(job)) + '</div>';
+    }
     loadDokümans();
     loadStats();
   } catch (e) {
-    errorBox.innerHTML = '<div class="error-state" style="margin-top:12px;">' + escapeHtml(e.message) + '</div>';
+    const body = e.body || {};
+    let message = e.message;
+    if (body.overloaded) {
+      message = 'Sunucu şu anda meşgul (yükleme kuyruğu dolu). ' +
+        (body.retry_after_seconds ? Math.round(body.retry_after_seconds) + ' saniye sonra ' : 'Biraz sonra ') +
+        'tekrar deneyin.';
+    }
+    errorBox.innerHTML = '<div class="error-state" style="margin-top:12px;">' + escapeHtml(message) + '</div>';
   } finally {
     progress.style.display = 'none';
     submit.disabled = !selectedFile;
     cancel.disabled = false;
+    refreshActiveJobs();
   }
 });
+
+/** The success toast, from the job's result (the body the route always gave). */
+function announceIngested(data) {
+  let note = data.filename + ' yüklendi — ' + data.chunks_created + ' parça';
+  let tone = 'success';
+  if (data.chunking_mode === 'deep_analysis' && data.deep_analysis) {
+    const d = data.deep_analysis;
+    note += ' · Deep Analysis: ' + d.label;
+    if (d.tone !== 'success') tone = '';
+  }
+  toast(note, tone);
+}
+
+function jobFailureMessage(job) {
+  if (job.status === 'timed_out') return 'Yükleme zaman aşımına uğradı; doküman kaydedilmedi. ' + (job.error || '');
+  if (job.status === 'cancelled') return 'Yükleme iptal edildi; doküman kaydedilmedi.';
+  if (job.status === 'interrupted') {
+    return 'Sunucu bu yükleme işlenirken yeniden başlatıldı; doküman kaydedilmedi. Dosyayı tekrar yükleyin.';
+  }
+  if (job.unknown_job) {
+    return 'Bu yüklemenin durumu artık saklanmıyor. Dokümanın listede olup olmadığına bakın.';
+  }
+  return 'Yükleme başarısız: ' + (job.error || 'bilinmeyen hata');
+}
+
+function jobStatusNote(job, methodCount) {
+  if (job.status === 'queued') {
+    return 'Sırada bekliyor' + (job.position ? ' (sıra: ' + job.position + ')' : '') + '…';
+  }
+  if (job.status === 'running') {
+    return methodCount > 1
+      ? 'Doküman okunuyor, ardından ' + methodCount + ' yöntem çalıştırılıyor…'
+      : 'Doküman okunuyor ve indeksleniyor…';
+  }
+  return job.status;
+}
+
+/**
+ * Poll one ingest job until it reaches a terminal state. Resolves with the
+ * job; rejects only when the job cannot be found (a restart forgets jobs).
+ */
+async function followIngestJob(jobId, methodCount, onNote) {
+  const ACTIVE = { queued: true, running: true };
+  let delay = 800;
+  for (;;) {
+    let data;
+    try {
+      data = await api('/api/ingest/jobs/' + encodeURIComponent(jobId));
+    } catch (e) {
+      // A job id survives a restart (the server settles it against the
+      // ledger), so a 404 means only that it is older than the retention
+      // window. Either way there is nothing left to wait for.
+      if (e.status === 404) return { status: 'unknown', unknown_job: true };
+      throw e;
+    }
+    const job = data.job;
+    if (!ACTIVE[job.status]) return job;
+    if (onNote) onNote(jobStatusNote(job, methodCount));
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    delay = Math.min(delay + 400, 3000);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Ingest jobs in flight for this knowledge base                       */
+/* A refresh must not lose sight of an upload still running, so the    */
+/* list is read from the server and shown above the documents.         */
+/* ------------------------------------------------------------------ */
+let activeJobsTimer = null;
+
+async function refreshActiveJobs() {
+  const strip = $('#ingestJobs');
+  if (!strip) return;
+  let jobs = [];
+  try {
+    const data = await api('/api/ingest/jobs?kb_id=' + encodeURIComponent(KB_ID) + '&active=1');
+    jobs = data.jobs || [];
+  } catch (e) {
+    jobs = [];
+  }
+  if (!jobs.length) {
+    strip.hidden = true;
+    strip.innerHTML = '';
+    if (activeJobsTimer) { clearTimeout(activeJobsTimer); activeJobsTimer = null; }
+    return;
+  }
+  strip.hidden = false;
+  strip.innerHTML = jobs.map((job) =>
+    '<div class="ingest-job">' +
+      '<span class="badge ' + (job.status === 'running' ? 'badge-warn' : 'badge-neutral') + '">' +
+        '<span class="dot"></span>' + (job.status === 'running' ? 'İşleniyor' : 'Sırada') + '</span>' +
+      '<span class="ingest-job-name">' + escapeHtml(job.filename) + '</span>' +
+      '<span class="ingest-job-note">' + escapeHtml(jobStatusNote(job, (job.methods || []).length)) + '</span>' +
+    '</div>').join('');
+  if (activeJobsTimer) clearTimeout(activeJobsTimer);
+  activeJobsTimer = setTimeout(async () => {
+    activeJobsTimer = null;
+    const before = jobs.length;
+    await refreshActiveJobs();
+    const strip2 = $('#ingestJobs');
+    if (strip2 && strip2.hidden && before) { loadDokümans(); loadStats(); }
+  }, 2000);
+}
 
 /* ------------------------------------------------------------------ */
 /* Settings                                                            */

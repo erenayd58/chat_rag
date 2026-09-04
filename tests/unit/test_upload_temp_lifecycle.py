@@ -1,12 +1,11 @@
-"""An uploaded file exists for one request and not a moment longer.
+"""An uploaded file exists for exactly one ingest job and not a moment longer.
 
-Ingestion takes a path, so an upload is written to the system temp directory
-before anything can parse it. Deleting it was the caller's job, and the caller
-only did it from one place: the error handler. Every other exit -- a missing
-knowledge base, an unknown one, a chunker with no Deep Analysis path, and above
-all the successful one -- returned straight past it, so the temp directory
-accumulated one copy of every document ever uploaded, indefinitely, including
-whatever confidential material the documents happened to contain.
+Ingestion takes a path, so an upload is written to a staging directory before
+anything can parse it. It used to live for one request; now the job that
+reads it outlives the request, so the file belongs to the job from submission
+to its terminal state -- success, failure, refusal at a full queue, attachment
+to a twin already in flight -- and is deleted in every one of them. Before a
+job exists, the route owns it, and every early exit deletes it itself.
 
 These tests walk each of those exits and assert the same thing about all of
 them: no ``upload_*`` file is left behind. They watch a temp directory of their
@@ -68,7 +67,12 @@ def temp_dir(tmp_path, monkeypatch):
 
 
 def leftovers(staging) -> list[str]:
-    return sorted(p.name for p in staging.iterdir())
+    """Every *file* under the staging directory, however deep.
+
+    The staging directory itself (``chat_rag-uploads``) is allowed to exist:
+    it is the job manager's, and it is what a restart sweeps.
+    """
+    return sorted(p.name for p in staging.rglob("*") if p.is_file())
 
 
 @pytest.fixture
@@ -86,8 +90,8 @@ def client(tmp_path, monkeypatch, temp_dir):
         yield test_client, kb["kb_id"]
 
 
-def upload(test_client, **fields):
-    data = {"file": (io.BytesIO(b"kucuk bir test belgesi"), "belge.txt")}
+def upload(test_client, content: bytes = b"kucuk bir test belgesi", **fields):
+    data = {"file": (io.BytesIO(content), "belge.txt")}
     data.update(fields)
     return test_client.post(
         "/api/documents/upload", data=data, content_type="multipart/form-data"
@@ -188,40 +192,74 @@ def test_a_store_that_refuses_the_document_leaves_no_temp_file(client, temp_dir,
     assert leftovers(temp_dir) == []
 
 
-# ------------------------------------------------------- the mechanism itself
+# ------------------------------------------------------- the job's own exits
 
 
-def test_the_staging_helper_deletes_on_an_exception(temp_dir):
-    """``staged_upload`` is a context manager so that no caller has to remember."""
-    seen = {}
+def test_a_refused_upload_leaves_no_temp_file(client, temp_dir, monkeypatch):
+    """A full queue refuses the upload up front; the file is gone by then."""
+    from config.ingest import IngestLimits
+    from components.ingest import IngestManager
 
-    class Uploaded:
-        filename = "rapor.pdf"
+    test_client, kb_id = client
+    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: StubPipeline())
+    gate = __import__("threading").Event()
 
-        def save(self, path):
-            open(path, "wb").write(b"%PDF-1.7")
+    def hold(job):
+        gate.wait(10)
+        return {"doc_id": "held"}
 
-    with pytest.raises(ValueError):
-        with flask_app.staged_upload(Uploaded()) as path:
-            seen["path"] = path
-            assert os.path.isfile(path)
-            assert path.endswith(".pdf"), "the extension is what tells the parser what this is"
-            raise ValueError("something in the middle of the request")
-
-    assert not os.path.exists(seen["path"])
+    manager = IngestManager(IngestLimits(workers=1, queue_capacity=0), execute=hold)
+    monkeypatch.setattr(flask_app, "ingest_jobs", manager)
+    try:
+        first = upload(test_client, kb_id=kb_id, **{"async": "1"})
+        assert first.status_code == 202
+        # Different bytes: the same file would attach to the running job.
+        second = upload(test_client, b"baska bir belge", kb_id=kb_id, **{"async": "1"})
+        assert second.status_code == 503
+        assert second.get_json()["overloaded"] is True
+        # Only the running job's file may exist; the refused one is gone.
+        assert len(leftovers(temp_dir)) == 1
+    finally:
+        gate.set()
+        manager.close()
     assert leftovers(temp_dir) == []
 
 
-def test_the_staging_helper_survives_a_file_deleted_under_it(temp_dir):
-    """Cleanup is best effort: an already-gone file is not an error."""
+def test_an_attached_duplicate_leaves_no_second_temp_file(client, temp_dir, monkeypatch):
+    from config.ingest import IngestLimits
+    from components.ingest import IngestManager
 
-    class Uploaded:
-        filename = "notlar.txt"
+    test_client, kb_id = client
+    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: StubPipeline())
+    gate = __import__("threading").Event()
 
-        def save(self, path):
-            open(path, "wb").write(b"x")
+    def hold(job):
+        gate.wait(10)
+        return {"doc_id": "held"}
 
-    with flask_app.staged_upload(Uploaded()) as path:
-        os.remove(path)
+    manager = IngestManager(IngestLimits(workers=1, queue_capacity=2), execute=hold)
+    monkeypatch.setattr(flask_app, "ingest_jobs", manager)
+    try:
+        first = upload(test_client, kb_id=kb_id, **{"async": "1"}).get_json()
+        second = upload(test_client, kb_id=kb_id, **{"async": "1"}).get_json()
+        assert second["attached"] is True
+        assert second["job_id"] == first["job_id"]
+        assert len(leftovers(temp_dir)) == 1, "the twin's file was discarded at once"
+    finally:
+        gate.set()
+        manager.close()
+    assert leftovers(temp_dir) == []
+
+
+def test_a_restart_sweeps_what_a_previous_process_left(temp_dir, monkeypatch):
+    """A job lives in memory, so a staged file with no process is nobody's."""
+    from config import paths
+
+    staging = os.path.join(str(temp_dir), "chat_rag-uploads")
+    os.makedirs(staging)
+    open(os.path.join(staging, "upload_deadbeef.pdf"), "wb").write(b"%PDF-1.7")
+    assert paths.upload_staging() == staging
+
+    flask_app.resume_background_work()
 
     assert leftovers(temp_dir) == []

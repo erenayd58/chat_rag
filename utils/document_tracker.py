@@ -227,7 +227,7 @@ class DocumentTracker:
         pipeline_snapshot: Optional[Dict] = None,
         status: str = 'indexed',
         chunking_mode: Optional[str] = None
-    ):
+    ) -> bool:
         """
         Mark a document as ingested
 
@@ -275,7 +275,11 @@ class DocumentTracker:
         def add(records: Dict[str, Dict]) -> None:
             records[abs_path] = record
 
-        self._mutate(add)
+        # True when the ledger on disk now holds the record. A caller that has
+        # already written the document's vectors uses this to decide whether
+        # the document exists or has to be rolled back: a document the ledger
+        # does not know is not ingested, whatever the store holds.
+        return self._mutate(add)
     
     def get_ingested_files(self) -> Set[str]:
         """

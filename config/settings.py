@@ -64,7 +64,22 @@ class Settings:
             os.getenv("DEEP_ANALYSIS_VERIFY", "true").strip().lower() in {"1", "true", "yes", "on"}
         )
         self.deep_analysis_timeout = float(_env("DEEP_ANALYSIS_TIMEOUT", "BOUNDARY_JUDGE_TIMEOUT", "120"))
-        self.deep_analysis_concurrency = int(os.getenv("DEEP_ANALYSIS_CONCURRENCY", "8"))
+
+        # Bounded ingest (config/ingest.py documents every knob). Read and
+        # validated here so a bad value stops the process at start-up, when
+        # someone is looking, rather than refusing the first upload.
+        from .ingest import limits_from_env
+
+        self.ingest_limits = limits_from_env()
+        self.ingest_workers = self.ingest_limits.workers
+        self.ingest_queue_capacity = self.ingest_limits.queue_capacity
+        self.ingest_job_timeout = self.ingest_limits.job_timeout_seconds
+        self.ingest_sync_wait = self.ingest_limits.sync_wait_seconds
+        self.ingest_job_retention = self.ingest_limits.job_retention_seconds
+        self.ingest_sync_waiters = self.ingest_limits.sync_waiters
+        self.provider_max_inflight = self.ingest_limits.provider_max_inflight
+        self.deep_analysis_concurrency = self.ingest_limits.deep_concurrency
+        self.embedding_max_inflight = self.ingest_limits.embedding_max_inflight
 
         # Answer model (chat generation). The final chain answers with an
         # OpenAI-compatible gateway model (minimax/minimax-m2.7 through

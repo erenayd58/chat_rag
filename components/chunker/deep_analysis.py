@@ -127,6 +127,44 @@ def build_configuration(app_settings: Any, config: DeepConfig) -> DeepAnalysisCo
     return DeepAnalysisConfiguration(settings=settings, missing=tuple(missing))
 
 
+# -------------------------------------------------------------- transports
+def build_transports(settings: DeepAnalysisSettings) -> tuple[Any, Any | None]:
+    """The real proposer and verifier transports, from amsc.
+
+    Kept as a module attribute so a test can replace it with doubles and
+    still go through :func:`limited_providers` -- the budget wrapping is the
+    thing under test, not the HTTP client.
+    """
+    from amsc.deep_pipeline import build_providers
+
+    return build_providers(settings)
+
+
+def limited_providers(configuration: DeepAnalysisConfiguration) -> tuple[Any | None, Any | None]:
+    """The proposer and verifier this ingest will call, under the budget.
+
+    ``(None, None)`` when no model run is possible: the pipeline then runs the
+    deterministic contract alone, exactly as before. Otherwise each transport
+    is wrapped so every ``complete()`` takes one slot of the process-wide
+    provider budget and asks the current job's guard first. This is the
+    narrowest boundary there is -- one call, one slot -- so a Deep job with a
+    pool of eight still shares the budget call by call with every other Deep
+    job, rather than holding eight slots for the length of its run.
+    """
+    if not configuration.llm_available:
+        return None, None
+    from components.ingest.limits import LimitedProvider, current_guard, provider_budget
+
+    proposer, verifier = build_transports(configuration.settings)
+    if proposer is None:
+        return None, None
+    budget = provider_budget()
+    guard = current_guard()
+    limited_proposer = LimitedProvider(proposer, budget, guard)
+    limited_verifier = LimitedProvider(verifier, budget, guard) if verifier is not None else None
+    return limited_proposer, limited_verifier
+
+
 # ---------------------------------------------------------------- wording
 _STATUS_TEXT: dict[str, dict[str, str]] = {
     STATUS_OK: {

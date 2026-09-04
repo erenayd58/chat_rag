@@ -212,6 +212,84 @@ with sources; **4.** Agentic Chunking Viewer; **5.** Sunum (the four methods
 side by side) → Debug (why each boundary) → Benchmark; then back to the
 product.
 
+## Bounded ingest (uploads as jobs)
+
+An upload is an **ingest job**. `POST /api/documents/upload` validates the
+request, stages the file and queues the job; the parse, the chunking, any
+Deep Analysis model calls, the embeddings, the store write and the ledger
+write happen on an ingest worker. Two answers are possible:
+
+* `async=1` (what the console sends): **202** at once with `job_id` and the
+  job; poll `GET /api/ingest/jobs/<job_id>` until `status` is terminal.
+* otherwise the request waits for the job (up to `INGEST_SYNC_WAIT` seconds)
+  and answers exactly as before: **200** with the document, **409** when the
+  store must be re-indexed first, **503** when Deep Analysis cannot run on this
+  knowledge base, **500** on failure. A job still running when the wait runs
+  out is answered **202** with the job to poll.
+
+Job states: `queued` → `running` → `succeeded` | `failed` | `timed_out` |
+`cancelled` | `interrupted`. A full queue refuses the upload with **503**,
+`overloaded: true` and a `Retry-After` header; nothing is queued and nothing
+is kept. The same file uploaded again for the same knowledge base and methods
+while the first is still in flight is *attached* to that job (`attached:
+true`, same `job_id`). One ingest runs per knowledge base at a time;
+different knowledge bases run in parallel up to `INGEST_WORKERS`.
+
+| Setting | Default | Bounds |
+|---|---|---|
+| `INGEST_WORKERS` | 2 | jobs running at once (parsing, chunking, local embedding) |
+| `INGEST_QUEUE_CAPACITY` | 8 | jobs waiting behind busy workers |
+| `INGEST_JOB_TIMEOUT` | 1800 s | how long a job may run once started |
+| `INGEST_SYNC_WAIT` | 840 s | how long a synchronous upload waits before 202 |
+| `INGEST_SYNC_WAITERS` | half of `WAITRESS_THREADS` | request threads that may block on an upload |
+| `INGEST_JOB_RETENTION` | 3600 s | how long a finished job stays queryable |
+| `PROVIDER_MAX_INFLIGHT` | 8 | Deep proposer + verifier calls in flight, process-wide |
+| `DEEP_ANALYSIS_CONCURRENCY` | 8 | one Deep job's own call pool |
+| `EMBEDDING_MAX_INFLIGHT` | 4 | embedding requests in flight, process-wide |
+
+**The resource model.** Every externally multiplying call is bounded, and by
+its own limit so that one service cannot starve another:
+
+| Work | Bound |
+|---|---|
+| Deep proposer / verifier calls | `PROVIDER_MAX_INFLIGHT` global, `DEEP_ANALYSIS_CONCURRENCY` per job |
+| Embedding requests (remote provider) | `EMBEDDING_MAX_INFLIGHT` global |
+| Embedding batches (local model) | `INGEST_WORKERS` — CPU on the worker |
+| Parsing, chunking, indexing | `INGEST_WORKERS` |
+| Viewer packaging | its single thread; it makes no provider call |
+| Answer model at query time | `WAITRESS_THREADS` — no ingest path reaches it |
+
+Both caps are taken per call, not per job: a Deep job's pool of eight shares
+`PROVIDER_MAX_INFLIGHT` slots call by call with every other Deep job, and the
+number in flight across the process never exceeds it. A budget guarantees
+**boundedness, not fairness** — no ordering among waiters is promised, and a
+waiter cannot hang because every wait is bounded by the job's own deadline.
+
+**Deadline semantics: cooperative, with the network boundary enforced.** The
+deadline is checked at stage boundaries — after parsing, after chunking,
+before the store write — and before every outbound call, so a job that runs
+out of time stops with nothing committed. Work already inside a stage runs to
+the end of that stage; a parse is not interrupted. The one place where the
+overshoot would otherwise be a whole `DEEP_ANALYSIS_TIMEOUT` is a network
+call, so each call's socket timeout is clamped to the time the job has left.
+A ledger that cannot be written takes the store rows back out.
+
+**Restart.** Jobs live in memory and none is resumed — nothing was committed,
+because the ledger write is a job's last act. What does survive is the
+*answer*: every job journals its transitions (`INGEST_JOB_RETENTION` applies
+to those records too), and start-up settles whatever was in flight against
+the ledger. A client holding a `job_id` from before a restart gets
+`succeeded` when the ledger holds the document that job wrote, and
+`interrupted` — "the server stopped, nothing was registered, upload it
+again" — when it does not. **404** now means only that the job is older than
+the retention window. The staging directory is swept at start-up, because a
+file there belongs to no job.
+
+`GET /api/health` and `GET /api/ingest/jobs` show the capacity picture,
+including both budgets and how many finished jobs are retained;
+`DELETE /api/ingest/jobs/<job_id>` cancels a queued job at once and a running
+one at its next boundary.
+
 ## Running with Docker
 
 One container runs the whole application. There is no separate database,

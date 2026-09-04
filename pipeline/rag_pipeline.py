@@ -33,7 +33,10 @@ from components.reranker import BaseReranker, LLMReranker, CrossEncoderReranker
 from components.conversation import ConversationManager
 from components.parsers import ParserFactory
 from core.models import DocumentChunk, RetrievalResult, SearchQuery
-from core.exceptions import ConfigurationException, IndexIncompatibleException, LLMException, RAGException
+from core.exceptions import (
+    ConfigurationException, IndexIncompatibleException, IngestInterrupted, LLMException, RAGException,
+)
+from components.ingest.limits import checkpoint
 from utils.logger import get_logger, RAGLogger
 
 logger = get_logger("RAGPipeline")
@@ -326,6 +329,11 @@ class RAGPipeline:
             # Get metadata from parser
             parser_metadata = self.parser_factory.get_metadata(file_path)
             self.last_parse_seconds = round(perf_counter() - _parse_started, 2)
+
+            # A stage boundary: the file is parsed and nothing is written.
+            # If this ingest is a job that has run out of time or been
+            # cancelled, this is where it stops.
+            checkpoint()
             
             # Merge metadata
             merged_metadata = additional_metadata or {}
@@ -348,10 +356,10 @@ class RAGPipeline:
                 deep_analysis=deep_analysis
             )
 
-        except (ConfigurationException, IndexIncompatibleException):
-            # A misconfigured or unsupported Deep Analysis request, or a store
-            # that must be re-indexed first, must reach the caller as what it
-            # is, not wrapped into a generic failure.
+        except (ConfigurationException, IndexIncompatibleException, IngestInterrupted):
+            # A misconfigured or unsupported Deep Analysis request, a store
+            # that must be re-indexed first, or a job stopped on purpose must
+            # reach the caller as what it is, not wrapped into a generic failure.
             raise
         except Exception as e:
             raise RAGException(f"Failed to ingest document from file {file_path}: {e}")
@@ -500,6 +508,7 @@ class RAGPipeline:
                 from components.chunker.deep_analysis import (
                     build_configuration,
                     deep_config,
+                    limited_providers,
                 )
                 from components.chunker.structural_chunker import (
                     HARD_MAX_TOKENS, MIN_TOKENS, SOFT_MAX_TOKENS, TARGET_TOKENS,
@@ -516,9 +525,16 @@ class RAGPipeline:
                 )
                 if configuration.missing:
                     print(f"  - {configuration.fallback_reason}")
+                # The transports are built here, not inside amsc, so that
+                # every proposer and verifier call goes through the
+                # process-wide provider budget (components.ingest.limits).
+                # (None, None) means no model run: the contract runs alone.
+                provider, verifier_provider = limited_providers(configuration)
                 chunks, deep_report = self.chunker.chunk_text_deep(
                     document_text, doc_id, doc_title, doc_summary,
                     configuration=configuration,
+                    provider=provider,
+                    verifier_provider=verifier_provider,
                     parser_metadata=additional_metadata,
                     parsed_units=parsed_units
                 )
@@ -539,6 +555,8 @@ class RAGPipeline:
                 return []
             
             print(f"  - Created {len(chunks)} chunks")
+            # Chunked, nothing written: a job that must stop, stops here.
+            checkpoint()
 
             if self.retrieval_profile == 'hybrid_rrf':
                 # Never add vectors of one embedding space to a store that
@@ -595,7 +613,10 @@ class RAGPipeline:
                     if additional_metadata and chunk.metadata:
                         chunk.metadata.update(additional_metadata)
             
-            # Step 4: Store in vector database
+            # Step 4: Store in vector database. The last seam before anything
+            # is written: past this point the ingest runs to completion,
+            # because a half-written store is worse than a late one.
+            checkpoint()
             print("  - Storing in vector database...")
             if chunks and (embeddings or not needs_embeddings):
                 self.vector_db.add_chunks(chunks, embeddings)
@@ -614,10 +635,10 @@ class RAGPipeline:
             print(f"✓ Document '{doc_title}' ingested successfully!")
             return chunks
 
-        except (ConfigurationException, IndexIncompatibleException):
-            # Deep Analysis misconfiguration and a stale vector store are the
-            # caller's to handle explicitly; wrapping them would read as a
-            # document failure.
+        except (ConfigurationException, IndexIncompatibleException, IngestInterrupted):
+            # Deep Analysis misconfiguration, a stale vector store and a job
+            # stopped on purpose are the caller's to handle explicitly;
+            # wrapping them would read as a document failure.
             raise
         except Exception as e:
             raise RAGException(f"Document ingestion failed: {e}")

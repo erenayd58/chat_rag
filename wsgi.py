@@ -33,14 +33,28 @@ where this is developed; waitress is pure Python, runs identically on Windows
 and Linux, needs no build tools in a slim image, and is a threaded single
 process by design rather than by configuration.
 
-Concurrency is therefore bounded by ``WAITRESS_THREADS`` (default 8) request
-threads plus the one Viewer packaging thread, all in one address space. A
-future provider limit such as ``LLM_MAX_INFLIGHT`` can be a plain
-``threading.Semaphore`` and mean exactly what it says -- which it would not if
-the runtime were N processes.
+Concurrency is therefore ``WAITRESS_THREADS`` (default 8) request threads,
+``INGEST_WORKERS`` (default 2) ingest workers and the one Viewer packaging
+thread, all in one address space. That is what lets the provider limit
+(``PROVIDER_MAX_INFLIGHT``, ``components/ingest/limits.py``) be a plain
+``threading.Semaphore`` that means exactly what it says -- which it would not
+if the runtime were N processes.
 
-Nothing here decides how ingestion is scheduled; that is Phase 2's. It only
-fixes the topology that scheduling has to be designed against.
+Ingestion is scheduled by ``components/ingest/jobs.py``: an upload request
+validates, stages the file and queues a job, and the parse, chunking, model
+calls and store writes happen on an ingest worker under those limits. A
+request thread waits on a job only for a synchronous upload (no ``async=1``),
+for at most ``INGEST_SYNC_WAIT`` seconds -- below ``WAITRESS_CHANNEL_TIMEOUT``
+on purpose -- and only ``INGEST_SYNC_WAITERS`` threads may do so at once, so
+uploads can never occupy every request thread and leave ``/api/health`` and
+job polling unanswerable. An upload that finds no waiting slot is still
+accepted and still runs; it is answered 202 with its job.
+
+A restart is not a clean slate for clients: a job id handed out before it is
+still answerable afterwards, because jobs journal their transitions and
+start-up settles anything in flight against the ingest ledger
+(``components/ingest/journal.py``). Nothing is resumed and nothing was
+committed, which is what makes that settlement truthful.
 """
 
 from __future__ import annotations

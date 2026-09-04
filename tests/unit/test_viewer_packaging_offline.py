@@ -136,3 +136,30 @@ def test_only_the_hybrid_variant_loads_a_model(workspace, monkeypatch):
 
     with pytest.raises(ModelWanted):
         analysis._chunk_rows(M.HYBRID, units)
+
+
+def test_packaging_holds_no_provider_slot(workspace, no_network, monkeypatch):
+    """The provider budget is Deep ingest's alone. Packaging a Deep upload,
+    a Standard one and their variants leaves the budget's counters at zero,
+    which is the number Phase 2 sized the limit against."""
+    from components.chunker import deep_analysis
+    from components.ingest import limits as L
+
+    budget = L.configure_budget(2)
+
+    def never(settings):  # pragma: no cover - the assertion is that it is not called
+        raise AssertionError("packaging tried to build a provider transport")
+
+    monkeypatch.setattr(deep_analysis, "build_transports", never)
+    try:
+        units = _corpus()
+        analysis.stage(doc_id="probe-doc", label="Probe", units=units, kb_id="kb1", kb_name="probe-kb",
+                       chunking_mode="deep_analysis", deep_result=_deep_run(units),
+                       methods=[M.STANDARD, M.DEEP, M.MARKDOWN])
+        analysis._queue.join()
+        state = analysis.read_state("probe-doc")
+        assert state["status"] == analysis.STATUS_READY, state
+        assert budget.snapshot() == {"limit": 2, "inflight": 0, "peak": 0,
+                                     "acquired_total": 0, "refused_total": 0}
+    finally:
+        L.configure_budget(8)

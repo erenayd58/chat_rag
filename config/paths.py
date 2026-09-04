@@ -20,6 +20,7 @@ The one thing this module does beyond resolving names is decide which
 from __future__ import annotations
 
 import os
+import tempfile
 from typing import Dict, List, Optional
 
 #: Set this to gather all runtime state under one directory. Unset means the
@@ -215,3 +216,31 @@ def embedding_cache() -> str:
     """Per-text vector cache of the OpenAI-compatible embedding provider
     (one ``.npy`` per exact text, per model). Regenerable."""
     return _resolve("cache/embeddings", ".cache/embeddings")
+
+
+def ingest_journal() -> str:
+    """Where ingest jobs write the record a restart answers from.
+
+    Small JSON files, one per job, pruned on the same retention window as the
+    in-memory registry (``components/ingest/journal.py``). It travels with the
+    data root when one is set, because a client's ``job_id`` should survive a
+    container restart the same way its documents do.
+    """
+    return _resolve("state/ingest-jobs", ".ingest-jobs")
+
+
+def upload_staging() -> str:
+    """Where uploaded files wait for their ingest job.
+
+    An upload used to live in the system temp directory for exactly one
+    request. An ingest job outlives the request that submitted it, so the file
+    has to outlive it too, and it has to be somewhere a restart can sweep: a
+    job exists only in memory, so any file still here when the process starts
+    belongs to no job and is removed. With a data root the directory sits
+    under it; without one it is a subdirectory of the system temp directory,
+    resolved at call time so a test can point ``tempfile`` elsewhere.
+    """
+    root = data_root()
+    if root:
+        return os.path.join(root, "uploads")
+    return os.path.join(tempfile.gettempdir(), "chat_rag-uploads")

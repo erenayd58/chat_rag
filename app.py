@@ -2,13 +2,13 @@
 """
 Flask web application for RAG Chat
 """
-import contextlib
 import gc
 import json
 import os
 import secrets
 import sys
 import tempfile
+import threading
 # Set OpenMP environment variables BEFORE importing any ML libraries
 # This prevents OMP errors when multiple embedding models are instantiated
 os.environ.setdefault('OMP_NUM_THREADS', '1')
@@ -26,7 +26,12 @@ from pipeline import RAGPipeline
 from components.goldset import GoldSetManager
 from components.knowledgebase.manager import KnowledgeBaseManager
 from components.provenance import capture as capture_pipeline_snapshot
-from core.exceptions import ConfigurationException, IndexIncompatibleException, LLMException
+from core.exceptions import (
+    ConfigurationException, IndexIncompatibleException, IngestOverloaded, LLMException,
+)
+from components.ingest import (
+    IngestManager, JobJournal, configure_budget, configure_embedding_budget, sweep_staging,
+)
 from config import paths
 from components.retriever import (
     method_is_available,
@@ -79,8 +84,39 @@ pipeline = RAGPipeline(settings=settings)
 kb_manager = KnowledgeBaseManager()
 gold_manager = GoldSetManager()
 
+# The process-wide caps on outbound calls, installed from the validated
+# settings before any pipeline can make one. Two, because Deep Analysis and
+# the embedding endpoint are different services and neither may starve the
+# other (see components/ingest/limits.py).
+configure_budget(settings.provider_max_inflight)
+configure_embedding_budget(settings.embedding_max_inflight)
+
 # Store pipeline instances per session (for multi-user support)
 pipelines = {}
+_pipelines_lock = threading.Lock()
+
+# Ingest runs as jobs (components/ingest): bounded workers, a bounded queue,
+# an explicit lifecycle. The function that runs one job is looked up when it
+# runs, so a test that swaps the pipeline or the Viewer staging on this
+# module is honoured by the worker thread too.
+ingest_jobs = IngestManager(
+    settings.ingest_limits,
+    execute=lambda job: _execute_ingest(job),
+    # A client holding a job_id from before a restart gets a truthful answer
+    # rather than a 404; the ledger settles what actually completed.
+    journal=JobJournal(paths.ingest_journal()),
+)
+
+#: How many request threads may block on a synchronous upload at once.
+#:
+#: Without this, INGEST_SYNC_WAIT seconds times WAITRESS_THREADS synchronous
+#: uploads is a server that answers nothing else -- not /api/health, not the
+#: job status the browser is polling. The jobs themselves are not rationed:
+#: an upload that cannot get a waiting slot is still accepted and still runs,
+#: and is answered 202 with its job, which is the same answer a slow job
+#: gives anyway. So the compatibility path degrades to the asynchronous one
+#: under load instead of taking the server down with it.
+_sync_waiters = threading.BoundedSemaphore(max(1, settings.ingest_limits.sync_waiters))
 
 
 def build_settings_for_kb(kb_cfg: dict, kb_id: str = None) -> Settings:
@@ -117,18 +153,24 @@ def build_settings_for_kb(kb_cfg: dict, kb_id: str = None) -> Settings:
 
 
 def get_pipeline(session_id: str, kb_id: str = None) -> RAGPipeline:
-    """Get or create pipeline for session"""
+    """Get or create pipeline for session.
+
+    Built under a lock: an ingest worker and a request thread asking for the
+    same knowledge base at the same moment would otherwise each build a
+    pipeline -- two embedding models, two store handles -- and keep one.
+    """
     key = f"{session_id}:{kb_id or 'default'}"
-    if key not in pipelines:
-        if kb_id:
-            kb = kb_manager.get(kb_id)
-            if not kb:
-                raise ValueError("Knowledge base not found")
-            kb_settings = build_settings_for_kb(kb, kb_id)
-            pipelines[key] = RAGPipeline(settings=kb_settings)
-        else:
-            pipelines[key] = RAGPipeline(settings=settings)
-    return pipelines[key]
+    with _pipelines_lock:
+        if key not in pipelines:
+            if kb_id:
+                kb = kb_manager.get(kb_id)
+                if not kb:
+                    raise ValueError("Knowledge base not found")
+                kb_settings = build_settings_for_kb(kb, kb_id)
+                pipelines[key] = RAGPipeline(settings=kb_settings)
+            else:
+                pipelines[key] = RAGPipeline(settings=settings)
+        return pipelines[key]
 
 
 def _ensure_session():
@@ -739,7 +781,10 @@ def health_check():
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
         'llm_provider': settings.llm_provider,
-        'embedding_model': settings.embedding_model_name
+        'embedding_model': settings.embedding_model_name,
+        # Running, queued, the queue's bound and the provider budget: the
+        # capacity picture, so "is it busy" is answered without a job id.
+        'ingest': ingest_jobs.snapshot(),
     })
 
 
@@ -1583,44 +1628,65 @@ def delete_document(doc_id):
         }), 500
 
 
-@contextlib.contextmanager
-def staged_upload(uploaded_file):
-    """Put an uploaded file on disk for the duration of one request.
+def stage_upload(uploaded_file) -> str:
+    """Write an uploaded file where its ingest job will find it.
 
     Ingestion reads a path, not a stream: the parser opens the file, the
-    ledger hashes it and the Viewer takes its content sha from it, so the
-    bytes have to exist somewhere for the length of the request and nowhere
-    afterwards. The cleanup belongs to the ``with`` rather than to each exit,
-    because this route has many: a missing knowledge base, an unknown one, a
-    chunker with no Deep Analysis path, a parser or ingest failure -- and,
-    most of all, success, which is the one path that never deleted the file
-    and so leaked one copy of every document ever uploaded into the system
-    temp directory.
+    ledger hashes it and the Viewer takes its content sha from it. The file
+    now outlives the request that received it -- the job that reads it runs
+    on a worker -- so it goes to the staging directory the job manager owns
+    and sweeps, and the job deletes it in every terminal state (see
+    ``components/ingest/jobs.py``). Until it is handed to a job the caller
+    owns it, which is why every early exit below deletes it itself.
 
     The name keeps the shape it has always had (``upload_<8 hex><ext>``): a
     document whose ingest produced no chunks still takes its fallback id from
     this file name.
     """
     extension = os.path.splitext(uploaded_file.filename)[1]
-    temp_path = os.path.join(
-        tempfile.gettempdir(), f"upload_{uuid.uuid4().hex[:8]}{extension}"
-    )
+    directory = paths.upload_staging()
+    os.makedirs(directory, exist_ok=True)
+    temp_path = os.path.join(directory, f"upload_{uuid.uuid4().hex[:8]}{extension}")
     logger.info(f"Saving uploaded file to: {temp_path}")
     uploaded_file.save(temp_path)
+    return temp_path
+
+
+def _discard_upload(temp_path: str) -> None:
     try:
-        yield temp_path
-    finally:
-        try:
-            os.remove(temp_path)
-        except FileNotFoundError:
-            pass
-        except OSError as error:  # noqa: BLE001 - a leftover file is not a failed upload
-            logger.warning(f"Could not remove the uploaded temp file {temp_path}: {error}")
+        os.remove(temp_path)
+    except FileNotFoundError:
+        pass
+    except OSError as error:  # noqa: BLE001 - a leftover file is not a failed upload
+        logger.warning(f"Could not remove the uploaded temp file {temp_path}: {error}")
+
+
+def _flag(value) -> bool:
+    return (value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 @app.route('/api/documents/upload', methods=['POST'])
 def upload_document():
-    """Upload and process a new document"""
+    """Accept a document and ingest it as a job.
+
+    The request validates, stages the file and submits a job; the parse, the
+    chunking, any model calls, the embeddings and the store and ledger
+    writes happen on an ingest worker under the configured limits. Two
+    answers are possible:
+
+    * ``async=1`` (what the console sends): **202** at once with the job to
+      poll at ``GET /api/ingest/jobs/<job_id>``.
+    * otherwise the request waits for the job -- up to ``INGEST_SYNC_WAIT``
+      seconds -- and answers exactly as it always has: **200** with the
+      document, or the same error codes as before (409 re-index, 503 Deep
+      Analysis unavailable, 500). A job still running when the wait runs out
+      is answered **202** with the job to poll, not cut off.
+
+    A full queue is refused up front with **503**, ``overloaded: true`` and a
+    ``Retry-After`` header; nothing is queued, nothing is kept. The same
+    file submitted twice for the same knowledge base and methods while the
+    first is still in flight is attached to that job rather than run again.
+    """
     try:
         # Check if file was uploaded
         if 'file' not in request.files:
@@ -1637,223 +1703,408 @@ def upload_document():
                 'error': 'No file selected'
             }), 400
 
-        # The file is on disk for exactly this request; every return below --
-        # success included -- goes through the context manager's cleanup.
-        with staged_upload(file) as temp_path:
-            # Process the document
-            logger.info(f"Processing document: {file.filename}")
-            kb_id = request.form.get('kb_id')
-            
-            # Require knowledge base selection
-            if not kb_id or kb_id.strip() == '':
-                return jsonify({
-                    'success': False,
-                    'error': 'Knowledge base selection is required. Please select a knowledge base before uploading documents.'
-                }), 400
-            
-            # Validate KB exists
-            kb = kb_manager.get(kb_id)
-            if not kb:
-                return jsonify({
-                    'success': False,
-                    'error': f'Knowledge base "{kb_id}" not found'
-                }), 404
+        logger.info(f"Processing document: {file.filename}")
+        kb_id = request.form.get('kb_id')
 
-            # Which chunking methods to analyse this document with. One
-            # upload, one parse, one canonical -- then every method the user
-            # ticked runs over that same canonical, so three methods cost one
-            # parse. The methods are an analysis choice; what gets *indexed*
-            # for retrieval is still the knowledge base's own chunker, and
-            # this does not change it.
-            from components.viewer import methods as viewer_methods
+        # Require knowledge base selection
+        if not kb_id or kb_id.strip() == '':
+            return jsonify({
+                'success': False,
+                'error': 'Knowledge base selection is required. Please select a knowledge base before uploading documents.'
+            }), 400
 
+        # Validate KB exists
+        kb = kb_manager.get(kb_id)
+        if not kb:
+            return jsonify({
+                'success': False,
+                'error': f'Knowledge base "{kb_id}" not found'
+            }), 404
+
+        # Which chunking methods to analyse this document with. One
+        # upload, one parse, one canonical -- then every method the user
+        # ticked runs over that same canonical, so three methods cost one
+        # parse. The methods are an analysis choice; what gets *indexed*
+        # for retrieval is still the knowledge base's own chunker, and
+        # this does not change it.
+        from components.viewer import methods as viewer_methods
+
+        selected = viewer_methods.normalise(
+            request.form.getlist('methods') or request.form.get('methods')
+        )
+        # Deep Analysis (the amsc.deep_pipeline quality pipeline with an
+        # LLM proposer and verifier) is a per-document, ingest-only
+        # decision — never a query-time toggle and never written into the
+        # KB's chunker config. A missing or failing model provider does
+        # not refuse the upload: the deterministic quality contract runs
+        # alone and the document is labelled with that status, never
+        # passed off as Standard.
+        deep_raw = (request.form.get('deep_analysis') or '').strip().lower()
+        if deep_raw:  # the older single-mode form still works
+            deep_analysis = deep_raw in {'1', 'true', 'yes', 'on'}
             selected = viewer_methods.normalise(
-                request.form.getlist('methods') or request.form.get('methods')
+                [viewer_methods.STANDARD] + ([viewer_methods.DEEP] if deep_analysis else [])
             )
-            # Deep Analysis (the amsc.deep_pipeline quality pipeline with an
-            # LLM proposer and verifier) is a per-document, ingest-only
-            # decision — never a query-time toggle and never written into the
-            # KB's chunker config. A missing or failing model provider does
-            # not refuse the upload: the deterministic quality contract runs
-            # alone and the document is labelled with that status, never
-            # passed off as Standard.
-            deep_raw = (request.form.get('deep_analysis') or '').strip().lower()
-            if deep_raw:  # the older single-mode form still works
-                deep_analysis = deep_raw in {'1', 'true', 'yes', 'on'}
-                selected = viewer_methods.normalise(
-                    [viewer_methods.STANDARD] + ([viewer_methods.DEEP] if deep_analysis else [])
-                )
-            deep_analysis = viewer_methods.DEEP in selected
-            chunking_mode = 'deep_analysis' if deep_analysis else 'standard'
+        deep_analysis = viewer_methods.DEEP in selected
 
-            user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
+        session_id = session.get('session_id', 'global')
+        user_pipeline = get_pipeline(session_id, kb_id)
 
-            if deep_analysis:
-                # The one thing that is refused up front: a chunker that has
-                # no Deep Analysis path at all.
-                if not hasattr(user_pipeline.chunker, 'chunk_text_deep'):
-                    return jsonify({
-                        'success': False,
-                        'deep_analysis_unavailable': True,
-                        'error': ('Deep Analysis requires the structure-first '
-                                  'chunker; this knowledge base uses '
-                                  f'{user_pipeline.chunker.get_name()}.'),
-                    }), 400
+        if deep_analysis:
+            # The one thing that is refused up front: a chunker that has
+            # no Deep Analysis path at all.
+            if not hasattr(user_pipeline.chunker, 'chunk_text_deep'):
+                return jsonify({
+                    'success': False,
+                    'deep_analysis_unavailable': True,
+                    'error': ('Deep Analysis requires the structure-first '
+                              'chunker; this knowledge base uses '
+                              f'{user_pipeline.chunker.get_name()}.'),
+                }), 400
 
-            chunks = user_pipeline.ingest_document_from_file(
-                file_path=temp_path,
-                doc_title=file.filename,
-                deep_analysis=deep_analysis
-            )
+        temp_path = stage_upload(file)
+        try:
+            from components.viewer import analysis as viewer_analysis_mod
 
-            # Track the document
-            tracker = DocumentTracker()
-            doc_id = os.path.basename(temp_path).replace('.', '_')
+            # Identity is the document's content: the same file uploaded
+            # again while the first is in flight joins that job, and the
+            # Viewer files the two under one document.
+            content_sha = viewer_analysis_mod.sha_of(temp_path)
+        except Exception:
+            _discard_upload(temp_path)
+            raise
 
-            # Find the actual doc_id used (from chunks)
-            if chunks and len(chunks) > 0:
-                doc_id = chunks[0].doc_id
-
-            # Capture the configuration that just produced this corpus. It is
-            # taken after ingestion succeeded and written in the same call that
-            # records the document, so a failed ingest leaves neither. Read
-            # back by `python -m cli report/inspect`, which otherwise can only
-            # describe today's configuration rather than the one that ran.
-            # The Deep Analysis report for this ingest (None on the Standard
-            # path): status, model ids, chunk and smell counts before and
-            # after, regression counts, proposer/verifier usage, checks.
-            # Counts and ids only — never prompts, never keys.
-            deep_report = getattr(user_pipeline, 'last_deep_analysis_report', None)
-            deep_summary = None
-            deep_status = None
-            if deep_report is not None:
-                from components.chunker.deep_analysis import product_summary
-                deep_summary = product_summary(deep_report)
-                deep_status = deep_summary['status']
-
-            pipeline_snapshot = capture_pipeline_snapshot(
-                user_pipeline, kb, kb_id=kb_id,
-                storage_path=kb_manager.storage_path(kb_id),
-            )
-            if pipeline_snapshot is not None:
-                # Record the per-document ingest decision next to the
-                # pipeline facts, so the CLI can tell which mode -- and at
-                # which level of completion -- produced this corpus. The
-                # snapshot keeps the summary; the full report lives once,
-                # in the document metadata below.
-                pipeline_snapshot['ingest_options'] = {
-                    'chunking_mode': chunking_mode,
-                    'deep_analysis': deep_analysis,
-                    'deep_analysis_status': deep_status,
-                    'deep_analysis_summary': deep_summary,
-                }
-
-            doc_metadata = {
-                'original_filename': file.filename,
-                'upload_source': 'web_interface',
-                'chunking_mode': chunking_mode,
-            }
-            if deep_report is not None:
-                doc_metadata['deep_analysis_status'] = deep_status
-                doc_metadata['deep_analysis'] = deep_report
-
-            tracker.mark_as_ingested(
-                file_path=temp_path,
-                doc_id=doc_id,
-                chunk_count=len(chunks),
-                metadata=doc_metadata,
+        try:
+            # From here the job owns the file, in every outcome.
+            job, attached = ingest_jobs.submit(
                 kb_id=kb_id,
-                pipeline_snapshot=pipeline_snapshot,
-                status='indexed',
-                chunking_mode=chunking_mode,
+                filename=file.filename,
+                temp_path=temp_path,
+                session_id=session_id,
+                methods=selected,
+                deep_analysis=deep_analysis,
+                content_sha=content_sha,
             )
+        except IngestOverloaded as full:
+            logger.warning(f"Upload refused, ingest queue full: {file.filename}")
+            response = jsonify({
+                'success': False,
+                'overloaded': True,
+                'retry_after_seconds': full.retry_after_seconds,
+                'error': str(full),
+            })
+            response.headers['Retry-After'] = str(int(full.retry_after_seconds))
+            return response, 503
 
-            logger.info(f"Document processed successfully: {len(chunks)} chunks created")
-
-            # Hand this ingest's own outputs to the Viewer packager: the
-            # canonical the chunker just normalised, and -- on a Deep Analysis
-            # upload -- the run it just produced. Both are already in memory,
-            # so the Viewer costs no second parse and no second provider call.
-            # Staging is serialisation only; the packaging runs on a worker, so
-            # this response does not wait for it. A packaging problem must not
-            # fail an upload that already succeeded.
-            viewer_state = None
-            try:
-                chunker = getattr(user_pipeline, 'chunker', None)
-                from components.viewer import analysis as viewer_analysis_mod
-
-                viewer_state = stage_viewer_analysis(
-                    doc_id,
-                    label=file.filename,
-                    kb_id=kb_id,
-                    kb_name=kb.get('name'),
-                    chunking_mode=chunking_mode,
-                    methods=selected,
-                    # Identity is the document's content: the same PDF
-                    # uploaded again is the same document, gaining variants
-                    # rather than becoming a second entry.
-                    content_sha=viewer_analysis_mod.sha_of(temp_path),
-                    units=getattr(chunker, 'last_canonical_units', None),
-                    deep_result=getattr(chunker, 'last_deep_result', None) if deep_analysis else None,
-                    # Measured by the pipeline at this very upload; None for
-                    # paths that never parsed (then the Viewer shows no time).
-                    parse_seconds=getattr(user_pipeline, 'last_parse_seconds', None),
-                )
-            except Exception as viewer_error:  # noqa: BLE001
-                logger.warning(f"Could not stage {doc_id} for the viewer: {viewer_error}")
-            finally:
-                # The next ingest replaces them anyway; dropping them here
-                # keeps one document's canonical out of memory afterwards.
-                if getattr(user_pipeline, 'chunker', None) is not None:
-                    user_pipeline.chunker.last_canonical_units = None
-                    user_pipeline.chunker.last_deep_result = None
-
-            message = 'Doküman yüklendi ve indekslendi'
-            if len(selected) > 1:
-                message = ('Doküman yüklendi · '
-                           + ', '.join(viewer_methods.labels(selected)) + ' analizleri hazırlanıyor')
-            elif deep_summary is not None:
-                message = f"Doküman indekslendi — Deep Analysis: {deep_summary['label']}"
+        if _flag(request.form.get('async')):
             return jsonify({
                 'success': True,
-                'message': message,
-                'doc_id': doc_id,
-                'chunks_created': len(chunks),
-                'filename': file.filename,
-                'chunking_mode': chunking_mode,
-                # The product summary, not the full report: the browser
-                # shows status, quality before/after and LLM usage; the
-                # report is on the document record.
-                'deep_analysis': deep_summary,
-                # Where the Viewer's own analysis of this document got to.
-                'viewer_analysis': (viewer_state or {}).get('status'),
-            })
+                'pending': True,
+                'attached': attached,
+                'job_id': job.job_id,
+                'job': ingest_jobs.describe(job),
+            }), 202
 
-    except IndexIncompatibleException as e:
-        # The store holds vectors from another embedding model. Refused
-        # rather than mixed; the knowledge base's Settings offer a re-index.
-        logger.warning(f"Upload refused, re-index required: {e}")
-        return jsonify({
-            'success': False,
-            'reindex_required': True,
-            'error': str(e)
-        }), 409
-    except ConfigurationException as e:
-        # A Deep Analysis request the backend cannot honour at all (a
-        # chunker without a Deep Analysis path). Refused explicitly —
-        # never a silent fall back to Standard.
-        logger.warning(f"Deep Analysis refused: {e}")
-        return jsonify({
-            'success': False,
-            'deep_analysis_unavailable': True,
-            'error': str(e)
-        }), 503
+        # Wait for the job only if a waiting slot is free. When it is not,
+        # the answer is the asynchronous one: the job is accepted and running,
+        # and the caller is given it to poll.
+        if not _sync_waiters.acquire(blocking=False):
+            logger.info(
+                "answering %s asynchronously: %d synchronous waits already in progress",
+                file.filename, settings.ingest_limits.sync_waiters,
+            )
+            return jsonify({
+                'success': True,
+                'pending': True,
+                'attached': attached,
+                'busy': True,
+                'job_id': job.job_id,
+                'job': ingest_jobs.describe(job),
+            }), 202
+        try:
+            ingest_jobs.wait(job, timeout=settings.ingest_sync_wait)
+        finally:
+            _sync_waiters.release()
+        return _job_http_response(job, attached=attached)
+
     except Exception as e:
         logger.error(f"Failed to upload document: {e}", exc_info=True)
         return jsonify({
             'success': False,
             'error': str(e)
         }), 500
+
+
+def _job_http_response(job, *, attached: bool = False):
+    """The synchronous answer for a job, in the shapes the route always gave."""
+    from components.ingest import jobs as J
+
+    described = ingest_jobs.describe(job)
+    if job.status == J.SUCCEEDED:
+        return jsonify({**job.result, 'success': True, 'job_id': job.job_id,
+                        'attached': attached, 'job': described}), 200
+    if job.status == J.FAILED:
+        error = job.exception
+        if isinstance(error, IndexIncompatibleException):
+            # The store holds vectors from another embedding model. Refused
+            # rather than mixed; the knowledge base's Settings offer a re-index.
+            return jsonify({'success': False, 'reindex_required': True,
+                            'error': str(error), 'job_id': job.job_id}), 409
+        if isinstance(error, ConfigurationException):
+            # A Deep Analysis request the backend cannot honour at all (a
+            # chunker without a Deep Analysis path). Refused explicitly —
+            # never a silent fall back to Standard.
+            return jsonify({'success': False, 'deep_analysis_unavailable': True,
+                            'error': str(error), 'job_id': job.job_id}), 503
+        return jsonify({'success': False, 'error': job.error, 'job_id': job.job_id}), 500
+    if job.status == J.TIMED_OUT:
+        return jsonify({'success': False, 'timed_out': True, 'error': job.error,
+                        'job_id': job.job_id}), 504
+    if job.status == J.CANCELLED:
+        return jsonify({'success': False, 'cancelled': True, 'error': job.error,
+                        'job_id': job.job_id}), 409
+    # Still queued or running when the synchronous wait ran out: the job goes
+    # on, and the caller polls for it.
+    return jsonify({'success': True, 'pending': True, 'attached': attached,
+                    'job_id': job.job_id, 'job': described}), 202
+
+
+def _execute_ingest(job) -> dict:
+    """One ingest job, on a worker thread: everything after the request.
+
+    Parse, chunk (with any Deep Analysis model calls under the provider
+    budget), embed, write the store, record the ledger, stage the Viewer.
+    The job's guard is asked at each seam inside the pipeline; nothing here
+    is interrupted between the store write and the ledger write, and a ledger
+    that cannot be written takes the store rows back out, so a document
+    exists exactly when the ledger says it does.
+
+    Returns the body the upload route has always answered with.
+    """
+    kb = kb_manager.get(job.kb_id)
+    if not kb:
+        raise RuntimeError(f'Knowledge base "{job.kb_id}" no longer exists')
+
+    user_pipeline = get_pipeline(job.session_id, job.kb_id)
+    chunking_mode = job.chunking_mode
+    deep_analysis = job.deep_analysis
+    selected = list(job.methods)
+
+    if deep_analysis and not hasattr(user_pipeline.chunker, 'chunk_text_deep'):
+        raise ConfigurationException(
+            'Deep Analysis requires the structure-first chunker; this knowledge '
+            f'base uses {user_pipeline.chunker.get_name()}.'
+        )
+
+    chunks = user_pipeline.ingest_document_from_file(
+        file_path=job.temp_path,
+        doc_title=job.filename,
+        deep_analysis=deep_analysis
+    )
+
+    # Track the document
+    tracker = DocumentTracker()
+    doc_id = os.path.basename(job.temp_path).replace('.', '_')
+
+    # Find the actual doc_id used (from chunks)
+    if chunks and len(chunks) > 0:
+        doc_id = chunks[0].doc_id
+    job.doc_id = doc_id
+
+    # Capture the configuration that just produced this corpus. It is
+    # taken after ingestion succeeded and written in the same call that
+    # records the document, so a failed ingest leaves neither. Read
+    # back by `python -m cli report/inspect`, which otherwise can only
+    # describe today's configuration rather than the one that ran.
+    # The Deep Analysis report for this ingest (None on the Standard
+    # path): status, model ids, chunk and smell counts before and
+    # after, regression counts, proposer/verifier usage, checks.
+    # Counts and ids only — never prompts, never keys.
+    deep_report = getattr(user_pipeline, 'last_deep_analysis_report', None)
+    deep_summary = None
+    deep_status = None
+    if deep_report is not None:
+        from components.chunker.deep_analysis import product_summary
+        deep_summary = product_summary(deep_report)
+        deep_status = deep_summary['status']
+
+    pipeline_snapshot = capture_pipeline_snapshot(
+        user_pipeline, kb, kb_id=job.kb_id,
+        storage_path=kb_manager.storage_path(job.kb_id),
+    )
+    if pipeline_snapshot is not None:
+        # Record the per-document ingest decision next to the
+        # pipeline facts, so the CLI can tell which mode -- and at
+        # which level of completion -- produced this corpus. The
+        # snapshot keeps the summary; the full report lives once,
+        # in the document metadata below.
+        pipeline_snapshot['ingest_options'] = {
+            'chunking_mode': chunking_mode,
+            'deep_analysis': deep_analysis,
+            'deep_analysis_status': deep_status,
+            'deep_analysis_summary': deep_summary,
+        }
+
+    doc_metadata = {
+        'original_filename': job.filename,
+        'upload_source': 'web_interface',
+        'chunking_mode': chunking_mode,
+        'ingest_job_id': job.job_id,
+    }
+    if deep_report is not None:
+        doc_metadata['deep_analysis_status'] = deep_status
+        doc_metadata['deep_analysis'] = deep_report
+
+    recorded = tracker.mark_as_ingested(
+        file_path=job.temp_path,
+        doc_id=doc_id,
+        chunk_count=len(chunks),
+        metadata=doc_metadata,
+        kb_id=job.kb_id,
+        pipeline_snapshot=pipeline_snapshot,
+        status='indexed',
+        chunking_mode=chunking_mode,
+    )
+    if recorded is False:
+        # The store holds the rows and the ledger does not know them: that is
+        # the partial registration a job must never leave. Take the rows back
+        # out and fail truthfully.
+        _rollback_indexed_chunks(user_pipeline, doc_id, chunks)
+        raise RuntimeError(
+            'The ingest ledger could not be written; the document was not '
+            'registered and its chunks were removed from the index again.'
+        )
+
+    logger.info(f"Document processed successfully: {len(chunks)} chunks created")
+
+    # Hand this ingest's own outputs to the Viewer packager: the
+    # canonical the chunker just normalised, and -- on a Deep Analysis
+    # upload -- the run it just produced. Both are already in memory,
+    # so the Viewer costs no second parse and no second provider call.
+    # Staging is serialisation only; the packaging runs on a worker, so
+    # this job does not wait for it. A packaging problem must not
+    # fail an upload that already succeeded.
+    viewer_state = None
+    try:
+        chunker = getattr(user_pipeline, 'chunker', None)
+        viewer_state = stage_viewer_analysis(
+            doc_id,
+            label=job.filename,
+            kb_id=job.kb_id,
+            kb_name=kb.get('name'),
+            chunking_mode=chunking_mode,
+            methods=selected,
+            # Identity is the document's content: the same PDF
+            # uploaded again is the same document, gaining variants
+            # rather than becoming a second entry. Hashed once, at
+            # submission.
+            content_sha=job.content_sha,
+            units=getattr(chunker, 'last_canonical_units', None),
+            deep_result=getattr(chunker, 'last_deep_result', None) if deep_analysis else None,
+            # Measured by the pipeline at this very upload; None for
+            # paths that never parsed (then the Viewer shows no time).
+            parse_seconds=getattr(user_pipeline, 'last_parse_seconds', None),
+        )
+    except Exception as viewer_error:  # noqa: BLE001
+        logger.warning(f"Could not stage {doc_id} for the viewer: {viewer_error}")
+    finally:
+        # The next ingest replaces them anyway; dropping them here
+        # keeps one document's canonical out of memory afterwards.
+        if getattr(user_pipeline, 'chunker', None) is not None:
+            user_pipeline.chunker.last_canonical_units = None
+            user_pipeline.chunker.last_deep_result = None
+
+    from components.viewer import methods as viewer_methods
+
+    message = 'Doküman yüklendi ve indekslendi'
+    if len(selected) > 1:
+        message = ('Doküman yüklendi · '
+                   + ', '.join(viewer_methods.labels(selected)) + ' analizleri hazırlanıyor')
+    elif deep_summary is not None:
+        message = f"Doküman indekslendi — Deep Analysis: {deep_summary['label']}"
+    return {
+        'success': True,
+        'message': message,
+        'doc_id': doc_id,
+        'chunks_created': len(chunks),
+        'filename': job.filename,
+        'chunking_mode': chunking_mode,
+        # The product summary, not the full report: the browser
+        # shows status, quality before/after and LLM usage; the
+        # report is on the document record.
+        'deep_analysis': deep_summary,
+        # Where the Viewer's own analysis of this document got to.
+        'viewer_analysis': (viewer_state or {}).get('status'),
+    }
+
+
+def _rollback_indexed_chunks(user_pipeline, doc_id: str, chunks) -> None:
+    """Undo a store write whose ledger record could not follow it."""
+    if not chunks:
+        return
+    vector_db = getattr(user_pipeline, 'vector_db', None)
+    delete = getattr(vector_db, 'delete_by_doc_id', None)
+    if delete is None:
+        logger.error(f"Cannot roll back {doc_id}: the store has no delete_by_doc_id")
+        return
+    try:
+        delete(doc_id)
+        retriever = getattr(user_pipeline, 'hybrid_retriever', None)
+        if retriever is not None and hasattr(retriever, 'build_keyword_index'):
+            retriever.build_keyword_index(vector_db.get_all_chunks())
+    except Exception as error:  # noqa: BLE001 - reported, not hidden
+        logger.error(f"Rolling back {doc_id} failed: {error}", exc_info=True)
+
+
+# --- Ingest job status ---
+@app.route('/api/ingest/jobs', methods=['GET'])
+def list_ingest_jobs():
+    """Jobs the process knows about, newest last, with the capacity picture.
+
+    ``kb_id`` narrows to one knowledge base; ``active=1`` leaves out finished
+    jobs. Finished jobs stay for ``INGEST_JOB_RETENTION`` seconds; a restart
+    forgets every job, and the ledger is the record of what was ingested.
+    """
+    kb_id = request.args.get('kb_id') or None
+    return jsonify({
+        'success': True,
+        'jobs': ingest_jobs.list(kb_id, active_only=_flag(request.args.get('active'))),
+        'capacity': ingest_jobs.snapshot(),
+    })
+
+
+@app.route('/api/ingest/jobs/<job_id>', methods=['GET'])
+def get_ingest_job(job_id):
+    """One job, live or settled by a restart.
+
+    A job id survives a restart: the journal records every job, and start-up
+    settles anything that was in flight against the ledger -- ``succeeded``
+    when the document is there, ``interrupted`` when it is not. 404 therefore
+    means only one thing, that the job is older than the retention window.
+    """
+    record = ingest_jobs.record_for(job_id)
+    if record is None:
+        return jsonify({
+            'success': False,
+            'unknown_job': True,
+            'error': ('Unknown ingest job: it finished longer ago than jobs are kept '
+                      f'({int(settings.ingest_job_retention)}s). The document list '
+                      'shows what was ingested.'),
+        }), 404
+    return jsonify({'success': True, 'job': record})
+
+
+@app.route('/api/ingest/jobs/<job_id>', methods=['DELETE'])
+def cancel_ingest_job(job_id):
+    """Cancel a job: a queued one at once, a running one at its next seam.
+
+    A running job that has already written its document finishes as
+    ``succeeded``; the answer's ``status`` says which happened.
+    """
+    job = ingest_jobs.cancel(job_id)
+    if job is None:
+        return jsonify({'success': False, 'unknown_job': True, 'error': 'Unknown ingest job'}), 404
+    return jsonify({'success': True, 'job': ingest_jobs.describe(job)})
 
 
 # --- Retrieval Experimentation APIs ---
@@ -2058,6 +2309,11 @@ def startup_banner() -> None:
     print(f"Embedding: {settings.embedding_provider} / {settings.embedding_model_name}")
     print(f"Retrieval profile: {settings.retrieval_profile}")
     print(f"Deep Analysis model: {settings.deep_analysis_model or '(not configured)'}")
+    limits = settings.ingest_limits
+    print(f"Ingest: {limits.workers} worker(s), queue {limits.queue_capacity}, "
+          f"job timeout {limits.job_timeout_seconds:.0f}s; "
+          f"provider calls in flight <= {limits.provider_max_inflight} "
+          f"(per Deep job <= {limits.deep_concurrency})")
     # Where this process keeps its state, and anything refused on the way to
     # deciding that. One data directory now settles every path below it, so
     # naming them here is what makes a wrong one visible at start-up rather
@@ -2097,6 +2353,44 @@ def resume_background_work() -> None:
             print(f"🔁 Resuming Viewer analysis for {len(resumed)} document(s)")
     except Exception as e:  # noqa: BLE001 - never block start-up on this
         logger.warning(f"Could not resume Viewer analyses: {e}")
+
+    # Ingest jobs are not resumed -- a half-finished parse is not worth
+    # restarting and nothing was committed -- but they are *settled*, so a
+    # client holding a job_id gets a truthful answer instead of a 404. The
+    # ledger decides: a document carrying the job's id means it finished.
+    try:
+        interrupted = ingest_jobs.recover(resolve_document=document_of_ingest_job)
+        if interrupted:
+            unfinished = [r for r in interrupted if r.get('status') != 'succeeded']
+            recovered = len(interrupted) - len(unfinished)
+            if recovered:
+                print(f"✅ {recovered} ingest job(s) had finished before the restart")
+            if unfinished:
+                print(f"⚠️  {len(unfinished)} ingest job(s) were interrupted by the restart; "
+                      "their documents were not registered")
+    except Exception as e:  # noqa: BLE001 - never block start-up on this
+        logger.warning(f"Could not settle the previous process's ingest jobs: {e}")
+
+    # What a previous process left in the staging directory belongs to no job.
+    try:
+        swept = sweep_staging(paths.upload_staging())
+        if swept:
+            print(f"🧹 Removed {len(swept)} staged upload(s) left by a previous process")
+    except Exception as e:  # noqa: BLE001 - never block start-up on this
+        logger.warning(f"Could not sweep the upload staging directory: {e}")
+
+
+def document_of_ingest_job(job_id: str):
+    """The ledger record a job wrote, if it got that far.
+
+    The ledger write is the last act of an ingest, so a document stamped with
+    this job's id is proof the job completed -- which is what lets a restart
+    tell "it finished and you missed it" from "it never happened".
+    """
+    for record in DocumentTracker().get_all_documents():
+        if (record.get('metadata') or {}).get('ingest_job_id') == job_id:
+            return record
+    return None
 
 
 def development_server_options() -> dict:

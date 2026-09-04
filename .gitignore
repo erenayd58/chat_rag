@@ -45,6 +45,11 @@ faiss_db/
 # when it finds a ledger it cannot parse, so the records stay recoverable;
 # it is runtime state like the ledger itself.
 .ingested_documents.json
+# Ingest job records: what a restart answers a client's job_id from. Runtime
+# state, per process, pruned on INGEST_JOB_RETENTION.
+.ingest-jobs/
+# Uploaded files waiting for their ingest job; swept at start-up.
+chat_rag-uploads/
 *.json.corrupt-*
 
 # IDE
