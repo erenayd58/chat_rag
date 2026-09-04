@@ -76,6 +76,20 @@ _lock = threading.Lock()
 _worker: threading.Thread | None = None
 #: One build at a time per document.
 _build_locks: dict[str, threading.Lock] = {}
+#: One reader or writer at a time per document's own JSON records.
+#:
+#: Deliberately not ``_build_locks``: that one is held for a whole build, and a
+#: status poll must not queue behind minutes of chunking. This one is held for
+#: the length of a single read or a single replace.
+#:
+#: It has to cover reads as well as writes. Replacing a file that any other
+#: handle has open fails on Windows with PermissionError, so a poll of
+#: ``state.json`` was enough to break the build's own write; and the reader
+#: that lost the same race got a PermissionError back, which
+#: ``_read_state_file`` reports as an unreadable -- that is, failed -- record.
+#: Everything under one document's directory is written by this module and by
+#: this process alone, so serialising here is the whole fix.
+_state_locks: dict[str, threading.RLock] = {}
 #: How the worker recovers the canonical of a document ingested before this
 #: packaging existed. Registered by the application, called on the worker.
 _unit_resolver = None
@@ -157,14 +171,23 @@ def _write_json(path: Path, payload: Any) -> None:
     os.replace(tmp, path)
 
 
-def _read_state_file(key: str) -> dict:
-    path = document_dir(key) / _STATE
-    if not path.is_file():
-        return {"key": key, "status": STATUS_MISSING}
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return {"key": key, "status": STATUS_FAILED, "error": "unreadable state record"}
+def _state_lock(key: str) -> threading.RLock:
+    with _lock:
+        lock = _state_locks.get(key)
+        if lock is None:
+            lock = _state_locks[key] = threading.RLock()
+        return lock
+
+
+def _load_state(key: str) -> dict:
+    """This key's state record, read from disk. Raises if it cannot be read."""
+    state = json.loads((document_dir(key) / _STATE).read_text(encoding="utf-8"))
+    if not isinstance(state, dict):
+        raise ValueError("the state record is not a JSON object")
+    return state
+
+
+def _normalise_state(key: str, state: dict) -> dict:
     state.setdefault("key", key)
     state.setdefault("doc_ids", [])
     state.setdefault("methods", {})
@@ -173,6 +196,28 @@ def _read_state_file(key: str) -> dict:
         state["status"] = STATUS_PENDING
         state["error"] = "the viewer payload is gone; it will be built again"
     return state
+
+
+def _state_for_update(key: str) -> dict:
+    """The record a write merges onto.
+
+    Raises when the file is there and cannot be read. An unreadable record is
+    not a document without state, and merging onto a blank one would drop the
+    ``doc_ids`` that tie this analysis to the console records it answers for --
+    losing the document from the workspace rather than reporting a problem.
+    """
+    if not (document_dir(key) / _STATE).is_file():
+        return {"key": key, "status": STATUS_MISSING}
+    return _normalise_state(key, _load_state(key))
+
+
+def _read_state_file(key: str) -> dict:
+    """One document's state, as a caller may display it. Never raises."""
+    with _state_lock(key):
+        try:
+            return _state_for_update(key)
+        except (ValueError, OSError):
+            return {"key": key, "status": STATUS_FAILED, "error": "unreadable state record"}
 
 
 def _all_states() -> dict[str, dict]:
@@ -194,12 +239,17 @@ def read_state(doc_id: str, content_sha: str | None = None) -> dict:
 
 
 def _set_state(key: str, **fields: Any) -> dict:
-    state = _read_state_file(key)
-    state.update(fields)
-    state["key"] = key
-    state["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    _write_json(document_dir(key) / _STATE, state)
-    return state
+    # One critical section for the read and the write. Two writers would
+    # otherwise each merge onto the record they read and the later one would
+    # drop the other's fields; and a reader holding the file open is enough to
+    # make the rename underneath fail outright on Windows.
+    with _state_lock(key):
+        state = _state_for_update(key)
+        state.update(fields)
+        state["key"] = key
+        state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _write_json(document_dir(key) / _STATE, state)
+        return state
 
 
 def states() -> dict[str, dict]:
@@ -691,7 +741,8 @@ def _build(key: str) -> dict:
         "deepSource": deep_variant.get("source"),
         "preparedAt": datetime.now().isoformat(timespec="seconds"),
     }
-    _write_json(payload_path(key), payload)
+    with _state_lock(key):
+        _write_json(payload_path(key), payload)
 
     failed = [m for m in requested if (variants.get(m) or {}).get("status") == STATUS_FAILED]
     return _set_state(
@@ -747,13 +798,17 @@ def chunk_rows(doc_id: str, method: str, content_sha: str | None = None) -> list
 
 
 def payload(doc_id: str, content_sha: str | None = None) -> dict | None:
-    path = payload_path(key_for(doc_id, content_sha))
-    if not path.is_file():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return None
+    key = key_for(doc_id, content_sha)
+    path = payload_path(key)
+    # Same lock as the state record: this file is rewritten at the end of every
+    # build, and a browser polling the document is reading it at the same time.
+    with _state_lock(key):
+        if not path.is_file():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return None
 
 
 # --------------------------------------------------------------------------
