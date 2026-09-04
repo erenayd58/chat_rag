@@ -135,9 +135,13 @@ class StructuredPDFParser(BaseParser):
         # inference with no algorithmic slack. Re-extracting a document we have
         # already seen is pure waste, so the canonical units are also cached on
         # disk, keyed by the PDF content hash.
-        self._disk_cache = Path(
-            os.getenv("STRUCTURED_PARSER_CACHE", ".cache/canonical-units")
-        )
+        # Resolved through config.paths, so STRUCTURED_PARSER_CACHE still
+        # wins where it is set and a deployment's data root supplies it where
+        # it is not -- rather than defaulting to a directory relative to
+        # whatever the working directory happens to be.
+        from config import paths as _paths
+
+        self._disk_cache = Path(_paths.canonical_cache())
 
     def supports(self, file_path: str) -> bool:
         return os.path.splitext(file_path)[1].lower() in self.SUPPORTED_EXTENSIONS

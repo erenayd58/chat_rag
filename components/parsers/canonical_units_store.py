@@ -13,11 +13,23 @@ matched to its cache entry by the unit ids its chunks carry.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-DEFAULT_CACHE_DIR = Path(os.getenv("STRUCTURED_PARSER_CACHE", ".cache/canonical-units"))
+
+def default_cache_dir() -> Path:
+    """Where the parser keeps its canonical units.
+
+    Resolved on each call, through the one resolver that knows about the
+    deployment's data root. It used to be a module constant read from the
+    environment at import time, which meant a data directory configured after
+    this module loaded -- a container, a test, a smoke check -- was ignored and
+    the cache stayed in whatever directory the process happened to start in.
+    """
+    from config import paths
+
+    return Path(paths.canonical_cache())
+
 
 # Matching a document to its cache file walks every cached file once; the result
 # is memoised because neither the files nor a document's unit ids change.
@@ -43,13 +55,13 @@ def _unit_ids_of(path: Path) -> set:
 
 def find_cache_file(
     wanted_unit_ids: Iterable[str],
-    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+    cache_dir: str | Path | None = None,
 ) -> Optional[Path]:
     """Return the cache file whose units cover ``wanted_unit_ids``."""
     wanted = {_base_unit_id(u) for u in wanted_unit_ids if u}
     if not wanted:
         return None
-    directory = Path(cache_dir)
+    directory = Path(cache_dir) if cache_dir is not None else default_cache_dir()
     if not directory.is_dir():
         return None
 

@@ -9,6 +9,7 @@ temporary directory so the developer's own files are never touched.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -40,6 +41,12 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(
         flask_app, "gold_manager", GoldSetManager(str(tmp_path / "gold.json"))
     )
+    # The upload tests below drive the route, not the Viewer packager. That
+    # packager runs on a background thread which outlives the request and asks
+    # the application for a pipeline's vector store -- something the stub
+    # pipelines here deliberately do not have. Stubbed so this file exercises
+    # one contract at a time.
+    monkeypatch.setattr(flask_app, "stage_viewer_analysis", lambda *a, **k: {"status": "queued"})
     flask_app.app.config.update(TESTING=True)
     with flask_app.app.test_client() as test_client:
         yield test_client
@@ -159,12 +166,15 @@ def test_entries_are_filtered_by_knowledge_base(client):
 # -------------------------------------------------------- kb lifecycle
 
 
-def test_a_knowledge_base_can_be_created_and_deleted(client, tmp_path):
+def test_a_knowledge_base_can_be_created_and_deleted(client):
     created = client.post("/api/kb", json={"name": "kkb-final"}).get_json()
     assert created["success"] is True
     kb_id = created["kb"]["kb_id"]
 
-    store = tmp_path / "chroma_db" / kb_id
+    # Where this knowledge base's store lives, asked of the same resolver the
+    # deletion route asks -- not rebuilt from a literal that happens to match
+    # today's default.
+    store = Path(flask_app.kb_manager.storage_path(kb_id))
     store.mkdir(parents=True)
     (store / "chroma.sqlite3").write_text("x", encoding="utf-8")
 
@@ -195,13 +205,13 @@ def test_an_invalid_chunker_is_a_client_error_and_creates_nothing(client):
 
 
 def test_a_store_still_in_use_reports_a_conflict_and_keeps_the_record(
-    client, tmp_path, monkeypatch
+    client, monkeypatch
 ):
     """The record must not outlive its store, nor the store its record."""
     import shutil
 
     created = client.post("/api/kb", json={"name": "locked"}).get_json()["kb"]
-    store = tmp_path / "chroma_db" / created["kb_id"]
+    store = Path(flask_app.kb_manager.storage_path(created["kb_id"]))
     store.mkdir(parents=True)
 
     monkeypatch.setattr(
@@ -219,12 +229,14 @@ def test_deleting_an_unknown_knowledge_base_is_a_404(client):
     assert client.delete("/api/kb/nope").status_code == 404
 
 
-def test_a_store_shared_with_another_knowledge_base_is_kept(client, tmp_path):
+def test_a_store_shared_with_another_knowledge_base_is_kept(client):
     first = client.post(
         "/api/kb", json={"name": "one", "vector_db_path": "./chroma_db/shared"}
     ).get_json()["kb"]
     client.post("/api/kb", json={"name": "two", "vector_db_path": "./chroma_db/shared"})
-    store = tmp_path / "chroma_db" / "shared"
+    # An explicit per-knowledge-base path -- still a legitimate override, and
+    # the resolver honours it rather than deriving one.
+    store = Path(flask_app.kb_manager.storage_path(first["kb_id"]))
     store.mkdir(parents=True)
 
     body = client.delete(f"/api/kb/{first['kb_id']}").get_json()
@@ -321,21 +333,27 @@ def upload(client, monkeypatch, pipeline):
     )
 
 
-def tracked(tmp_path):
+def tracked():
+    """Every document in the ledger this configuration writes to.
+
+    ``DocumentTracker`` resolves that itself, through ``config.paths``. The
+    test does not know the path and must not: it once took a ``tmp_path`` it
+    ignored, which read as a promise that the ledger was under it.
+    """
     from utils import DocumentTracker
 
     return DocumentTracker().get_all_documents()
 
 
 def test_a_successful_ingest_records_how_the_pipeline_was_configured(
-    client, tmp_path, monkeypatch
+    client, monkeypatch
 ):
     response = upload(
         client, monkeypatch, IngestingPipeline(chunks=[IngestedChunk()])
     )
     assert response.status_code == 200
 
-    documents = tracked(tmp_path)
+    documents = tracked()
     assert len(documents) == 1
     snapshot = documents[0]["pipeline_snapshot"]
     assert snapshot is not None
@@ -349,11 +367,11 @@ def test_a_successful_ingest_records_how_the_pipeline_was_configured(
 
 
 def test_a_failed_ingest_leaves_no_document_and_no_snapshot(
-    client, tmp_path, monkeypatch
+    client, monkeypatch
 ):
     response = upload(
         client, monkeypatch, IngestingPipeline(error=RuntimeError("parser blew up"))
     )
 
     assert response.status_code == 500
-    assert tracked(tmp_path) == []
+    assert tracked() == []

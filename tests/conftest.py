@@ -20,9 +20,22 @@ the checkout before any application module is imported:
 * the repository root stays importable (``import app`` must keep working
   whichever directory the session runs in).
 
-Nothing here changes what the code under test does; it only changes where a
-default path points and removes the credentials. Tests that already isolate
-themselves with ``tmp_path`` keep doing so.
+A second kind of isolation is needed for the same reason, one level down. The
+application publishes its configuration *into the environment*: ``config.paths``
+applies the ``.env`` file by writing the values it accepts into ``os.environ``,
+exactly as ``load_dotenv`` always did. That is correct in production and
+dangerous in a test, because ``monkeypatch`` can only undo what it made itself.
+A test that calls the real loader leaves those variables set for the rest of the
+session -- and one of them, ``CHAT_RAG_DATA_DIR``, decides where *every* later
+test's ledger, knowledge base records and vector stores go. Left leaking, later
+tests silently share one ledger instead of getting a fresh one under their own
+``tmp_path``.
+
+So every test runs against a snapshot of the environment and is handed one back
+afterwards, whoever changed it and however. Nothing here changes what the code
+under test does; it only changes where a default path points, removes the
+credentials, and guarantees that a test's environment is its own. Tests that
+already isolate themselves with ``tmp_path`` keep doing so.
 """
 
 from __future__ import annotations
@@ -118,6 +131,42 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             "!", "developer state changed during this session: " + ", ".join(changed)
             + " (a live console instance writes these too; check before blaming a test)",
         )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_environment():
+    """Give every test the environment the session started with.
+
+    ``monkeypatch.setenv``/``delenv`` are not enough on their own. ``delenv``
+    with ``raising=False`` records no undo entry when the variable was not set
+    to begin with, and neither records a write made by the code under test --
+    and the code under test writes to ``os.environ`` by design, because that is
+    how ``.env`` reaches the application. A snapshot and a restore cover both.
+
+    This is not belt and braces: it is the fix for a real cross-test leak. A
+    unit test exercising the ``.env`` contract set ``CHAT_RAG_DATA_DIR`` through
+    the production loader; every integration test that ran afterwards resolved
+    its ledger and its stores under that one directory instead of its own
+    ``tmp_path``, and saw the documents the previous tests had written. It only
+    showed up when the unit tests were asked to run first.
+    """
+    from config import paths
+
+    before = dict(os.environ)
+    # The same argument applies to the loader's own record of what it applied,
+    # which ``paths.diagnostics()`` reads.
+    applied = dict(paths._from_env_file)
+    ignored = dict(paths._ignored_from_env_file)
+
+    yield
+
+    if os.environ != before:
+        os.environ.clear()
+        os.environ.update(before)
+    paths._from_env_file.clear()
+    paths._from_env_file.update(applied)
+    paths._ignored_from_env_file.clear()
+    paths._ignored_from_env_file.update(ignored)
 
 
 @pytest.fixture(scope="session")

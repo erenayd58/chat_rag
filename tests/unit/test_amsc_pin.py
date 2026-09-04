@@ -11,10 +11,22 @@ needs no network and no fresh environment.
 Without a ``chunk`` checkout beside this one (or ``CHUNK_REPO``) the tests
 skip rather than guessing.
 
-A pin can be wrong in two ways, and both are checked: it can name a revision
-that lacks a symbol the product imports (the failure Phase 1A reproduced), or
-it can name a revision that exists only on the developer's machine -- which
-breaks a clean install exactly as visibly, and only when someone else builds.
+A pin can be wrong in three ways, and all three are checked: it can name a
+revision that lacks a symbol the product imports (the failure Phase 1A
+reproduced); it can name a revision that exists only on the developer's machine
+-- which breaks a clean install exactly as visibly, and only when someone else
+builds; or the line itself can be malformed, which is what happened next.
+Phase 1B's own pin edit lost the newline after the commit, so the file read
+
+    amsc-poc @ git+https://github.com/erenayd58/chunk.git@<sha>openai
+
+-- a git ref that does not exist, and one dependency (``openai``) swallowed
+into it. ``pip install -r requirements.txt`` failed outright, so no clean
+install and no image build was possible at all; a checkout with an editable
+``amsc`` and ``openai`` already installed noticed nothing, and the pin test
+above passed because its regex was happy to stop after 40 hex characters.
+So the file is now also checked for being *installable-shaped*, not just for
+naming a good commit.
 """
 
 from __future__ import annotations
@@ -130,3 +142,54 @@ def test_the_pinned_revision_is_one_a_clean_install_can_actually_fetch(chunk_rep
         f"pinned {commit[:7]} is on no remote branch in this checkout: a clean "
         "install cannot fetch it. Push the branch, or pin a revision that is pushed."
     )
+
+
+# ------------------------------------------------- the line, as pip reads it
+
+PIN_LINE = re.compile(r"^amsc-poc\s*@\s*(\S+)\s*$", re.M)
+
+
+def test_the_pin_line_ends_at_the_commit():
+    """A requirement is one line. Losing the newline joins it to the next one.
+
+    ``git+<url>@<sha>openai`` is a syntactically valid requirement naming a
+    revision that will never resolve, and it silently costs whichever
+    requirement followed it.
+    """
+    text = REQUIREMENTS.read_text(encoding="utf-8")
+    match = PIN_LINE.search(text)
+    assert match, "requirements.txt no longer declares amsc-poc on a line of its own"
+
+    url = match.group(1)
+    revision = url.rsplit("@", 1)[-1]
+    assert re.fullmatch(r"[0-9a-f]{40}", revision), (
+        f"the amsc pin ends in {revision!r}, which is not a bare commit sha -- "
+        "the line has run into whatever follows it"
+    )
+
+
+def test_every_requirement_is_a_line_pip_can_read():
+    """No stray joins anywhere else in the file, either."""
+    problems = []
+    for number, line in enumerate(REQUIREMENTS.read_text(encoding="utf-8").splitlines(), 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        name = re.split(r"[\s<>=!@\[;#]", stripped, maxsplit=1)[0]
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):
+            problems.append(f"line {number}: {stripped!r}")
+    assert not problems, "requirements.txt lines pip cannot parse as a name: " + "; ".join(problems)
+
+
+def test_the_dependencies_the_product_imports_are_declared():
+    """``openai`` was a declared dependency until a newline went missing."""
+    declared = {
+        re.split(r"[\s<>=!@\[;#]", line.strip(), maxsplit=1)[0].lower()
+        for line in REQUIREMENTS.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+    # Each of these is imported unconditionally by a module the application
+    # loads: the Azure client, the web framework, and the production server.
+    for required in ("openai", "flask", "waitress"):
+        assert required in declared, f"{required} is imported but no longer declared"
+

@@ -82,18 +82,28 @@ def main() -> int:
     # weights, so the smoke runs the one profile that builds no embedding
     # model at all. An operator who sets the variable still wins.
     os.environ.setdefault("RETRIEVAL_PROFILE", "bm25_only")
-    # VECTOR_DB_PATH is read straight from the environment and wins over
-    # CHAT_RAG_DATA_DIR, and a developer .env points it at ./chroma_db. Left
-    # alone, importing ``app`` here would open the checkout's live vector store
-    # -- which is the developer's real data, and not something a smoke check
-    # may touch. Forced, not defaulted, for that reason.
+    # Nothing else is set. A data directory is now sufficient on its own:
+    # config/paths.py derives the vector store and the parser cache from it,
+    # and a ``VECTOR_DB_PATH=./chroma_db`` left in a developer's .env is
+    # refused rather than applied once a data root is declared. This script
+    # used to have to force both of those by hand, which meant the isolation
+    # lived in the smoke check instead of in the application.
     data_dir = os.environ["CHAT_RAG_DATA_DIR"]
-    os.environ["VECTOR_DB_PATH"] = os.path.join(data_dir, "chroma")
-    os.environ["STRUCTURED_PARSER_CACHE"] = os.path.join(data_dir, "cache")
 
     print(f"python  {sys.version.split()[0]}")
     print(f"amsc    {_amsc_origin()}")
     print(f"state   {data_dir}  (throwaway; no real deployment is read or written)")
+
+    from config import paths  # after the environment above, never before
+
+    print(f"store   {paths.fallback_vector_store()}")
+    print(f"cache   {paths.canonical_cache()}")
+    for line in paths.diagnostics():
+        print(f"  note  {line}")
+    for resolved in (paths.fallback_vector_store(), paths.canonical_cache()):
+        if not os.path.abspath(resolved).startswith(os.path.abspath(data_dir)):
+            print(f"  FAIL  {resolved} is outside the throwaway data directory")
+            return 1
 
     failures: list[tuple[str, str]] = []
     for name in PRODUCT_MODULES:

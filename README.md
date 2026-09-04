@@ -131,7 +131,7 @@ one script starts both for a presentation.
 
 | | Address | Server |
 |---|---|---|
-| Product (chat_rag) | http://127.0.0.1:5005 | `venv\Scripts\python.exe app.py` (`FLASK_PORT`, reloader off) |
+| Product (chat_rag) | http://127.0.0.1:5005 | `venv\Scripts\python.exe app.py` (the development server; `FLASK_PORT`, reloader off) |
 | Viewer (chunk, Viewer v2) | http://127.0.0.1:8765 | `py -3.11 -m amsc.viewer_server --viewer artifacts/viewer-v2/index.html` in the chunk repo |
 
 The chunk repository is expected next to this one (`..\chunk`); override with
@@ -249,6 +249,13 @@ parser output, chunk browser) are under `/lab`.
 ```bash
 docker compose down
 ```
+
+The container serves on waitress and shuts down on SIGTERM, draining in-flight
+requests; teardown takes about two seconds, and the compose file allows fifteen
+(`stop_grace_period`). A bare `docker stop` uses the daemon's own timeout, which
+on some installations is only one second -- short enough to kill the process
+mid-shutdown and report exit 137. `docker stop -t 10` (Docker's documented
+default) or `docker compose down` both exit 0.
 
 ### Configuration
 
@@ -488,7 +495,7 @@ unit metadata, the same adapter preserves those fields directly.
 
 To run the minimal product demo:
 
-1. Install `requirements.txt` and start `python app.py`.
+1. Install `requirements.txt` and start `python app.py` (or `python -m wsgi`).
 2. Create one knowledge base with chunker `legacy` and another with `v4`.
 3. Upload a document to either knowledge base and ask a question from the chat.
 4. Open `/documents` to inspect the stored chunks and retrieval results.
@@ -511,6 +518,53 @@ reranking are disabled in this profile. Its E5 model is loaded with
 Indexes are profile-specific because the embedding models and dimensions differ.
 Use a new vector-database path/collection and re-ingest documents when changing
 profiles; do not point `benchmark_aligned` at an index created by `legacy`.
+
+## Running it
+
+There are two entrypoints, and which one is running is not a detail.
+
+| | Command | Server | Binds | Debugger |
+|---|---|---|---|---|
+| Development | `python app.py` | Werkzeug | `127.0.0.1` | on (`FLASK_DEBUG=false` turns it off) |
+| Production | `python -m wsgi` | waitress | `0.0.0.0` | none |
+
+`python app.py` is for a developer at a keyboard: it keeps the reloader and the
+traceback page, and it listens on loopback only so neither is offered to the
+network the machine has joined. It is not a production runtime and is no longer
+what a deployment reaches -- the container's `CMD` is `python -m wsgi`.
+
+`python -m wsgi` serves the same application on waitress: **one process** with a
+bounded pool of request threads (`WAITRESS_THREADS`, default 8), plus the one
+background thread that packages documents for the Viewer. One process is a
+deliberate choice, not a limitation of the server -- the packaging queue lives
+in memory, the per-knowledge-base pipeline cache is a module global, and the
+vector store is an embedded database rather than a database server, so a second
+worker process would duplicate all three. `wsgi.py` says so in more detail.
+
+It stops on SIGTERM (what `docker stop` and service managers send) as well as on
+Ctrl+C, draining in-flight requests first.
+
+### Where state goes
+
+One setting decides: `CHAT_RAG_DATA_DIR`. Set it, and the knowledge base
+records, the ingest ledger, the gold set, the vector stores, the parser's
+canonical-unit cache and the logs all live under it. Leave it unset -- a local
+checkout -- and every path stays exactly where it has always been, relative to
+the working directory.
+
+`VECTOR_DB_PATH` still names the fallback vector store outright, for a
+deployment that really does keep it elsewhere. But it is honoured only from the
+actual environment: a value for it in `.env` is ignored once a data directory
+has been declared, because `.env` describes a developer's own layout and a
+deployment that has named its data directory has not asked for that layout. The
+start-up banner says which paths are in effect and names anything it refused.
+
+Two checks prove a build can run at all, both cheap enough for the image build:
+
+```bash
+python tools/import_smoke.py   # the declared dependencies satisfy every import
+python tools/serve_smoke.py    # `python -m wsgi` binds, answers /api/health, stops
+```
 
 ## Quick Start
 
@@ -547,9 +601,15 @@ python main_new.py
 
 **Option B: Web Application (Full Features)**
 ```bash
-# Start web server
+# Development server (reloader and debugger, loopback only)
 python app.py
-# Open browser: http://localhost:5005
+# Open browser: http://127.0.0.1:5005
+```
+
+For anything that is not a developer at a keyboard, run the production server
+instead -- see [Running it](#running-it):
+```bash
+python -m wsgi
 ```
 
 ### 3. Start Chatting

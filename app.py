@@ -2,9 +2,12 @@
 """
 Flask web application for RAG Chat
 """
+import contextlib
 import gc
 import json
 import os
+import secrets
+import tempfile
 # Set OpenMP environment variables BEFORE importing any ML libraries
 # This prevents OMP errors when multiple embedding models are instantiated
 os.environ.setdefault('OMP_NUM_THREADS', '1')
@@ -36,7 +39,35 @@ logger = get_logger("FlaskApp")
 
 # Initialize Flask app
 app = Flask(__name__)
-app.secret_key = os.getenv('FLASK_SECRET_KEY', 'your-secret-key-change-in-production')
+
+
+def _session_secret() -> str:
+    """The key that signs the session cookie.
+
+    ``FLASK_SECRET_KEY`` when it is set. Otherwise a fresh random key for this
+    process: sessions then last as long as the process does, which is right for
+    local development and honest in production, where the alternative used to
+    be a constant published in this file -- a key everyone with the source
+    could forge a session cookie with. The only thing the cookie carries is a
+    per-browser ``session_id`` used to pick a cached pipeline, so a restart
+    costs nothing but that.
+    """
+    configured = (os.getenv('FLASK_SECRET_KEY') or '').strip()
+    if configured:
+        return configured
+    logger.warning(
+        "FLASK_SECRET_KEY is not set; signing sessions with a key generated "
+        "for this process. Sessions will not survive a restart and cannot be "
+        "shared between instances. Set FLASK_SECRET_KEY for a deployment."
+    )
+    return secrets.token_hex(32)
+
+
+app.secret_key = _session_secret()
+# The session cookie is never read by a script and never needs to travel on a
+# cross-site request; both are Flask's own defaults, stated here so a future
+# change to them is deliberate.
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax')
 CORS(app)
 
 logger.info("Initializing Flask application...")
@@ -1551,6 +1582,41 @@ def delete_document(doc_id):
         }), 500
 
 
+@contextlib.contextmanager
+def staged_upload(uploaded_file):
+    """Put an uploaded file on disk for the duration of one request.
+
+    Ingestion reads a path, not a stream: the parser opens the file, the
+    ledger hashes it and the Viewer takes its content sha from it, so the
+    bytes have to exist somewhere for the length of the request and nowhere
+    afterwards. The cleanup belongs to the ``with`` rather than to each exit,
+    because this route has many: a missing knowledge base, an unknown one, a
+    chunker with no Deep Analysis path, a parser or ingest failure -- and,
+    most of all, success, which is the one path that never deleted the file
+    and so leaked one copy of every document ever uploaded into the system
+    temp directory.
+
+    The name keeps the shape it has always had (``upload_<8 hex><ext>``): a
+    document whose ingest produced no chunks still takes its fallback id from
+    this file name.
+    """
+    extension = os.path.splitext(uploaded_file.filename)[1]
+    temp_path = os.path.join(
+        tempfile.gettempdir(), f"upload_{uuid.uuid4().hex[:8]}{extension}"
+    )
+    logger.info(f"Saving uploaded file to: {temp_path}")
+    uploaded_file.save(temp_path)
+    try:
+        yield temp_path
+    finally:
+        try:
+            os.remove(temp_path)
+        except FileNotFoundError:
+            pass
+        except OSError as error:  # noqa: BLE001 - a leftover file is not a failed upload
+            logger.warning(f"Could not remove the uploaded temp file {temp_path}: {error}")
+
+
 @app.route('/api/documents/upload', methods=['POST'])
 def upload_document():
     """Upload and process a new document"""
@@ -1570,19 +1636,9 @@ def upload_document():
                 'error': 'No file selected'
             }), 400
 
-        # Save file temporarily
-        import tempfile
-        import uuid as uuid_lib
-
-        temp_dir = tempfile.gettempdir()
-        unique_id = str(uuid_lib.uuid4())[:8]
-        file_extension = os.path.splitext(file.filename)[1]
-        temp_path = os.path.join(temp_dir, f"upload_{unique_id}{file_extension}")
-
-        logger.info(f"Saving uploaded file to: {temp_path}")
-        file.save(temp_path)
-
-        try:
+        # The file is on disk for exactly this request; every return below --
+        # success included -- goes through the context manager's cleanup.
+        with staged_upload(file) as temp_path:
             # Process the document
             logger.info(f"Processing document: {file.filename}")
             kb_id = request.form.get('kb_id')
@@ -1772,12 +1828,6 @@ def upload_document():
                 'viewer_analysis': (viewer_state or {}).get('status'),
             })
 
-        except Exception as e:
-            # Clean up temp file on error
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-            raise e
-
     except IndexIncompatibleException as e:
         # The store holds vectors from another embedding model. Refused
         # rather than mixed; the knowledge base's Settings offer a re-index.
@@ -1963,7 +2013,14 @@ def experiment_rank_chunks():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-if __name__ == '__main__':
+def startup_banner() -> None:
+    """What this process is configured to do, printed once before it serves.
+
+    Both entrypoints print it -- the development server in this file and the
+    production server in ``wsgi.py`` -- because the first question about a
+    running instance is always which models and which state directory it is
+    on, and the second is whether that is the directory somebody meant.
+    """
     print("\n" + "="*80)
     print("🚀 Starting RAG Chat Web Application")
     print("="*80)
@@ -1973,21 +2030,38 @@ if __name__ == '__main__':
     print(f"Embedding: {settings.embedding_provider} / {settings.embedding_model_name}")
     print(f"Retrieval profile: {settings.retrieval_profile}")
     print(f"Deep Analysis model: {settings.deep_analysis_model or '(not configured)'}")
+    # Where this process keeps its state, and anything refused on the way to
+    # deciding that. One data directory now settles every path below it, so
+    # naming them here is what makes a wrong one visible at start-up rather
+    # than after something has been written to it.
+    print(f"Data directory: {paths.data_root() or '(none: paths are relative to ' + os.getcwd() + ')'}")
     print(f"Vector DB: {settings.vector_db_path}")
-    
+    print(f"Parser cache: {paths.canonical_cache()}")
+    for line in paths.diagnostics():
+        print(f"  ! {line}")
+
     # Check if documents are ingested
     tracker = DocumentTracker()
     stats = tracker.get_statistics()
     print(f"\n📊 Ingested Documents: {stats['total_documents']}")
     print(f"📦 Total Chunks: {stats['total_chunks']}")
-    
+
     if stats['total_documents'] == 0:
         print("\n⚠️  Warning: No documents ingested yet!")
         print("   Run 'python main_new.py' first to ingest documents")
-    
-    # A Viewer packaging job interrupted by a restart is recorded on disk with
-    # every input it needs; picking it up here is what makes the integration
-    # survive a stop/start rather than needing the document re-uploaded.
+
+
+def resume_background_work() -> None:
+    """Pick up whatever a previous process was in the middle of.
+
+    A Viewer packaging job interrupted by a restart is recorded on disk with
+    every input it needs; picking it up here is what makes the integration
+    survive a stop/start rather than needing the document re-uploaded.
+
+    This is also why the runtime is one process (see ``wsgi.py``): the
+    packaging queue lives in memory and its worker is one thread, so a second
+    process running this would resume the same documents a second time.
+    """
     try:
         from components.viewer import analysis as viewer_analysis
         resumed = viewer_analysis.resume_incomplete()
@@ -1996,20 +2070,50 @@ if __name__ == '__main__':
     except Exception as e:  # noqa: BLE001 - never block start-up on this
         logger.warning(f"Could not resume Viewer analyses: {e}")
 
-    print("\n" + "="*80)
-    print("🌐 Server starting at: http://localhost:5005")
-    print("="*80 + "\n")
-    
-    # Debug stays on for local development, which is how this has always run.
-    # A container sets FLASK_DEBUG=false: the reloader would otherwise build the
-    # pipeline twice and the interactive debugger has no place in an image.
-    debug = os.getenv('FLASK_DEBUG', 'true').strip().lower() not in {
-        '0', 'false', 'no', 'off'
+
+def development_server_options() -> dict:
+    """How `python app.py` runs: the development server, and only that.
+
+    Debug stays on by default, because a developer at a keyboard wants the
+    reloader and the traceback page and has always had them; FLASK_DEBUG=false
+    turns them off, which is what the demo launcher does to stop the reloader
+    building the pipeline twice.
+
+    The host default changed: loopback, not 0.0.0.0. A server with an
+    interactive debugger attached should not be reachable from whatever network
+    the laptop has joined, and this one is a development server by definition --
+    a deployment runs `python -m wsgi`, which binds every interface because it
+    has no debugger to expose. FLASK_HOST still overrides it for anyone who
+    wants that deliberately.
+    """
+    return {
+        'host': os.getenv('FLASK_HOST', '127.0.0.1'),
+        'port': int(os.getenv('FLASK_PORT', '5005')),
+        'debug': os.getenv('FLASK_DEBUG', 'true').strip().lower() not in {
+            '0', 'false', 'no', 'off'
+        },
     }
 
-    app.run(
-        host=os.getenv('FLASK_HOST', '0.0.0.0'),
-        port=int(os.getenv('FLASK_PORT', '5005')),
-        debug=debug
-    )
 
+if __name__ == '__main__':
+    # THE DEVELOPMENT ENTRYPOINT.
+    #
+    # Werkzeug's server is not a production server, and this file no longer
+    # pretends otherwise: a deployment runs `python -m wsgi`, which serves this
+    # same `app` object on waitress, in one process, with no debugger and no
+    # reloader to switch off.
+    startup_banner()
+    resume_background_work()
+
+    options = development_server_options()
+
+    print()
+    print("=" * 80)
+    print(f"Development server (Werkzeug, debug="
+          f"{'on' if options['debug'] else 'off'}): "
+          f"http://{options['host']}:{options['port']}")
+    print("Production: python -m wsgi")
+    print("=" * 80)
+    print()
+
+    app.run(**options)

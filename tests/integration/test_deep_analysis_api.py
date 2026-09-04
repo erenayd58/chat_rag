@@ -18,6 +18,7 @@ import pytest
 
 import app as flask_app
 from components.knowledgebase.manager import KnowledgeBaseManager
+from config import paths
 
 
 def deep_report(status: str) -> dict:
@@ -96,6 +97,14 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_DEEP_KEY", "sk-placeholder-secret")
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
     monkeypatch.setattr(flask_app, "kb_manager", manager)
+    # These tests are about what the upload route returns and records. Viewer
+    # packaging is a separate contract with its own tests, and it runs on a
+    # background thread that outlives the request -- so left real, it reaches
+    # back into this test's stubbed pipeline for a vector store that a stub has
+    # no reason to own, and logs a failure for every upload here. Staging is
+    # stubbed rather than fed a fake store: the boundary being exercised ends
+    # at the response.
+    monkeypatch.setattr(flask_app, "stage_viewer_analysis", lambda *a, **k: {"status": "queued"})
     flask_app.app.config.update(TESTING=True)
     kb = manager.create("deep-kb", chunker={"type": "structure_first"})
     with flask_app.app.test_client() as test_client:
@@ -120,7 +129,14 @@ def use_pipeline(monkeypatch, pipeline):
 
 
 def records():
-    return json.load(open(".ingested_documents.json", encoding="utf-8"))
+    """The ledger, wherever this configuration puts it.
+
+    Resolved through the same API the application resolves it with, rather
+    than named as a file in the working directory: the two agree only while no
+    data root is configured, and a test that hard-codes one of them is testing
+    the other's default by accident.
+    """
+    return json.load(open(paths.ingested_documents(), encoding="utf-8"))
 
 
 def test_a_chunker_without_deep_support_is_a_client_error(client, monkeypatch):

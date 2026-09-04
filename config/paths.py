@@ -12,22 +12,119 @@ used before, so a local checkout keeps writing to the same files it always
 has. With it set -- which is what the compose file does -- the same state is
 gathered under one directory that can be mounted.
 
-Nothing here creates directories or reads files; it only resolves names.
+The one thing this module does beyond resolving names is decide which
+*sources* of a path setting are allowed to speak, which is the subject of
+``load_env_file`` below. Nothing here creates directories or parses documents.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Dict, List, Optional
 
 #: Set this to gather all runtime state under one directory. Unset means the
 #: historical, working-directory-relative layout.
 DATA_DIR_ENV = "CHAT_RAG_DATA_DIR"
 
+#: The fallback vector store, used when no knowledge base is selected.
+VECTOR_DB_PATH_ENV = "VECTOR_DB_PATH"
+
+#: The structured parser's canonical-unit cache.
+PARSER_CACHE_ENV = "STRUCTURED_PARSER_CACHE"
+
+#: Variables that name where runtime *state* lives, as opposed to which model
+#: to call or how big a chunk is. These are the ones a data root owns.
+STATE_PATH_ENV = (VECTOR_DB_PATH_ENV, PARSER_CACHE_ENV)
+
+#: Settings the .env file supplied, and the state paths it was not allowed to
+#: supply because a data root was already declared. Diagnostics only.
+_from_env_file: Dict[str, str] = {}
+_ignored_from_env_file: Dict[str, str] = {}
+
 
 def data_root() -> Optional[str]:
     value = (os.getenv(DATA_DIR_ENV) or "").strip()
     return value or None
+
+
+# --------------------------------------------------------------- the contract
+
+
+def load_env_file(path: str) -> Dict[str, str]:
+    """Apply a ``.env`` file, without letting it move a declared data root.
+
+    The precedence, highest first:
+
+    1. the real process environment -- what a container, a compose file, a
+       test or an operator's shell actually set;
+    2. this file, for everything that is not a state path;
+    3. this file, for state paths, but *only* when no data root is declared.
+
+    Rule 3 is the whole point. ``.env`` is a developer's local file and it
+    describes the developer's local layout: ``VECTOR_DB_PATH=./chroma_db``
+    means "the store in my checkout". A deployment, a smoke check or a test
+    that declares ``CHAT_RAG_DATA_DIR`` has said where its state lives, and
+    a file left over from local development must not quietly move it back --
+    which is exactly how a smoke run came to open the developer's real Chroma
+    store. An operator who genuinely wants a store outside the data root still
+    has rule 1: set the variable in the environment, where it is visible.
+
+    Returns the settings that were applied, and records the ones that were
+    refused (see :func:`diagnostics`).
+    """
+    from dotenv import dotenv_values
+
+    _from_env_file.clear()
+    _ignored_from_env_file.clear()
+    if not os.path.isfile(path):
+        return {}
+
+    values = {k: v for k, v in dotenv_values(path).items() if v is not None}
+    # The data root decides how every other key is treated, so it is applied
+    # before them rather than in file order.
+    ordered = ([DATA_DIR_ENV] if DATA_DIR_ENV in values else []) + [
+        key for key in values if key != DATA_DIR_ENV
+    ]
+
+    for key in ordered:
+        if key in os.environ:
+            continue  # rule 1
+        if key in STATE_PATH_ENV and data_root() is not None:
+            _ignored_from_env_file[key] = values[key]  # rule 3
+            continue
+        os.environ[key] = values[key]
+        _from_env_file[key] = values[key]
+    return dict(_from_env_file)
+
+
+def diagnostics() -> List[str]:
+    """Human-readable lines about anything surprising in the path setup.
+
+    Printed by the entrypoints at start-up, so "which store am I on" is
+    answered by the log rather than by reading two files and an env dump.
+    """
+    lines: List[str] = []
+    root = data_root()
+    for key, value in sorted(_ignored_from_env_file.items()):
+        lines.append(
+            f"{key}={value} in .env ignored: {DATA_DIR_ENV}={root} owns this path"
+        )
+    override = (os.getenv(VECTOR_DB_PATH_ENV) or "").strip()
+    if root and override and not _within(override, root):
+        lines.append(
+            f"{VECTOR_DB_PATH_ENV}={override} is outside {DATA_DIR_ENV}={root}; "
+            "the fallback store will not travel with the data directory"
+        )
+    return lines
+
+
+def _within(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath(
+            [os.path.abspath(path), os.path.abspath(root)]
+        ) == os.path.abspath(root)
+    except ValueError:  # different drives on Windows
+        return False
 
 
 def _resolve(relative: str, default: str) -> str:
@@ -55,6 +152,20 @@ def vector_store_root(provider: str = "chroma") -> str:
     """The directory a provider's per-knowledge-base stores sit under."""
     name = "faiss_db" if provider == "faiss" else "chroma_db"
     return _resolve("faiss" if provider == "faiss" else "chroma", f"./{name}")
+
+
+def fallback_vector_store(provider: str = "chroma") -> str:
+    """The store used when no knowledge base is selected.
+
+    ``VECTOR_DB_PATH`` names it outright when set -- the one path override
+    this application has always had. It is resolved here rather than read
+    straight out of the environment in ``Settings`` so that one place decides
+    it, and so :func:`load_env_file` can keep a stale ``.env`` from supplying
+    it. Per-knowledge-base stores are unaffected: they come from
+    :func:`vector_store`, which this override has never applied to.
+    """
+    override = (os.getenv(VECTOR_DB_PATH_ENV) or "").strip()
+    return override or vector_store_root(provider)
 
 
 def vector_store(provider: str = "chroma", kb_id: Optional[str] = None) -> str:

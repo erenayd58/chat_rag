@@ -23,10 +23,13 @@ services:
         required: false
 
     environment:
-      # Structural, not configuration: these say where state lives inside the
-      # container and must match the mounts below.
+      # Structural, not configuration: this says where state lives inside the
+      # container, and must match the mount below. It is the only path this
+      # deployment sets -- the vector stores, the ledger, the knowledge base
+      # records, the parser's canonical-unit cache and the logs are all
+      # derived from it, and a .env left over from local development can no
+      # longer override any of them.
       CHAT_RAG_DATA_DIR: /data
-      STRUCTURED_PARSER_CACHE: /data/cache/canonical-units
 
     volumes:
       # Everything the application persists -- knowledge base records, the
@@ -64,11 +67,11 @@ services:
       start_period: 60s
       retries: 3
 
-    # Werkzeug's server handles SIGINT and ignores SIGTERM, so the default
-    # stop sequence waited out the grace period and then killed it -- a clean
-    # `docker compose down` still ended in exit code 137. Asking for SIGINT
-    # lets it shut itself down.
-    stop_signal: SIGINT
+    # The default SIGTERM is enough now: wsgi.py turns it into the SystemExit
+    # waitress already drains its request threads on, so `docker compose down`
+    # exits 0 instead of being killed at the end of the grace period. (The
+    # SIGINT override this used to need was a workaround for Werkzeug's
+    # development server, which ignored SIGTERM.)
     stop_grace_period: 15s
 
     restart: unless-stopped

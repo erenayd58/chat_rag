@@ -52,11 +52,15 @@ ENV PATH="/opt/venv/bin:$PATH" \
     # Turkish filenames and chunk text pass through stdout and the log files.
     PYTHONIOENCODING=utf-8 \
     LANG=C.UTF-8 \
-    # All runtime state under one mountable directory. config/paths.py leaves
-    # every path exactly as it was when this is unset, which is how a local
-    # checkout keeps writing to its own files.
-    CHAT_RAG_DATA_DIR=/data \
-    STRUCTURED_PARSER_CACHE=/data/cache/canonical-units
+    # All runtime state under one mountable directory, and only this: the
+    # vector stores, the ledger, the knowledge base records, the parser's
+    # canonical-unit cache and the logs are all derived from it by
+    # config/paths.py. STRUCTURED_PARSER_CACHE used to be set here as well,
+    # which pinned the cache to /data image-wide -- so the build-time smoke
+    # checks below, which move the data directory, could not move that one.
+    # config/paths.py leaves every path exactly as it was when this is unset,
+    # which is how a local checkout keeps writing to its own files.
+    CHAT_RAG_DATA_DIR=/data
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/nltk_data /opt/nltk_data
@@ -72,14 +76,19 @@ WORKDIR /app
 COPY --chown=app:app . .
 USER app
 
-# Fail the build here, not at the first request, when requirements.txt pins an
+# Two build-time checks, so a broken image fails here rather than at the first
+# request. The import smoke fails when requirements.txt pins an
 # amsc revision the product code has outgrown. This is invisible in a developer
 # checkout, where amsc is an editable install of the sibling chunk repository,
 # and it is exactly how a clean image came to build and then not start.
-# The data directory is overridden for this step alone: /data is the volume
-# mount point, and a build must not leave a vector store in that layer.
+# The serve smoke then starts the production server the CMD below starts,
+# answers /api/health over a real socket and stops it -- which is what tells
+# the difference between 'the modules import' and 'the container serves'.
+# The data directory is overridden for both steps: /data is the volume mount
+# point, and a build must not leave a vector store in that layer.
 RUN CHAT_RAG_DATA_DIR=/tmp/import-smoke python tools/import_smoke.py \
- && rm -rf /tmp/import-smoke
+ && CHAT_RAG_DATA_DIR=/tmp/serve-smoke python tools/serve_smoke.py \
+ && rm -rf /tmp/import-smoke /tmp/serve-smoke
 
 EXPOSE 5005
 
@@ -89,4 +98,7 @@ EXPOSE 5005
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5005/api/health', timeout=4).status == 200 else 1)"
 
-CMD ["python", "app.py"]
+# The production entrypoint: waitress, one process, WAITRESS_THREADS request
+# threads. Not `python app.py` -- that is the development server, and it must
+# not be what a deployment reaches by default.
+CMD ["python", "-m", "wsgi"]

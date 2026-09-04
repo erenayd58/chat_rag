@@ -4,13 +4,14 @@ Central configuration management
 """
 import os
 from typing import Dict, Any, Optional
-from dotenv import load_dotenv
 
 from . import paths
 
 ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
-print(f"Loading environment from: {ENV_FILE}")
-load_dotenv(ENV_FILE)
+#: Applied through config.paths rather than dotenv directly: a declared data
+#: root owns the state paths, and a .env left over from local development must
+#: not move them (see paths.load_env_file). Everything else loads as before.
+_APPLIED_ENV_FILE = paths.load_env_file(ENV_FILE)
 
 
 class Settings:
@@ -122,12 +123,11 @@ class Settings:
         
         # Vector DB Settings
         self.vector_db_provider = os.getenv("VECTOR_DB_PROVIDER", "chroma")  # 'chroma' or 'faiss'
-        # The fallback store, used when no knowledge base is selected. Its
-        # default comes from the same resolver the per-KB stores use, so a
-        # deployment that gathers state under one directory gathers this too.
-        self.vector_db_path = os.getenv(
-            "VECTOR_DB_PATH", paths.vector_store_root(self.vector_db_provider)
-        )
+        # The fallback store, used when no knowledge base is selected.
+        # VECTOR_DB_PATH names it outright; otherwise it comes from the same
+        # resolver the per-KB stores use, so a deployment that gathers state
+        # under one directory gathers this too.
+        self.vector_db_path = paths.fallback_vector_store(self.vector_db_provider)
         self.vector_db_collection_name = os.getenv("VECTOR_DB_COLLECTION", "documents")
         # HNSW (Chroma) index params
         self.hnsw_m = int(os.getenv("HNSW_M", "64"))

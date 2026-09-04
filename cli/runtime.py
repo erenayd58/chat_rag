@@ -214,11 +214,11 @@ def resolve_canonical_units(
     is a warning or a failure.
     """
     try:
-        from components.parsers.canonical_units_store import DEFAULT_CACHE_DIR, load_units
+        from components.parsers.canonical_units_store import default_cache_dir, load_units
     except ImportError:
         return None
 
-    directory = cache_dir or str(DEFAULT_CACHE_DIR)
+    directory = cache_dir or str(default_cache_dir())
     if not os.path.isdir(directory):
         return None
 
