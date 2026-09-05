@@ -99,7 +99,7 @@ def test_the_catalogue_reports_every_method_offered_or_not(hybrid_unavailable):
     rows = M.catalogue()
     assert [row["key"] for row in rows] == list(WIRE_KEYS)
     for row in rows:
-        assert set(row) == {"key", "label", "summary", "engine", "available", "reason", "uses_model"}
+        assert set(row) == {"key", "label", "summary", "engine", "available", "reason", "uses_model", "default"}
         assert row["available"] or row["reason"], "unavailable carries its reason"
     assert next(row for row in rows if row["key"] == "hybrid")["available"] is False
 
@@ -279,10 +279,9 @@ def test_the_indexing_registry_still_resolves_every_alias_it_documents():
 
 
 def test_the_viewer_reader_and_page_agree_with_the_console_registry():
-    """Three copies of the method identity live in the ``amsc`` library. Until
-    the Viewer reads the registry over the API, they must agree with it --
-    ``load_corpus`` refuses an arm whose name is not in ``ARM_KINDS``, and the
-    page offers only the methods in its build-time ``METHOD_ORDER``."""
+    """The library's Viewer reader and page builder and this console all read
+    one registry (``amsc.methods``) now, so this can no longer drift by
+    accident; it is kept as the guard that says so."""
     from amsc import viewer_v2, viewer_v3
 
     for key in WIRE_KEYS:

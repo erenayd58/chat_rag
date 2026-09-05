@@ -12,46 +12,33 @@ from typing import Dict, Any, List, Optional
 from config import paths
 
 
-_LEGACY_CHUNKER_NAMES = {"legacy", "semanticchunker", "semantic_chunker"}
-_V4_CHUNKER_NAMES = {"v4", "frozenv4chunker", "frozen_v4_chunker"}
-_STRUCTURAL_CHUNKER_NAMES = {
-    "structure_first",
-    "structurefirst",
-    "structural",
-    "structuralchunker",
-    "structural_chunker",
-}
+from components.chunker import registry as chunker_registry
 
 
 def normalize_chunker_config(chunker: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Return the canonical persisted chunker selection."""
+    """Return the canonical persisted chunker selection.
+
+    The names and aliases are the indexing registry's
+    (``components/chunker/registry.py``), the same table the factory builds
+    from and the options endpoint offers.
+    """
     if chunker is None:
-        return {"type": "legacy", "params": {}}
+        return {"type": chunker_registry.DEFAULT_ID, "params": {}}
     if not isinstance(chunker, dict):
         raise ValueError("chunker must be an object")
 
-    raw_type = str(chunker.get("type") or "").strip().lower()
-    if raw_type in _LEGACY_CHUNKER_NAMES:
-        chunker_type = "legacy"
-    elif raw_type in _V4_CHUNKER_NAMES:
-        chunker_type = "v4"
-    elif raw_type in _STRUCTURAL_CHUNKER_NAMES:
-        chunker_type = "structure_first"
-    else:
-        raise ValueError(
-            "chunker.type must be 'legacy', 'v4' or 'structure_first'"
-        )
+    resolved = chunker_registry.resolve(chunker.get("type"))
+    if resolved is None:
+        raise ValueError(f"chunker.type must be {chunker_registry.expected()}")
 
     params = chunker.get("params", {})
     if params is None:
         params = {}
     if not isinstance(params, dict):
         raise ValueError("chunker.params must be an object")
-    if chunker_type == "v4" and params:
-        raise ValueError("Frozen V4 accepts no runtime chunker params")
-    if chunker_type == "structure_first" and params:
-        raise ValueError("Structure-first accepts no runtime chunker params")
-    return {"type": chunker_type, "params": dict(params)}
+    if params and not resolved.accepts_params:
+        raise ValueError(f"{resolved.params_refusal} chunker params")
+    return {"type": resolved.id, "params": dict(params)}
 
 
 def _ensure_parent(path: str) -> None:

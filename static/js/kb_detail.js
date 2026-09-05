@@ -281,7 +281,9 @@ function renderMethods() {
     return;
   }
   box.innerHTML = METHODS.map((m) => {
-    const checked = m.available && m.key === 'structure-only' ? ' checked' : '';
+    // The backend says which method an upload gets by default; the form
+    // preselects exactly that, so no method name lives in this file.
+    const checked = m.available && m.default ? ' checked' : '';
     return '<label class="method-option' + (m.available ? '' : ' disabled') + '">' +
       '<input type="checkbox" name="method" value="' + escapeHtml(m.key) + '"' +
       (m.available ? '' : ' disabled') + checked + '>' +

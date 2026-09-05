@@ -467,27 +467,21 @@ def _counter():
 
 
 def _chunk_rows(method: str, units: Sequence[Any]) -> list[dict]:
-    """One method's chunk rows over the canonical that is already in hand."""
-    budget = _budget()
-    counter = _counter()
-    if method == M.MARKDOWN:
-        from amsc import markdown_chunker
+    """One method's chunk rows over the canonical that is already in hand.
 
-        return markdown_chunker.chunk_units(
-            units, counter=counter, chunk_size_tokens=700, chunk_overlap_tokens=140,
-            hard_max_tokens=budget["hard_max_tokens"],
-        )
-    if method == M.STANDARD:
-        from amsc import structural_chunker
+    Dispatch is the registry's (``amsc.methods.partition``): the method's key
+    names its partition, the shared budget is the product's, and the boundary
+    model is handed over as a loader that only a method declaring
+    ``needs_embedder`` ever calls -- so packaging Standard or Markdown still
+    loads no model. Deep Analysis never comes through here: it is an
+    orchestration, packaged by ``_build`` from its own run tree.
+    """
+    from amsc import methods as registry
 
-        return structural_chunker.chunk_units(units, counter=counter, **budget)
-    if method == M.HYBRID:
-        from amsc import hybrid_chunker
-
-        return hybrid_chunker.chunk_units(units, counter=counter,
-                                          boundary_embedder=_boundary_embedder(),
-                                          **budget).chunks
-    raise ValueError(f"{method!r} is not a chunker this module runs")
+    return registry.partition(
+        method, units, counter=_counter(), budget=_budget(),
+        boundary_embedder=_boundary_embedder,
+    ).rows
 
 
 #: The Hybrid variant's semantic boundary model, loaded at most once.

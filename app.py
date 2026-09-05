@@ -1719,12 +1719,9 @@ def get_kb_options():
             {'name': 'faiss', 'description': 'FAISS - Fast similarity search'},
         ]
 
-        chunkers = [
-            {'name': 'legacy', 'description': 'Existing SemanticChunker behavior'},
-            {'name': 'v4', 'description': 'Frozen AMSC V4/A4 at Phase 5'},
-            {'name': 'structure_first',
-             'description': 'Structure-first chunking (no embeddings) - default demo profile'},
-        ]
+        from components.chunker import registry as chunker_registry
+
+        chunkers = chunker_registry.describe()
 
         retrieval_methods = [
             {'name': 'hybrid', 'description': 'Combines vector and BM25 search'},

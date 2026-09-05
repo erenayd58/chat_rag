@@ -7,18 +7,11 @@ from typing import Any
 
 from core.exceptions import ConfigurationException
 
+from . import registry
 from .base import BaseChunker
 from .frozen_v4_chunker import FrozenV4Chunker
 from .semantic_chunker import SemanticChunker
 from .structural_chunker import StructuralChunker
-
-
-_LEGACY_NAMES = {"legacy", "semanticchunker", "semantic_chunker"}
-_V4_NAMES = {"v4", "frozenv4chunker", "frozen_v4_chunker"}
-_STRUCTURAL_NAMES = {
-    "structure_first", "structurefirst", "structural",
-    "structuralchunker", "structural_chunker",
-}
 
 
 def create_chunker(
@@ -36,8 +29,17 @@ def create_chunker(
         chunker_type = str(getattr(settings, "chunker_type", "legacy"))
         params = {}
 
-    normalized = chunker_type.strip().lower()
-    if normalized in _LEGACY_NAMES:
+    chunker = registry.resolve(chunker_type)
+    if chunker is None:
+        raise ConfigurationException(
+            f"Unsupported chunker type {chunker_type!r}; expected {registry.expected()}"
+        )
+    if params and not chunker.accepts_params:
+        raise ConfigurationException(
+            f"{chunker.params_refusal} tuning params"
+            + ("; use the pinned config" if chunker.id == "v4" else "")
+        )
+    if chunker.id == "legacy":
         return SemanticChunker(
             chunk_size=params.get("chunk_size", settings.chunk_size),
             chunk_overlap=params.get("chunk_overlap", settings.chunk_overlap),
@@ -47,22 +49,6 @@ def create_chunker(
             semantic_threshold=params.get("semantic_threshold", 0.6),
             semantic_window=params.get("semantic_window", 1),
         )
-
-    if normalized in _V4_NAMES:
-        if params:
-            raise ConfigurationException(
-                "Frozen V4 accepts no runtime tuning params; use the pinned config"
-            )
+    if chunker.id == "v4":
         return FrozenV4Chunker()
-
-    if normalized in _STRUCTURAL_NAMES:
-        if params:
-            raise ConfigurationException(
-                "Structure-first accepts no runtime tuning params"
-            )
-        return StructuralChunker()
-
-    raise ConfigurationException(
-        f"Unsupported chunker type {chunker_type!r}; "
-        "expected 'legacy', 'v4' or 'structure_first'"
-    )
+    return StructuralChunker()

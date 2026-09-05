@@ -189,7 +189,17 @@ hash: uploading the same PDF again adds variants to the document that is
 already there instead of making a second one, and
 `POST /api/demo/viewer-analysis/<doc_id>/methods` adds a method later without
 re-reading the file. `GET /api/demo/methods` says which methods this machine
-can actually run, and why one cannot. A build interrupted by a restart
+can actually run, and why one cannot. The methods themselves are defined once,
+in the library's registry (`amsc.methods` in the chunk repository): key,
+engine kind, product name, summary and capabilities. `components/viewer/methods.py`
+is this console's view of that registry and adds only what the deployment
+decides — availability on this machine, display order, the default. Adding a
+chunking method is a library change (`chunk/docs/adding-a-chunker.md`: a
+partition function, one registry entry, a test) followed by bumping the
+`amsc-poc` pin in `requirements.txt`; no route, template or script here names
+a method. The *indexing* chunker a knowledge base is created with is a
+separate, deliberately smaller table (`components/chunker/registry.py`), and an
+analysis method is never accepted as one. A build interrupted by a restart
 is picked up again from disk. Deleting a document here deletes its analysis;
 the chunk repository's frozen benchmark trees are never reachable from this
 path. Everything lives under `artifacts/viewer-live/` (git-ignored) and is
