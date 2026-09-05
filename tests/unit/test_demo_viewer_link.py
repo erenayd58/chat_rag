@@ -1,6 +1,6 @@
 """The companion "Agentic Chunking Viewer" link and its status probe.
 
-The console links to the chunk repository's Viewer v2 server. The address is
+The console links to the chunk repository's Viewer server. The address is
 configuration (VIEWER_URL; empty hides the link), the sidebar shows whether
 the viewer answers, and the probe is a backend call so the browser never has
 to reach a second origin itself.

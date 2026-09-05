@@ -16,9 +16,20 @@ production: two jobs running at once, both fanning out onto pools, each
 finishing with exactly its own calls counted and none of the other's.
 
 The pool here is a real ``ThreadPoolExecutor`` driven the same way
-``collect_votes`` drives one, and a barrier -- not a sleep -- guarantees the
-two jobs' calls genuinely overlap, so the test would fail if attribution were
-by thread rather than by job.
+``collect_votes`` drives one, and a barrier -- not a sleep -- holds every call
+open until all of them have arrived, so the calls genuinely overlap and the
+tests would fail if attribution were by thread rather than by job.
+
+The barrier is load-bearing for a second reason. A ``ThreadPoolExecutor``
+grows *lazily*: on each submit it reuses an idle worker if one is free and
+only creates a new thread when none is. Eight instantaneous calls are
+therefore drained by the single first worker before a second is ever created,
+whatever ``max_workers`` says. Any assertion about how many threads appeared
+would then be measuring the executor's growth heuristic rather than the
+propagation these tests are about. Holding all N calls open at once makes N
+live workers arithmetic instead of luck -- N calls in flight cannot share a
+thread -- which is the only reason the thread assertions below are allowed to
+be exact.
 """
 
 from __future__ import annotations
@@ -59,23 +70,35 @@ def fan_out(provider, prompts, *, workers=4):
 
 def test_calls_made_on_pool_threads_land_on_the_originating_trace():
     """The trace is bound at construction, so the pool cannot lose it."""
+    prompts = [f"prompt {index}" for index in range(8)]
+    # Every call blocks until all eight have arrived. That is what makes the
+    # fan-out really concurrent rather than eight quick turns on one worker
+    # (see the module docstring), and the budget is opened wide enough to let
+    # all eight hold a slot at once -- a budget smaller than the barrier would
+    # deadlock the two against each other.
+    gate = threading.Barrier(len(prompts))
+    transport = Transport(gate)
+    binding_thread = threading.get_ident()
     trace = T.JobTrace(job_id="job-1", kb_id="kb-1", mode="deep")
-    transport = Transport()
 
     with T.use_trace(trace):
         # Constructed here, on the "worker" thread, exactly as
         # deep_analysis.limited_providers constructs it.
-        provider = L.LimitedProvider(transport, L.ProviderBudget(4))
+        provider = L.LimitedProvider(transport, L.ProviderBudget(len(prompts)))
 
     # ... and called from somewhere with no trace of its own at all.
     assert T.current_trace() is None
-    fan_out(provider, [f"prompt {index}" for index in range(8)])
+    fan_out(provider, prompts, workers=len(prompts))
 
-    assert trace.provider_calls == 8
-    # Really other threads: if the work had run inline this would prove
-    # nothing about propagation.
-    assert transport.threads != {threading.get_ident()}
-    assert len(transport.threads) > 1
+    assert trace.provider_calls == len(prompts)
+    # None of the calls ran where the trace was bound, so none of them could
+    # have read it out of a thread-local: a count taken that way would be
+    # zero here, not merely wrong.
+    assert binding_thread not in transport.threads
+    # One thread per call, because the barrier held them all open together.
+    # This is a check on the test's own setup -- that the fan-out was really
+    # concurrent -- not an assumption about how the executor schedules.
+    assert len(transport.threads) == len(prompts)
 
 
 def test_two_concurrent_jobs_each_count_only_their_own_calls():

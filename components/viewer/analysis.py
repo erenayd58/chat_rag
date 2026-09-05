@@ -22,9 +22,17 @@ What is never done twice:
   provider calls, zero cost, and recorded as exactly that.
 
 Every variant is written by the same packager the benchmark uses
-(``amsc.deep_arm``), so a live arm and a frozen arm are the same shape. No
-retrieval is scored for a live document: it has no gold set, and a number
-without one would be invented.
+(``amsc.deep_arm``), and the payload is assembled by the same reader both
+Viewer pages are built on (``amsc.viewer_corpus.load_corpus``), so a live arm
+and a frozen arm are the same shape and the Viewer needs no second reader for
+a live document. No retrieval is scored for a live document: it has no gold
+set, and a number without one would be invented.
+
+This module owns the *product state* of a live document -- what has been
+staged, what is queued, what is built, what is published. The library owns
+the chunkers, the packager and the payload shape. Nothing here is a copy of
+anything in ``amsc``; where the two must agree (method identity, the payload
+shape), this side reads the library rather than restating it.
 
 Nothing here runs at query time, and nothing here writes outside its own
 root -- these are regenerable workspace artifacts, entirely separate from the
@@ -90,6 +98,17 @@ _build_locks: dict[str, threading.Lock] = {}
 #: Everything under one document's directory is written by this module and by
 #: this process alone, so serialising here is the whole fix.
 _state_locks: dict[str, threading.RLock] = {}
+#: Documents deleted while their build was running.
+#:
+#: ``discard`` removes the directory, but a build already inside ``_build``
+#: goes on writing to it and every write recreates it -- so a delete during
+#: packaging left a half-built analysis on disk under a document the console
+#: no longer knows, and the workspace listed it. The build itself is not
+#: interrupted (it holds open files and a chunker mid-run); instead the key is
+#: marked here and the build removes its own output at the end, so the delete
+#: wins whichever of the two finishes last. Re-staging the same document
+#: clears the mark, because that is a new request for it.
+_revoked: set[str] = set()
 #: How the worker recovers the canonical of a document ingested before this
 #: packaging existed. Registered by the application, called on the worker.
 _unit_resolver = None
@@ -283,9 +302,13 @@ def discard(doc_id: str, content_sha: str | None = None) -> bool:
     if remaining:
         _set_state(key, doc_ids=remaining)
         return True
-    shutil.rmtree(directory, ignore_errors=True)
     with _lock:
+        # Marked before the removal, so a build that is between two writes
+        # cannot slip its output in after the directory is gone.
+        if key in _inflight:
+            _revoked.add(key)
         _inflight.discard(key)
+    shutil.rmtree(directory, ignore_errors=True)
     return True
 
 
@@ -573,7 +596,27 @@ def build(doc_id_or_key: str, content_sha: str | None = None) -> dict:
     key = doc_id_or_key if (document_dir(doc_id_or_key) / _STATE).is_file() \
         else key_for(doc_id_or_key, content_sha)
     with _build_lock(key):
-        return _build(key)
+        try:
+            return _build(key)
+        finally:
+            _sweep_if_revoked(key)
+
+
+def _sweep_if_revoked(key: str) -> bool:
+    """Undo a build whose document was deleted while it ran.
+
+    The build recreates its directory on every write, so the delete has to
+    be applied again once the writing has stopped. Called on the way out of
+    a build whether it succeeded or raised, so neither outcome can leave a
+    document the console no longer has.
+    """
+    with _lock:
+        if key not in _revoked:
+            return False
+        _revoked.discard(key)
+    shutil.rmtree(document_dir(key), ignore_errors=True)
+    logger.info(f"{key}: discarded after its document was deleted mid-build")
+    return True
 
 
 def _ensure_units(key: str, state: dict) -> dict:
@@ -663,7 +706,7 @@ def _build(key: str) -> dict:
 
     from amsc.deep_arm import package, package_arm
     from amsc.io import load_jsonl_units
-    from amsc.viewer_v2 import load_corpus
+    from amsc.viewer_corpus import load_corpus
 
     units = load_jsonl_units(units_path(key))
     requested = state.get("requested") or [M.STANDARD]
@@ -868,13 +911,17 @@ def _run_worker() -> None:
             logger.info(f"Viewer analysis ready for {key}")
         except Exception as error:  # noqa: BLE001 - a failed build is a state, not a crash
             logger.error(f"Viewer analysis failed for {key}: {error}", exc_info=True)
-            try:
-                _set_state(key, status=STATUS_FAILED,
-                           error=f"{type(error).__name__}: {error}",
-                           ready_methods=_packaged_methods(key),
-                           traceback=traceback.format_exc(limit=6))
-            except Exception:  # pragma: no cover - the state write is best effort
-                pass
+            # The document may have been deleted while this build ran, in
+            # which case the build already swept its own output away.
+            # Recording a failure now would recreate what the delete removed.
+            if document_dir(key).is_dir():
+                try:
+                    _set_state(key, status=STATUS_FAILED,
+                               error=f"{type(error).__name__}: {error}",
+                               ready_methods=_packaged_methods(key),
+                               traceback=traceback.format_exc(limit=6))
+                except Exception:  # pragma: no cover - state write is best effort
+                    pass
         finally:
             with _lock:
                 _inflight.discard(key)
@@ -892,6 +939,10 @@ def _ensure_worker() -> None:
 def enqueue(key: str) -> str:
     """Queue a build, at most once at a time per document."""
     with _lock:
+        # Asking for this document again withdraws an earlier delete: the
+        # analysis that is about to be built is the one that was just asked
+        # for, not the one that was thrown away.
+        _revoked.discard(key)
         if key in _inflight:
             return STATUS_PENDING
         _inflight.add(key)
@@ -905,12 +956,46 @@ def pending_count() -> int:
         return len(_inflight)
 
 
+def sweep_scratch() -> int:
+    """Remove the scratch files a killed process left behind.
+
+    Every record here is written to ``<name>.<pid>.<tid>.tmp`` and renamed
+    into place, so a file still carrying that suffix is one whose writer died
+    between the two steps. Left alone they are the one thing in the packaging
+    workspace that grows without a bound, because the thread ids in their
+    names never repeat. Returns how many went.
+
+    Files written by *this* process are left where they are: the pid in the
+    name is what tells a dead writer's scratch from a live one's, so this is
+    safe to call while the worker is building rather than only at start-up.
+    """
+    directory = root()
+    if not directory.is_dir():
+        return 0
+    mine = f".{os.getpid()}."
+    removed = 0
+    for scratch in directory.rglob("*.tmp"):
+        if mine in scratch.name:
+            continue
+        try:
+            scratch.unlink()
+            removed += 1
+        except OSError:  # pragma: no cover - a live handle keeps its own file
+            continue
+    if removed:
+        logger.info(f"Removed {removed} orphaned viewer scratch file(s)")
+    return removed
+
+
 def resume_incomplete() -> list[str]:
     """Queue every document whose analysis did not finish.
 
     Disk is the authority: a console killed mid-build leaves a ``running``
-    record with no payload, and the next start picks it up.
+    record with no payload, and the next start picks it up. Deterministic:
+    the same directory always yields the same keys, in name order, and a
+    document that finished is never queued twice.
     """
+    sweep_scratch()
     queued: list[str] = []
     for key, state in _all_states().items():
         if state.get("status") in (STATUS_PENDING, STATUS_RUNNING) or (

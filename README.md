@@ -132,10 +132,18 @@ one script starts both for a presentation.
 | | Address | Server |
 |---|---|---|
 | Product (chat_rag) | http://127.0.0.1:5005 | `venv\Scripts\python.exe app.py` (the development server; `FLASK_PORT`, reloader off) |
-| Viewer (chunk, Viewer v2) | http://127.0.0.1:8765 | `py -3.11 -m amsc.viewer_server --viewer artifacts/viewer-v2/index.html` in the chunk repo |
+| Viewer (chunk, Viewer v3) | http://127.0.0.1:8765 | `py -3.11 -m amsc.viewer_server --viewer artifacts/viewer-v3/index.html --console-url http://127.0.0.1:5005` in the chunk repo |
 
 The chunk repository is expected next to this one (`..\chunk`); override with
-`-ChunkPath` or `CHUNK_REPO`. The launcher checks readiness over HTTP
+`-ChunkPath` or `CHUNK_REPO`. The Viewer page itself is a build artifact and is
+not in version control, so on a fresh clone the launcher builds it first --
+`py -3.11 -m amsc.viewer_v3 --output artifacts\viewer-v3\index.html`, the
+product shell, which carries no corpus of its own and reads every document
+live from this console. A page that is already there is served unchanged.
+How the two repositories divide the Viewer up, and what to look at when a
+document's analysis fails, is in `..\chunk\docs\viewer-architecture.md`.
+
+The launcher checks readiness over HTTP
 (`/api/health` on both), recognises servers that are already running instead
 of starting a second copy, refuses a port held by something else, writes the
 servers' output to `.demo\logs\` and the started process ids to

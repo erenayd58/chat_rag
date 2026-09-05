@@ -221,7 +221,7 @@ def inject_companion_links():
 
 
 def probe_viewer(url: str, timeout: float = 1.5) -> dict:
-    """Is the Viewer v2 server answering at ``url``? A local probe only."""
+    """Is the companion Viewer server answering at ``url``? A local probe only."""
     import urllib.request
     import urllib.error
 
@@ -252,7 +252,7 @@ def workspace_snapshot() -> dict:
     """The console's knowledge bases and their documents, as one read-only
     snapshot.
 
-    This is the single source of truth the Viewer v2 workspace panel reads,
+    This is the single source of truth the Viewer's workspace panel reads,
     so a knowledge base created here -- or a document ingested into it --
     shows up over there without anyone copying state by hand. Names, counts
     and ingest metadata only: no paths outside the file name, no keys.
@@ -350,7 +350,7 @@ def workspace_snapshot() -> dict:
 
 @app.route('/api/demo/workspace', methods=['GET'])
 def demo_workspace():
-    """Live knowledge base / document state for the Viewer v2 workspace panel.
+    """Live knowledge base / document state for the Viewer workspace panel.
 
     ``?prepare=1`` also queues an analysis for every document that has none,
     which is what the Viewer's refresh asks for. Queuing is all it does: the
@@ -365,7 +365,7 @@ def demo_workspace():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-# ---- Viewer v2 analysis of this console's own documents ----
+# ---- Viewer analysis of this console's own documents ----
 #
 # The Viewer reads a packaged Deep Analysis tree; an ingest here already
 # produces everything expensive that tree needs. These endpoints stage those

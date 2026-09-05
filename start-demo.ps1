@@ -250,9 +250,26 @@ if (-not $viewerPython) {
 $viewerPythonLabel = if ($viewerPython.Pre.Count) { "$($viewerPython.Exe) $($viewerPython.Pre -join ' ')" } else { $viewerPython.Exe }
 Info 'viewer python' $viewerPythonLabel
 
+# The Viewer page is a build artifact, not tracked source: artifacts\ is
+# git-ignored in the chunk repository, so a fresh clone has no page. Build it
+# here rather than sending the reader off to a second script. With no
+# arguments this is the *shell* build -- no embedded corpus, every document
+# read live from this console -- which is exactly what the product needs and
+# the only build a clean checkout can make. A research build with frozen
+# trees embedded (see chunk/docs/viewer-architecture.md) is left alone: if a
+# page is already there, it is served as it is.
 if (-not (Test-Path $viewerHtml)) {
-    Fail 'viewer page' "$viewerHtml is missing. Build it once in the chunk repo (see docs/viewer-v3.md: py -3.11 -m amsc.viewer_v3 ...)"
-    exit 1
+    Info 'viewer page' "building the product shell (no page at $viewerHtml)"
+    $buildArgs = @() + $viewerPython.Pre + @('-m', 'amsc.viewer_v3', '--output', $viewerHtml)
+    $build = Start-Process -FilePath $viewerPython.Exe -ArgumentList $buildArgs -WorkingDirectory $chunkRepo `
+        -NoNewWindow -Wait -PassThru
+    if ($build.ExitCode -ne 0 -or -not (Test-Path $viewerHtml)) {
+        Fail 'viewer page' "the shell build failed (exit $($build.ExitCode)). Run it by hand in $chunkRepo`: $viewerPythonLabel -m amsc.viewer_v3 --output artifacts\viewer-v3\index.html"
+        exit 1
+    }
+    Ok 'viewer page' "$viewerHtml  (product shell, built just now)"
+} else {
+    Info 'viewer page' $viewerHtml
 }
 
 # Environment for the children. Saved and restored so the caller's session

@@ -96,7 +96,7 @@ docs/*
 artifacts/runs/
 artifacts/reports/
 
-# Viewer v2 analyses of this console's own documents: one directory per
+# Viewer analyses of this console's own documents: one directory per
 # ingested document, rebuilt from that ingest whenever it is missing. Live
 # workspace state, never a frozen benchmark artifact.
 artifacts/viewer-live/

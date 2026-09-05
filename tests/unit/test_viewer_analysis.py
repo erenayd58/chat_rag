@@ -1,4 +1,4 @@
-"""Packaging an ingested document for the Viewer v2.
+"""Packaging an ingested document for the Viewer.
 
 The contract these tests hold to is the expensive one: the Viewer gets a real
 analysis of a real document, and getting it costs no second parse and no

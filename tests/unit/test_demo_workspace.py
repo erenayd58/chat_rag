@@ -1,4 +1,4 @@
-"""The workspace snapshot the Viewer v2 reads to stay in step with the console.
+"""The workspace snapshot the Viewer reads to stay in step with the console.
 
 The console owns knowledge bases and documents; the viewer owns the chunking
 analysis. Rather than keeping a second copy of the console's state over there,
