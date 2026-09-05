@@ -4,7 +4,7 @@ Contextual enhancement for RAG
 """
 from components.llm import BaseLLM
 from core.models import DocumentChunk
-from core.exceptions import LLMException
+from core.exceptions import LLMException, RESOURCE_CONTROL_EXCEPTIONS
 from utils.logger import RAGLogger, get_logger
 
 
@@ -49,8 +49,14 @@ Summary:"""
             response = self.llm_model.generate(messages, temperature=0.3, max_tokens=200)
             RAGLogger.log_llm_response(self.logger, response, success=True)
             return response
+        except RESOURCE_CONTROL_EXCEPTIONS:
+            # This runs on an ingest worker, so what arrives here is the
+            # ingest job's own deadline or cancellation. A summary the model
+            # could not write falls back to the title; a job that must stop
+            # stops (core/exceptions.py).
+            raise
         except Exception as e:
-            print(f"Error generating summary: {e}")
+            self.logger.warning(f"Document summary unavailable: {e}")
             return f"Document: {doc_title}"
     
     def enrich_chunk_with_context(self, chunk: DocumentChunk) -> str:

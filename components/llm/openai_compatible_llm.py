@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 
 from amsc.deep_pipeline import DEFAULT_ENDPOINT
 
+from components.ingest.limits import current_guard, deadline_timeout
 from core.exceptions import LLMException
 from utils.logger import get_logger
 
@@ -53,6 +54,7 @@ class OpenAICompatibleLLM(BaseLLM):
         self.retries = max(1, int(retries))
         self.calls = 0
         self.last_usage: Dict[str, Any] = {}
+        self._last_timeout = self.timeout_seconds
 
     @property
     def provider_id(self) -> str:
@@ -87,6 +89,11 @@ class OpenAICompatibleLLM(BaseLLM):
             if text:
                 return text
             if spent_all and budget < self.MAX_RETRY_TOKENS:
+                # A second, larger completion is only worth starting with
+                # time to finish it; out of time, the deadline says so.
+                guard = current_guard()
+                if guard is not None:
+                    guard.check()
                 budget = min(budget * 2, self.MAX_RETRY_TOKENS)
                 logger.info("answer call: empty content at the token cap; retrying with max_tokens=%s", budget)
                 continue
@@ -120,9 +127,17 @@ class OpenAICompatibleLLM(BaseLLM):
         )
         last_error: Exception | None = None
         started = time.perf_counter()
+        guard = current_guard()
         for attempt in range(self.retries):
+            # Under a query deadline the socket gets the time that is left,
+            # not the whole configured timeout: a call that has started
+            # cannot run past the deadline by a provider timeout on top.
+            if guard is not None:
+                guard.check()
+            timeout = deadline_timeout(self.timeout_seconds)
+            self._last_timeout = timeout
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
                     payload = json.loads(response.read().decode("utf-8"))
                 break
             except urllib.error.HTTPError as error:
@@ -132,7 +147,13 @@ class OpenAICompatibleLLM(BaseLLM):
             except (urllib.error.URLError, TimeoutError, OSError) as error:
                 last_error = LLMException(f"{self.provider_id} unreachable: {error}")
             if attempt + 1 < self.retries:
-                time.sleep(1.0 * (attempt + 1))
+                backoff = 1.0 * (attempt + 1)
+                remaining = guard.remaining() if guard is not None else None
+                if remaining is not None and remaining <= backoff:
+                    # No time for another attempt: report the failure now
+                    # rather than spend the deadline sleeping.
+                    raise last_error
+                time.sleep(backoff)
         else:
             raise last_error or LLMException(f"{self.provider_id} request failed")
 
@@ -159,6 +180,9 @@ class OpenAICompatibleLLM(BaseLLM):
             "model": payload.get("model") or self.model,
             "max_tokens": int(max_tokens),
             "finish_reason": choice.get("finish_reason"),
+            # The socket timeout this call was actually made with, so a
+            # clamped call under a deadline is visible rather than assumed.
+            "timeout_seconds": round(float(self._last_timeout), 3),
         }
         logger.info(
             "answer call: provider=%s model=%s prompt_tokens=%s completion_tokens=%s max_tokens=%s "

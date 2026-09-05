@@ -191,6 +191,11 @@ def _isolated_process_caches():
     analysis = sys.modules.get("components.viewer.analysis")
     if analysis is not None:
         analysis.release_boundary_model()
+    for shared in ("components.embedding.sentence_transformer_embedding",
+                   "components.reranker.cross_encoder_reranker"):
+        module = sys.modules.get(shared)
+        if module is not None:
+            module.release_models()
     telemetry = sys.modules.get("components.observability.telemetry")
     if telemetry is not None and telemetry._registry is not None:
         telemetry._registry.reset()

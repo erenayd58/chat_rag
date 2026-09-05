@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from components.ingest.limits import current_guard
 from core.exceptions import LLMException
 
 from .base import BaseLLM
@@ -66,6 +67,12 @@ class FallbackLLM(BaseLLM):
         except LLMException as error:
             if self.fallback is None:
                 raise
+            # A primary that failed because the time ran out must not be
+            # followed by a fallback attempt with none left; the deadline,
+            # not a second model, is the answer then.
+            guard = current_guard()
+            if guard is not None:
+                guard.check()
             self.last_call.update(
                 fallback_used=True,
                 fallback_provider=provider_id_of(self.fallback),

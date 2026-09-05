@@ -257,7 +257,7 @@ its own limit so that one service cannot starve another:
 | Embedding batches (local model) | `INGEST_WORKERS` — CPU on the worker |
 | Parsing, chunking, indexing | `INGEST_WORKERS` |
 | Viewer packaging | its single thread; it makes no provider call |
-| Answer model at query time | `WAITRESS_THREADS` — no ingest path reaches it |
+| Answer model at query time | `ANSWER_MAX_INFLIGHT` global; request threads in a query by `QUERY_MAX_ACTIVE`; the whole query by `QUERY_TIMEOUT` (see *Bounded queries*) |
 
 Both caps are taken per call, not per job: a Deep job's pool of eight shares
 `PROVIDER_MAX_INFLIGHT` slots call by call with every other Deep job, and the
@@ -289,6 +289,114 @@ file there belongs to no job.
 including both budgets and how many finished jobs are retained;
 `DELETE /api/ingest/jobs/<job_id>` cancels a queued job at once and a running
 one at its next boundary.
+
+## Bounded queries (chat under limits)
+
+A question is answered on the request thread that received it: retrieval,
+context assembly and the answer-model call all happen there, because a chat
+answer is synchronous. What multiplies under load is therefore request
+threads held for the length of a provider call, and three bounds close that
+(`components/query/limits.py`, `config/query.py`):
+
+| Setting | Default | Bounds |
+|---|---|---|
+| `QUERY_MAX_ACTIVE` | `WAITRESS_THREADS - INGEST_SYNC_WAITERS - 1` (3) | request threads inside a query at once |
+| `ANSWER_MAX_INFLIGHT` | 4 | answer-model calls in flight, process-wide, every session |
+| `QUERY_TIMEOUT` | 180 s | one question, start to answer |
+| `ANSWER_SLOT_WAIT` | 30 s | how long a question waits for an answer slot before it is refused |
+
+**Admission is immediate and never queues.** `POST /api/query` either enters
+now or is refused now with **503**, `overloaded: true`, `reason: admission`
+and a `Retry-After` (derived from the median recent query time, within 2–30
+seconds). A queued question would hold the very thread the limit exists to
+keep free. The default is derived so that questions and synchronous uploads
+together can never take every request thread, which is what keeps
+`/api/health`, `/api/ops/metrics` and job polling answerable under any burst
+of either; `tests/integration/test_query_starvation.py` proves it on the
+real server, and the process warns at start-up when an explicit setting
+gives that guarantee up. The chat page puts the question back in the box
+with a "busy, try again in N seconds" notice.
+
+**The answer budget is a third budget on purpose.** In the demo all three
+roles — Deep Analysis, embeddings, answers — reach one gateway with one
+key, so one cap on "OpenRouter calls" is the obvious alternative, and the
+wrong one. A Deep call is one short vote among dozens made in bulk from a
+background worker; an answer is one long interactive completion a person is
+watching. One semaphore would let a Deep job holding eight slots make every
+chat wait for an ingest, and a busy afternoon of chat stall the ingest
+queue. The fallback answer model is also a local Ollama whose cost is this
+host's CPU, which Deep calls to a remote gateway must not spend. Separate
+budgets give each path a floor whatever the other is doing. A question that
+cannot get an answer slot within `ANSWER_SLOT_WAIT` is refused as
+`reason: answer_capacity`, the same **503** shape, so "raise
+`QUERY_MAX_ACTIVE`" and "raise `ANSWER_MAX_INFLIGHT`" stay distinguishable.
+
+**Deadline semantics: cooperative, with the network boundary enforced** —
+the same claim ingest makes, and no stronger. The deadline is checked before
+every outbound call and while waiting for a slot; each answer attempt's
+socket timeout is clamped to the time left and a retry there is no time for
+is skipped; the fallback model is not tried with no time left; the query's
+own embedding call goes through the ingest embedding wrapper, which already
+honours the guard. What is *not* interrupted: a lexical index rebuild on the
+request thread, a store lookup, a local model's forward pass, and an Ollama
+call — its client timeout is fixed at construction and `chat` takes none per
+call, so it is refused before it starts but never shortened. A question can
+overshoot `QUERY_TIMEOUT` by the longest such stage, never by a whole
+provider timeout on top. When it passes, the answer is **504**,
+`timed_out: true`. Capacity — admission, the answer slot, the pipeline
+lease — is released on every exit.
+
+**Local models are loaded once per name.** A pipeline is built per browser
+session and knowledge base; each used to load its own copy of the
+sentence-transformers embedder (and, on the legacy profile, the
+cross-encoder), so `PIPELINE_CACHE_MAX` was also a multiplier on model
+memory. Both are now shared process-wide by model name; `caches.local_models`
+on the metrics endpoint shows what is resident and how often it was loaded.
+
+**The Lab's search endpoints run under the same limits.** `POST
+/api/chunks/search-vector`, `/api/chunks/search-bm25`,
+`/api/experiment/search_chunks` and `/api/experiment/rank_chunks` do the
+front half of a query on the request thread — embed the question, search the
+store, build the lexical index if this pipeline has not built it yet — so
+under no limit at all they were a way around `QUERY_MAX_ACTIVE`: a burst of
+them could hold every request thread, each waiting an unbounded time for an
+embedding slot. They take the same admission counter (the bound is on
+request threads doing retrieval, whichever endpoint asked), the same
+deadline, the same pipeline lease and the same telemetry, under
+`mode: lab.*` so an operator can tell them from chat. They make no
+answer-model call, so they are given no answer budget. Their answers are
+unchanged apart from the two refusals every query path shares: **503** when
+admission is full, **504** past the deadline.
+
+**A limit is never a fallback.** The enhancement paths degrade on purpose —
+a clarification the model could not produce falls back to the original
+question, a strategy to hybrid, a document summary to the title — and that
+stays. It must not extend to a deadline, a refused budget or a
+cancellation: swallowed into a fallback, those become a query that runs on
+past its deadline making calls that are refused in turn and then answers
+from heuristics as though nothing happened. `RESOURCE_CONTROL_EXCEPTIONS`
+(`core/exceptions.py`) names the four, and every fallback handler in the
+query enhancer, the contextual enhancer, the LLM reranker and the pipeline
+re-raises them first.
+
+**Every query is measured with the ingest instrument.** A query is a trace
+of kind `query` with stages `retrieve`, `rerank` (legacy profile), `context`
+and `answer`, plus provider seconds and slot wait recorded by the budget
+wrapper. `GET /api/ops/metrics` carries `metrics.queries` — active and peak
+active, p50/p95/max per stage, provider wait, outcomes (`succeeded`,
+`failed`, `timed_out`, `rejected`) and the last few traces — and `query`
+(admission and answer-budget counters, the limits, the deadline semantics
+in one sentence). `/api/health` carries one line: `query.active`,
+`max_active`, `answer_inflight`, `answer_limit`, and reports `overloaded`
+while every query slot is in use. The response's `metadata.query` carries
+the same timing for that one question, so a slow answer can be correlated
+with the metrics by `query_id`. The log carries the question's length, the
+stage times and the outcome; never the question, a chunk or the answer. The
+legacy profile's step-by-step retrieval trace — which used to print the
+question, the clarified rewrite, every generated variation and the
+conversation so far to stdout, a deployment's log stream — is at `DEBUG`
+with the rest of the content-bearing output, so `LOG_FILE_LEVEL=DEBUG` still
+gets all of it and the default gets none of it.
 
 ## Operating it: health, metrics and the caches
 

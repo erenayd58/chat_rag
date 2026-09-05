@@ -83,6 +83,17 @@ class Settings:
         self.pipeline_cache_max = self.ingest_limits.pipeline_cache_max
         self.pipeline_cache_ttl = self.ingest_limits.pipeline_cache_ttl_seconds
 
+        # Bounded queries (config/query.py documents every knob): admission,
+        # the answer-model budget and the query deadline. Validated here for
+        # the same reason the ingest limits are.
+        from .query import query_limits_from_env
+
+        self.query_limits = query_limits_from_env()
+        self.query_max_active = self.query_limits.max_active
+        self.answer_max_inflight = self.query_limits.answer_max_inflight
+        self.query_timeout = self.query_limits.timeout_seconds
+        self.answer_slot_wait = self.query_limits.answer_wait_seconds
+
         # Answer model (chat generation). The final chain answers with an
         # OpenAI-compatible gateway model (minimax/minimax-m2.7 through
         # OpenRouter in the demo) and keeps a local Ollama model as the

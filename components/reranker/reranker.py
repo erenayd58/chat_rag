@@ -7,7 +7,7 @@ from typing import List
 from components.llm import BaseLLM
 from .base import BaseReranker
 from core.models import RetrievalResult
-from core.exceptions import LLMException
+from core.exceptions import LLMException, RESOURCE_CONTROL_EXCEPTIONS
 from utils.logger import get_logger
 
 
@@ -105,8 +105,11 @@ Response:"""
             self.logger.debug("LLM RERANK END")
             self.logger.debug("="*80)
             return reranked
+        except RESOURCE_CONTROL_EXCEPTIONS:
+            # The query's limits are not a reranking error to fall back from.
+            raise
         except Exception as e:
-            print(f"Error in reranking: {e}")
+            self.logger.warning(f"Reranking failed, keeping the retrieval order: {e}")
             return results[:top_k]
     
     def get_name(self) -> str:

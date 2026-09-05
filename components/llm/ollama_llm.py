@@ -53,7 +53,15 @@ class OllamaLLM(BaseLLM):
     ) -> str:
         """Generate text from messages"""
         from utils.logger import RAGLogger
-        
+        from components.ingest.limits import current_guard
+
+        # Cooperative only: the client timeout is fixed when it is built and
+        # ``chat`` takes none per call, so a query deadline can refuse to
+        # start this call but cannot shorten one that has started. The
+        # query limits document this as the one unclampable transport.
+        guard = current_guard()
+        if guard is not None:
+            guard.check()
         try:
             # Log request
             RAGLogger.log_llm_request(logger, messages, temperature, max_tokens)

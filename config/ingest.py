@@ -62,9 +62,11 @@ Parsing, chunking, indexing          ``INGEST_WORKERS``
 Built pipelines (models, stores,     ``PIPELINE_CACHE_MAX`` /
 lexical indexes)                     ``PIPELINE_CACHE_TTL``
 Viewer packaging (no provider call)  its single worker thread
-Answer model at query time           ``WAITRESS_THREADS`` -- one call per
-                                     request thread, and no ingest path
-                                     reaches it
+Answer model at query time           ``ANSWER_MAX_INFLIGHT`` (global); the
+                                     request threads a query may hold are
+                                     bounded by ``QUERY_MAX_ACTIVE`` and the
+                                     whole query by ``QUERY_TIMEOUT``
+                                     (config/query.py)
 ===================================  =====================================
 """
 

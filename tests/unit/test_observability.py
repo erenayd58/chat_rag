@@ -138,7 +138,7 @@ def test_a_trace_carries_no_document_content():
     rendered = str(trace.as_dict())
     assert "characters" not in rendered, "counts live on the stage, not in the summary"
     assert set(trace.as_dict()) == {
-        "job_id", "kb_id", "mode", "status", "error_category", "queue_seconds",
+        "job_id", "kb_id", "mode", "kind", "status", "error_category", "queue_seconds",
         "total_seconds", "stages", "failed_stages", "provider", "embedding",
     }
 

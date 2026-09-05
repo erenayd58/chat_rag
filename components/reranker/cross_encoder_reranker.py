@@ -10,13 +10,46 @@ os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 os.environ.setdefault('MKL_NUM_THREADS', '1')
 os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
 
-from typing import List
+import threading
+from typing import Dict, List
 import numpy as np
 from sentence_transformers import CrossEncoder
 from .base import BaseReranker
 from core.models import RetrievalResult
 from core.exceptions import RAGException
 from utils.logger import get_logger
+
+# One loaded cross-encoder per name, process-wide, for the same reason the
+# sentence-transformers embedder shares its models: a reranker is built per
+# pipeline, a pipeline per session and knowledge base, and the weights are
+# the same every time. Inference is reentrant; only the lookup is locked.
+_models_lock = threading.Lock()
+_models: Dict[str, CrossEncoder] = {}
+_loads = 0
+
+
+def shared_model(model_name: str, device: str = 'cpu') -> CrossEncoder:
+    global _loads
+    key = f"{model_name}@{device}"
+    with _models_lock:
+        model = _models.get(key)
+        if model is None:
+            model = CrossEncoder(model_name, device=device)
+            _models[key] = model
+            _loads += 1
+        return model
+
+
+def model_stats() -> dict:
+    with _models_lock:
+        return {"loaded": sorted(_models), "count": len(_models), "loads": _loads}
+
+
+def release_models() -> int:
+    with _models_lock:
+        had = len(_models)
+        _models.clear()
+        return had
 
 
 class CrossEncoderReranker(BaseReranker):
@@ -38,9 +71,9 @@ class CrossEncoderReranker(BaseReranker):
         self.logger = get_logger("CrossEncoderReranker")
         
         try:
-            # Default to CPU to avoid OMP conflicts
+            # Default to CPU to avoid OMP conflicts; one instance per name.
             device = device or 'cpu'
-            self.model = CrossEncoder(model_name, device=device)
+            self.model = shared_model(model_name, device)
         except Exception as e:
             raise RAGException(f"Failed to load cross-encoder model {model_name}: {e}")
     
@@ -122,7 +155,7 @@ class CrossEncoderReranker(BaseReranker):
             self.logger.debug("="*80)
             
             return sorted_results[:top_k]
-            
+
         except Exception as e:
             print(f"Error in cross-encoder reranking: {e}")
             # Fallback to original results

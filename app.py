@@ -2,6 +2,7 @@
 """
 Flask web application for RAG Chat
 """
+import functools
 import gc
 import json
 import os
@@ -16,7 +17,10 @@ os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 os.environ.setdefault('MKL_NUM_THREADS', '1')
 os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
 
-from flask import Flask, render_template, request, jsonify, session, redirect, has_request_context
+from flask import (
+    Flask, has_request_context, jsonify, make_response, redirect, render_template, request,
+    session,
+)
 from flask_cors import CORS
 import uuid
 from datetime import datetime
@@ -28,10 +32,14 @@ from components.knowledgebase.manager import KnowledgeBaseManager
 from components.provenance import capture as capture_pipeline_snapshot
 from core.exceptions import (
     ConfigurationException, IndexIncompatibleException, IngestOverloaded, LLMException,
+    QueryOverloaded, QueryTimeout, RESOURCE_CONTROL_EXCEPTIONS,
 )
 from components.ingest import (
     IngestManager, JobJournal, PipelineCache, configure_budget, configure_embedding_budget,
     sweep_staging,
+)
+from components.query import (
+    QUERY_DEADLINE_SEMANTICS, QueryAdmission, answer_budget, configure_answer_budget, query_scope,
 )
 from components.observability import events, telemetry as T
 from config import paths
@@ -92,6 +100,25 @@ gold_manager = GoldSetManager()
 # other (see components/ingest/limits.py).
 configure_budget(settings.provider_max_inflight)
 configure_embedding_budget(settings.embedding_max_inflight)
+# The third: answer-model calls, shared by every session. Separate from the
+# two above on purpose (components/query/limits.py says why).
+configure_answer_budget(settings.answer_max_inflight)
+
+#: How many request threads may be inside a query at once. A query runs on
+#: the thread that received it -- retrieval, context, the answer call -- so
+#: this, not the answer budget, is what keeps a burst of questions from
+#: taking every thread and locking out /api/health. A question that finds
+#: no slot is refused at once with 503 and a Retry-After; it is never queued,
+#: because a queued query would hold the very thread this keeps free.
+query_admission = QueryAdmission(settings.query_max_active)
+if settings.query_limits.free_threads < 1:
+    logger.warning(
+        "QUERY_MAX_ACTIVE (%d) + INGEST_SYNC_WAITERS (%d) leaves no request thread "
+        "free out of WAITRESS_THREADS (%d); health and status may be starved under a "
+        "burst of both. Lower one of them or raise the thread count.",
+        settings.query_max_active, settings.query_limits.sync_waiters,
+        settings.query_limits.request_threads,
+    )
 
 # Built pipelines, per session and knowledge base, bounded (see
 # components/ingest/pipelines.py for why the session stays in the key and how
@@ -660,45 +687,68 @@ def lab_page():
 
 @app.route('/api/query', methods=['POST'])
 def query():
-    """Process user query"""
+    """Answer one question.
+
+    The whole query runs on this request thread, under three bounds
+    (components/query/limits.py): admission -- at most ``QUERY_MAX_ACTIVE``
+    threads may be in here at once, and one more is refused with **503**
+    and a ``Retry-After`` rather than queued; the answer budget -- at most
+    ``ANSWER_MAX_INFLIGHT`` answer-model calls in flight process-wide, a
+    wait for one bounded by ``ANSWER_SLOT_WAIT`` and refused as **503**
+    ``answer_capacity`` when it runs out; and the deadline --
+    ``QUERY_TIMEOUT`` seconds in total, answered **504** when it passes.
+    Every path out releases what it held, and every query is measured.
+    """
     try:
         data = request.json
         user_question = data.get('question', '').strip()
-        
-        logger.info(f"Received query request: {user_question}")
-        
+
+        # The question is the user's text; the log carries its size, not it.
+        logger.info(f"Received query request: {len(user_question)} chars")
+
         if not user_question:
             logger.warning("Empty question received")
             return jsonify({'error': 'Question is required'}), 400
-        
+
         # Get session-specific pipeline
         session_id = session.get('session_id', str(uuid.uuid4()))
         logger.debug(f"Session ID: {session_id}")
         kb_id = data.get('kb_id')
-        user_pipeline = get_pipeline(session_id, kb_id)
-        
-        # Process query
-        logger.info("Processing query through RAG pipeline")
-        result = user_pipeline.query(
-            question=user_question,
-            top_k=data.get('top_k', 5),
-            use_query_expansion=data.get('use_query_expansion', True),
-            use_reranking=data.get('use_reranking', True),
-            retrieval_method=data.get('retrieval_method', kb_manager.get(kb_id).get('retrieval_method') if kb_id and kb_manager.get(kb_id) else 'hybrid'),
-            temperature=data.get('temperature', 0.3),
-            max_tokens=data.get('max_tokens', 500)
-        )
-        
+
+        with query_scope(
+            query_admission, timeout_seconds=settings.query_timeout, kb_id=kb_id,
+            mode=settings.retrieval_profile, session_id=session_id,
+        ) as scope:
+            # Leased, not merely fetched: a burst of other sessions must not
+            # be able to evict this pipeline and close its store mid-query.
+            with pipeline_cache.lease_via(get_pipeline, session_id, kb_id) as user_pipeline:
+                logger.info("Processing query through RAG pipeline")
+                result = user_pipeline.query(
+                    question=user_question,
+                    top_k=data.get('top_k', 5),
+                    use_query_expansion=data.get('use_query_expansion', True),
+                    use_reranking=data.get('use_reranking', True),
+                    retrieval_method=data.get('retrieval_method', kb_manager.get(kb_id).get('retrieval_method') if kb_id and kb_manager.get(kb_id) else 'hybrid'),
+                    temperature=data.get('temperature', 0.3),
+                    max_tokens=data.get('max_tokens', 500)
+                )
+
         logger.info("Query processed successfully")
         logger.debug(f"Answer length: {len(result['answer'])} chars, Sources: {len(result['sources'])}")
-        
+
+        metadata = dict(result['metadata'] or {})
+        metadata['query'] = scope.timing()
         return jsonify({
             'success': True,
             'answer': result['answer'],
             'sources': result['sources'],
-            'metadata': result['metadata']
+            'metadata': metadata
         })
-        
+
+    except QueryOverloaded as full:
+        return _overloaded_response(full)
+    except QueryTimeout as late:
+        return _timed_out_response(late)
     except LLMException as e:
         # Retrieval and ingestion do not need a language model, so a missing
         # one is a temporarily unavailable feature rather than a broken app.
@@ -714,6 +764,98 @@ def query():
             'success': False,
             'error': str(e)
         }), 500
+
+
+def _overloaded_response(full: QueryOverloaded):
+    """The one answer an overloaded query path gives, wherever it is refused.
+
+    Deterministic and immediate: no slot, no waiting on this thread.
+    ``reason`` says which limit refused it, because "raise QUERY_MAX_ACTIVE"
+    and "raise ANSWER_MAX_INFLIGHT" are different decisions.
+    """
+    logger.warning(f"Query refused ({full.reason}): {full}")
+    response = jsonify({
+        'success': False,
+        'overloaded': True,
+        'reason': full.reason,
+        'retry_after_seconds': full.retry_after_seconds,
+        'error': str(full),
+    })
+    response.headers['Retry-After'] = str(int(full.retry_after_seconds))
+    return response, 503
+
+
+def _timed_out_response(late: QueryTimeout):
+    """The one answer a query past its deadline gives."""
+    logger.warning(f"Query timed out: {late}")
+    return jsonify({
+        'success': False,
+        'timed_out': True,
+        'timeout_seconds': settings.query_timeout,
+        'error': (
+            f"The request could not be completed within {settings.query_timeout:.0f} seconds. "
+            "Try again, or ask a narrower question."
+        ),
+    }), 504
+
+
+def bounded_retrieval(mode: str):
+    """Run a read-only retrieval endpoint under the query path's limits.
+
+    The Lab's search endpoints do the front half of a query on the request
+    thread, exactly as ``/api/query`` does: embed the question (a provider
+    call when the embedding model is remote), search the store, and build
+    the knowledge base's lexical index if this pipeline has not built it
+    yet. Under no limit at all -- which is how they ran -- a burst of them
+    could hold every request thread, each waiting an unbounded time for an
+    embedding slot, and that is precisely the starvation ``QUERY_MAX_ACTIVE``
+    exists to prevent. They would have been a way around it.
+
+    They make **no** answer-model call, so they need no answer budget and
+    get none. What they need is the three things the query path already
+    has, and this adds exactly those: admission (the same counter, so the
+    bound is on request threads doing retrieval, whichever endpoint asked),
+    the query deadline (which is what bounds the embedding-slot wait, since
+    the embedding wrapper reads the same guard), and the measurement, under
+    their own ``mode`` so an operator can tell Lab traffic from chat.
+
+    The view body is untouched: it calls ``get_pipeline`` as it always did
+    and is handed the entry this lease is holding, so the store cannot be
+    closed under it by an unrelated eviction either.
+    """
+
+    def decorate(view):
+        @functools.wraps(view)
+        def wrapper(*args, **kwargs):
+            payload = request.get_json(silent=True) or {}
+            kb_id = payload.get('kb_id') or request.args.get('kb_id')
+            session_id = session.get('session_id', 'global')
+            try:
+                with query_scope(
+                    query_admission, timeout_seconds=settings.query_timeout,
+                    kb_id=kb_id, mode=mode, session_id=session_id,
+                ) as scope:
+                    with pipeline_cache.lease_via(get_pipeline, session_id, kb_id):
+                        # These endpoints are retrieval from end to end, so
+                        # the whole view is the retrieve stage and Lab
+                        # traffic lands in the same per-stage summary.
+                        with T.stage(T.RETRIEVE):
+                            answer = make_response(view(*args, **kwargs))
+                    # The views answer their own errors with a status rather
+                    # than raising, so the scope has to be told: a 500
+                    # counted as a successful query would make the metrics
+                    # lie in the one direction that matters.
+                    if answer.status_code >= 500:
+                        scope.failed(f"the endpoint answered {answer.status_code}")
+                    return answer
+            except QueryOverloaded as full:
+                return _overloaded_response(full)
+            except QueryTimeout as late:
+                return _timed_out_response(late)
+
+        return wrapper
+
+    return decorate
 
 
 @app.route('/api/clear', methods=['POST'])
@@ -811,6 +953,11 @@ def _service_state() -> tuple[str, bool, list]:
         if capacity['running'] >= capacity['workers']:
             status = 'overloaded'
             reasons.append('the ingest queue is full; uploads are being refused')
+    # The same state for the other path: every query slot in use means a
+    # question arriving now is refused. Transient, like a full queue.
+    if query_admission.saturated:
+        status = 'overloaded'
+        reasons.append('every query slot is in use; questions are being refused')
     # After the queue check, because the two states are not equal: being full
     # is transient and needs patience, while every recent job failing needs a
     # person. Degraded therefore wins when both are true.
@@ -863,7 +1010,22 @@ def health_check():
             'embedding_inflight': capacity['budgets']['embedding']['inflight'],
             'embedding_limit': capacity['budgets']['embedding']['limit'],
         },
+        'query': _query_capacity(),
     })
+
+
+def _query_capacity() -> dict:
+    """One line of query capacity: threads in a query, answer calls in
+    flight, and both limits. Snapshot reads under short locks, so this
+    answers while every query slot is busy -- which is when it is asked."""
+    admission = query_admission.snapshot()
+    budget = answer_budget().snapshot()
+    return {
+        'active': admission['active'],
+        'max_active': admission['limit'],
+        'answer_inflight': budget['inflight'],
+        'answer_limit': budget['limit'],
+    }
 
 
 @app.route('/api/ops/metrics', methods=['GET'])
@@ -890,10 +1052,17 @@ def ops_metrics():
         'ready': ready,
         'reasons': reasons,
         'ingest': capacity,
+        'query': {
+            'admission': query_admission.snapshot(),
+            'answer_budget': answer_budget().snapshot(),
+            'limits': settings.query_limits.to_dict(),
+            'deadline_semantics': QUERY_DEADLINE_SEMANTICS,
+        },
         'metrics': T.metrics().snapshot(recent=recent),
         'caches': {
             'pipelines': pipeline_cache.snapshot(),
             'viewer_boundary_model': _viewer_model_stats(),
+            'local_models': _local_model_stats(),
         },
     })
 
@@ -902,6 +1071,21 @@ def _viewer_model_stats() -> dict:
     from components.viewer import analysis as viewer_analysis
 
     return viewer_analysis.boundary_model_stats()
+
+
+def _local_model_stats() -> dict:
+    """The shared local models at query time -- sentence-transformers
+    embedders and cross-encoder rerankers -- by name, with how often each
+    was actually loaded. Only modules already imported are asked, so this
+    costs nothing on a deployment that uses neither."""
+    stats = {}
+    embedding = sys.modules.get('components.embedding.sentence_transformer_embedding')
+    if embedding is not None:
+        stats['sentence_transformers'] = embedding.model_stats()
+    reranker = sys.modules.get('components.reranker.cross_encoder_reranker')
+    if reranker is not None:
+        stats['cross_encoders'] = reranker.model_stats()
+    return stats
 
 
 # Legacy route redirects: the old documents screen became the KB detail
@@ -992,6 +1176,7 @@ def get_chunks():
 
 
 @app.route('/api/chunks/search-vector', methods=['POST'])
+@bounded_retrieval('lab.search_vector')
 def search_chunks_vector():
     """Search chunks using vector similarity"""
     try:
@@ -1069,6 +1254,10 @@ def search_chunks_vector():
             }
         })
 
+    except RESOURCE_CONTROL_EXCEPTIONS:
+        # The limits answer for themselves (see bounded_retrieval); a
+        # deadline is not a 500.
+        raise
     except Exception as e:
         logger.error(f"Vector search failed: {e}", exc_info=True)
         return jsonify({
@@ -1116,6 +1305,7 @@ def get_chunk(chunk_id):
 
 
 @app.route('/api/chunks/search-bm25', methods=['POST'])
+@bounded_retrieval('lab.search_bm25')
 def search_chunks_bm25():
     """Search chunks using BM25 keyword index with pagination"""
     try:
@@ -1186,6 +1376,8 @@ def search_chunks_bm25():
             }
         })
 
+    except RESOURCE_CONTROL_EXCEPTIONS:
+        raise
     except Exception as e:
         logger.error(f"BM25 search failed: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -2238,6 +2430,7 @@ def cancel_ingest_job(job_id):
 
 # --- Retrieval Experimentation APIs ---
 @app.route('/api/experiment/search_chunks', methods=['POST'])
+@bounded_retrieval('lab.experiment_search')
 def experiment_search_chunks():
     """Search chunks for experimentation, using KB-specific pipeline"""
     try:
@@ -2303,11 +2496,14 @@ def experiment_search_chunks():
             return jsonify({'success': False, 'error': 'Unknown retrieval method'}), 400
         
         return jsonify({'success': True, 'chunks': chunks, 'retrieval_method': method, 'query': query})
+    except RESOURCE_CONTROL_EXCEPTIONS:
+        raise
     except Exception as e:
         logger.error(f"Experiment search failed: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/experiment/rank_chunks', methods=['POST'])
+@bounded_retrieval('lab.experiment_rank')
 def experiment_rank_chunks():
     """Rank selected chunks using KB-specific pipeline"""
     try:
@@ -2389,6 +2585,8 @@ def experiment_rank_chunks():
                 })
         
         return jsonify({'success': True, 'results': output, 'query': query, 'method': method, 'ranking': ranked})
+    except RESOURCE_CONTROL_EXCEPTIONS:
+        raise
     except Exception as e:
         logger.error(f"Experiment rank failed: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500

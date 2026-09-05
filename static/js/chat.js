@@ -215,7 +215,27 @@ async function sendQuestion() {
     addAssistantMessage(data.answer, data.sources, data.metadata);
   } catch (e) {
     removeTyping();
-    if (e.body && e.body.generation_unavailable) {
+    if (e.body && e.body.overloaded) {
+      // The server refused the question rather than queue it: every query
+      // slot (or every answer-model slot) is in use. The question is put
+      // back so one click re-sends it after the suggested pause.
+      const wait = Math.max(1, Math.round(Number(e.body.retry_after_seconds) || 5));
+      input.value = question;
+      addNotice(
+        '<strong>The server is busy right now.</strong> ' +
+        (e.body.reason === 'answer_capacity'
+          ? 'Every answer-model slot is in use. '
+          : 'Every question slot is in use. ') +
+        'Your question was not lost — try sending it again in about ' + wait + ' seconds.'
+      );
+    } else if (e.body && e.body.timed_out) {
+      input.value = question;
+      addNotice(
+        '<strong>The question took too long to answer</strong> and was stopped at the time limit. ' +
+        'Try again, or ask a narrower question.',
+        'error'
+      );
+    } else if (e.body && e.body.generation_unavailable) {
       addNotice(
         '<strong>Answer generation is currently unavailable</strong> — the language model could not be reached. ' +
         'Doküman retrieval still works: you can inspect what would have been retrieved in the <a href="/lab">Lab</a>.' +

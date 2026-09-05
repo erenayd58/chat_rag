@@ -9,7 +9,7 @@ from nltk.corpus import stopwords
 import nltk
 from components.llm import BaseLLM
 from core.models import QueryClarification, SearchStrategy, SearchQuery
-from core.exceptions import LLMException
+from core.exceptions import LLMException, RESOURCE_CONTROL_EXCEPTIONS
 from utils.logger import get_logger, RAGLogger
 import re
 
@@ -148,7 +148,7 @@ Response:"""
             
             # Validate response
             if not response or not response.strip():
-                print("Warning: Empty response from LLM")
+                self.logger.warning("Empty clarification response from the model")
                 return QueryClarification(
                     clarified_query=current_query,
                     needs_clarification=False,
@@ -196,6 +196,12 @@ Response:"""
                 confidence=result.get('confidence', 'medium')
             )
             
+        except RESOURCE_CONTROL_EXCEPTIONS:
+            # The query is over -- its deadline passed, or capacity refused
+            # it. Falling back to the original question here would hide that
+            # and let the query go on spending time and slots it does not
+            # have (core/exceptions.py).
+            raise
         except json.JSONDecodeError as e:
             self.logger.warning(f"Clarification JSON decode failed: {e}")
             return QueryClarification(
@@ -267,7 +273,7 @@ Response:"""
             
             # Validate response
             if not response or not response.strip():
-                print("Warning: Empty response from LLM")
+                self.logger.warning("Empty strategy response from the model")
                 return SearchStrategy(
                     recommended_strategy="hybrid",
                     reasoning="LLM returned empty response, using hybrid",
@@ -322,6 +328,8 @@ Response:"""
                 use_reranking=result.get('use_reranking', True)
             )
             
+        except RESOURCE_CONTROL_EXCEPTIONS:
+            raise
         except json.JSONDecodeError as e:
             self.logger.warning(f"Strategy JSON decode failed: {e}")
             return SearchStrategy(
@@ -396,7 +404,7 @@ Response:"""
             
             # Validate response
             if not response or not response.strip():
-                print("Warning: Empty response from LLM")
+                self.logger.warning("Empty query-generation response from the model")
                 return [
                     SearchQuery(text=clarified_query, type='original', purpose='primary'),
                     SearchQuery(text=original_query, type='original', purpose='fallback')
@@ -447,6 +455,8 @@ Response:"""
                 SearchQuery(text=clarified_query, type='original', purpose='primary')
             ]
             
+        except RESOURCE_CONTROL_EXCEPTIONS:
+            raise
         except json.JSONDecodeError as e:
             self.logger.warning(f"Query generation JSON decode failed: {e}")
             return [
@@ -503,8 +513,10 @@ Response:"""
             
             expanded = json.loads(content)
             return [query] + expanded[:3]
+        except RESOURCE_CONTROL_EXCEPTIONS:
+            raise
         except Exception as e:
-            print(f"Error expanding query: {e}")
+            self.logger.warning(f"Query expansion failed: {e}")
             return [query]
     
     def extract_keywords(self, query: str) -> List[str]:
@@ -570,8 +582,10 @@ Response:"""
                 content = content.split('```')[1].split('```')[0].strip()
             
             return json.loads(content)
+        except RESOURCE_CONTROL_EXCEPTIONS:
+            raise
         except Exception as e:
-            print(f"Error understanding intent: {e}")
+            self.logger.warning(f"Intent analysis failed: {e}")
             return {
                 "main_topic": query,
                 "query_type": "general",

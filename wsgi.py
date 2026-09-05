@@ -50,6 +50,15 @@ uploads can never occupy every request thread and leave ``/api/health`` and
 job polling unanswerable. An upload that finds no waiting slot is still
 accepted and still runs; it is answered 202 with its job.
 
+A question is answered on the request thread that received it, so the same
+kind of bound applies to chat (``components/query/limits.py``): at most
+``QUERY_MAX_ACTIVE`` threads may be inside a query at once -- by default
+``WAITRESS_THREADS - INGEST_SYNC_WAITERS - 1``, so questions and synchronous
+uploads together can never take every thread -- one more is refused at once
+with 503 and a ``Retry-After`` rather than queued, answer-model calls share
+``ANSWER_MAX_INFLIGHT`` process-wide, and the whole query runs under
+``QUERY_TIMEOUT``.
+
 A restart is not a clean slate for clients: a job id handed out before it is
 still answerable afterwards, because jobs journal their transitions and
 start-up settles anything in flight against the ingest ledger

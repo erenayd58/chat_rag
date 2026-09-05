@@ -3,7 +3,8 @@
 Sentence Transformer embedding implementation
 """
 import os
-from typing import List, Union
+import threading
+from typing import Dict, List, Union
 import numpy as np
 
 # Set OpenMP environment variables BEFORE importing SentenceTransformer
@@ -16,6 +17,48 @@ os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
 from sentence_transformers import SentenceTransformer
 from .base import BaseEmbedding
 from core.exceptions import EmbeddingException
+
+# One loaded model per name, process-wide. A pipeline is built per browser
+# session and knowledge base (components/ingest/pipelines.py), and each used
+# to load its own copy of the same weights: PIPELINE_CACHE_MAX pipelines was
+# PIPELINE_CACHE_MAX copies of one model, evicted and reloaded as sessions
+# came and went. The weights are read-only at inference and a forward pass
+# is reentrant, so sharing one instance across threads costs nothing but
+# the lock taken to look it up. Bounded by the number of distinct model
+# names in configuration, which is small and does not grow with traffic.
+_models_lock = threading.Lock()
+_models: Dict[str, SentenceTransformer] = {}
+_loads = 0
+
+
+def shared_model(model_name: str) -> SentenceTransformer:
+    """The one instance of ``model_name`` this process holds, loading it on
+    first use. Loading happens under the lock so two pipelines built at
+    once load one model rather than two."""
+    global _loads
+    with _models_lock:
+        model = _models.get(model_name)
+        if model is None:
+            model = SentenceTransformer(model_name, device='cpu')
+            _models[model_name] = model
+            _loads += 1
+        return model
+
+
+def model_stats() -> dict:
+    """Which models are resident and how often one was loaded. ``loads``
+    above the number of names means something is dropping instances."""
+    with _models_lock:
+        return {"loaded": sorted(_models), "count": len(_models), "loads": _loads}
+
+
+def release_models() -> int:
+    """Drop every shared model. For tests, and for an operator reclaiming
+    memory on a process that has moved to a remote provider."""
+    with _models_lock:
+        had = len(_models)
+        _models.clear()
+        return had
 
 
 class SentenceTransformerEmbedding(BaseEmbedding):
@@ -31,9 +74,9 @@ class SentenceTransformerEmbedding(BaseEmbedding):
         self.model_name = model_name
         
         try:
-            # Use CPU device and disable multiprocessing to avoid OMP conflicts
-            # Set these environment variables here as a fallback (should be set in app.py already)
-            self.model = SentenceTransformer(model_name, device='cpu')
+            # CPU, single-threaded (the OMP variables above), and shared:
+            # every pipeline naming this model uses the one instance.
+            self.model = shared_model(model_name)
         except Exception as e:
             raise EmbeddingException(f"Failed to load model {model_name}: {e}")
     

@@ -50,6 +50,20 @@ VIEWER = "viewer_stage"
 
 STAGES = (QUEUE_WAIT, PARSE, CHUNK, DEEP, EMBED, INDEX, LEDGER, VIEWER)
 
+#: The stages a query passes through. A query is measured with the same
+#: trace and the same ``stage()`` as an ingest; only the names differ, and
+#: the registry keeps the two kinds in separate windows so a bad afternoon
+#: of chat cannot make the ingest picture look wrong or the reverse.
+RETRIEVE = "retrieve"
+RERANK = "rerank"
+CONTEXT = "context"
+ANSWER = "answer"
+
+QUERY_STAGES = (RETRIEVE, RERANK, CONTEXT, ANSWER)
+
+KIND_INGEST = "ingest"
+KIND_QUERY = "query"
+
 #: How many finished traces the registry keeps for its summaries. Each is a
 #: handful of floats and short strings; two hundred of them is a few tens of
 #: kilobytes and cannot grow past that.
@@ -73,12 +87,14 @@ def categorise(error: BaseException | None) -> str:
     from core.exceptions import (
         ChunkerException, ConfigurationException, EmbeddingException,
         IndexIncompatibleException, IngestInterrupted, IngestOverloaded,
-        LLMException, VectorDBException,
+        LLMException, QueryOverloaded, QueryTimeout, VectorDBException,
     )
 
     if isinstance(error, IngestInterrupted):
         return error.kind  # timed_out | cancelled
-    if isinstance(error, IngestOverloaded):
+    if isinstance(error, QueryTimeout):
+        return "timed_out"
+    if isinstance(error, (IngestOverloaded, QueryOverloaded)):
         return "overloaded"
     if isinstance(error, IndexIncompatibleException):
         return "index_incompatible"
@@ -119,6 +135,8 @@ class JobTrace:
     job_id: str
     kb_id: str = ""
     mode: str = ""
+    #: ``ingest`` or ``query``: which window of the registry it is filed in.
+    kind: str = KIND_INGEST
     stages: list[Stage] = field(default_factory=list)
     #: Provider work, accumulated by the budget wrappers rather than by a
     #: stage, because those calls happen inside a pool several layers down.
@@ -167,6 +185,7 @@ class JobTrace:
             "job_id": self.job_id,
             "kb_id": self.kb_id,
             "mode": self.mode,
+            "kind": self.kind,
             "status": self.status,
             "error_category": self.error_category,
             "queue_seconds": round(self.queue_seconds, 4),
@@ -268,6 +287,11 @@ class MetricsRegistry:
     def __init__(self, window: int = RECENT_TRACES):
         self._lock = threading.Lock()
         self._recent: deque[JobTrace] = deque(maxlen=window)
+        #: Queries, apart from jobs: ``recent_outcomes`` below decides
+        #: whether the service is degraded from the ingest window alone.
+        self._recent_queries: deque[JobTrace] = deque(maxlen=window)
+        self._active_queries = 0
+        self._peak_active_queries = 0
         self._counters: Counter[str] = Counter()
         self._errors: Counter[str] = Counter()
         self._messages: dict[str, deque[str]] = {}
@@ -300,7 +324,20 @@ class MetricsRegistry:
 
     def finish(self, trace: JobTrace) -> None:
         with self._lock:
-            self._recent.append(trace)
+            if trace.kind == KIND_QUERY:
+                self._recent_queries.append(trace)
+            else:
+                self._recent.append(trace)
+
+    def begin_query(self) -> None:
+        """One more query is running. The gauge an operator reads first."""
+        with self._lock:
+            self._active_queries += 1
+            self._peak_active_queries = max(self._peak_active_queries, self._active_queries)
+
+    def end_query(self) -> None:
+        with self._lock:
+            self._active_queries = max(0, self._active_queries - 1)
 
     # -- reading
     def _percentile(self, values: list[float], fraction: float) -> float:
@@ -329,6 +366,9 @@ class MetricsRegistry:
         """
         with self._lock:
             traces = list(self._recent)
+            queries = list(self._recent_queries)
+            active_queries = self._active_queries
+            peak_active_queries = self._peak_active_queries
             counters = dict(self._counters)
             errors = dict(self._errors)
             messages = {k: list(v) for k, v in self._messages.items()}
@@ -338,6 +378,13 @@ class MetricsRegistry:
                 seconds = trace.seconds_for(name)
                 if seconds:
                     per_stage.setdefault(name, []).append(seconds)
+        per_query_stage: dict[str, list[float]] = {}
+        for trace in queries:
+            for name in QUERY_STAGES:
+                seconds = trace.seconds_for(name)
+                if seconds:
+                    per_query_stage.setdefault(name, []).append(seconds)
+        limit = min(recent, 25) if recent > 0 else 0
         return {
             "uptime_seconds": round(time.time() - self.started_at, 1),
             "counters": counters,
@@ -351,8 +398,36 @@ class MetricsRegistry:
             "stages": {name: self._summary(values) for name, values in per_stage.items()},
             # ``[-0:]`` is the whole list, which is the opposite of what
             # asking for none should do.
-            "recent": [t.as_dict() for t in (traces[-min(recent, 25):] if recent > 0 else [])],
+            "recent": [t.as_dict() for t in (traces[-limit:] if limit else [])],
+            # The query side of the same instrument. Which stage is slow,
+            # whether the answer budget is the bottleneck (wait), and why
+            # queries ended the way they did (outcomes, from the counters).
+            "queries": {
+                "active": active_queries,
+                "peak_active": peak_active_queries,
+                "measured": len(queries),
+                "window": self._recent_queries.maxlen,
+                "total_seconds": self._summary([t.total_seconds for t in queries]),
+                "stages": {name: self._summary(values) for name, values in per_query_stage.items()},
+                "provider": {
+                    "calls": sum(t.provider_calls for t in queries),
+                    "seconds": self._summary([t.provider_seconds for t in queries if t.provider_calls]),
+                    "wait_seconds": self._summary([t.provider_wait_seconds for t in queries if t.provider_calls]),
+                },
+                "outcomes": {
+                    name.split(".", 1)[1]: count for name, count in counters.items()
+                    if name.startswith("query.") and name != "query.accepted"
+                },
+                "recent": [t.as_dict() for t in (queries[-limit:] if limit else [])],
+            },
         }
+
+    def query_latency(self) -> dict[str, Any]:
+        """Total-time summary over the recent query window. What a refused
+        query's Retry-After is derived from."""
+        with self._lock:
+            queries = list(self._recent_queries)
+        return self._summary([t.total_seconds for t in queries])
 
     def recent_outcomes(self) -> tuple[int, int]:
         """``(measured, failed)`` over the bounded window of recent jobs.
@@ -370,6 +445,9 @@ class MetricsRegistry:
         """For tests: forget everything measured so far."""
         with self._lock:
             self._recent.clear()
+            self._recent_queries.clear()
+            self._active_queries = 0
+            self._peak_active_queries = 0
             self._counters.clear()
             self._errors.clear()
             self._messages.clear()

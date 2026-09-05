@@ -35,10 +35,12 @@ from components.conversation import ConversationManager
 from components.parsers import ParserFactory
 from core.models import DocumentChunk, RetrievalResult, SearchQuery
 from core.exceptions import (
-    ConfigurationException, IndexIncompatibleException, IngestInterrupted, LLMException, RAGException,
+    ConfigurationException, IndexIncompatibleException, IngestInterrupted, LLMException,
+    QueryOverloaded, QueryTimeout, RAGException, RESOURCE_CONTROL_EXCEPTIONS,
 )
 from components.ingest.limits import checkpoint
 from components.observability import telemetry as T
+from components.query.limits import LimitedAnswerModel
 from utils.logger import get_logger, RAGLogger
 
 logger = get_logger("RAGPipeline")
@@ -105,9 +107,15 @@ class RAGPipeline:
         self.vector_db = vector_db or self._create_vectordb()
         self.chunker = chunker or self._create_chunker()
         
-        # Initialize supporting components
+        # Every answer-model call made on behalf of a *query* -- clarification,
+        # strategy, query generation, the LLM reranker and the answer itself --
+        # goes through the budgeted view. The contextual enhancer does not: it
+        # is called only from ``ingest_document`` (a document summary, chunk
+        # enrichment), so its cost is an ingest worker's, bounded by
+        # INGEST_WORKERS as the resource model says. Budgeting it would let an
+        # ingest take a slot reserved for a person waiting on an answer.
         self.contextual_enhancer = ContextualRAGEnhancer(self.llm_model)
-        self.query_enhancer = QueryEnhancer(self.llm_model)
+        self.query_enhancer = QueryEnhancer(self.answer_model)
         if self.retrieval_profile == 'bm25_only':
             self.hybrid_retriever = BM25OnlyRetriever(
                 self.embedding_model,
@@ -160,6 +168,23 @@ class RAGPipeline:
             # Non-fatal; keyword search will lazily build if needed
             pass
     
+    @property
+    def answer_model(self) -> BaseLLM:
+        """The answer model as a query calls it: one budget slot per call,
+        under the query deadline (see components/query/limits.py).
+
+        A view over ``llm_model`` built on access rather than stored, so a
+        test or a tool that swaps ``llm_model`` underneath is honoured and
+        nothing is wrapped twice. The wrapper holds no state, so this costs
+        an object per query and nothing else.
+        """
+        inner = self.llm_model
+        if isinstance(inner, LimitedAnswerModel):
+            return inner
+        limits = getattr(getattr(self, 'settings', None), 'query_limits', None)
+        wait = getattr(limits, 'answer_wait_seconds', None)
+        return LimitedAnswerModel(inner, wait_seconds=wait)
+
     def _create_llm(self) -> BaseLLM:
         """Create the answer model from settings: a primary provider and,
         when configured, a local fallback.
@@ -277,7 +302,7 @@ class RAGPipeline:
             return CrossEncoderReranker(model_name=model_name)
         else:
             # Default to LLM reranker
-            return LLMReranker(self.llm_model)
+            return LLMReranker(self.answer_model)
     
     def ingest_document_from_file(
         self,
@@ -696,9 +721,9 @@ class RAGPipeline:
             return self._retrieve_benchmark_aligned(query, top_k)
 
         try:
-            print(f"\n{'='*80}")
-            print(f"PROCESSING QUERY: '{query}'")
-            print(f"{'='*80}")
+            logger.debug(f"\n{'='*80}")
+            logger.debug(f"PROCESSING QUERY: '{query}'")
+            logger.debug(f"{'='*80}")
             
             metadata = {
                 "original_query": query,
@@ -710,21 +735,23 @@ class RAGPipeline:
             if self.enable_conversation and self.conversation:
                 conversation_context = self.conversation.get_recent_context(num_turns=3)
                 if conversation_context:
-                    print("\n📜 Conversation Context:")
-                    print(conversation_context)
+                    logger.debug("\n📜 Conversation Context:")
+                    logger.debug(conversation_context)
             
             # Step 2: Clarify query using conversation context
-            print("\n🔍 Step 1: Query Clarification")
+            logger.debug("\n🔍 Step 1: Query Clarification")
             clarification = self.query_enhancer.clarify_query_with_context(
                 query, conversation_context
             )
             
             clarified_query = clarification.clarified_query
-            # Extract keywords from the refined query and log details
+            # Extract keywords from the refined query and log details. At
+            # DEBUG: a question is the user's text, and the default log
+            # level carries counts and ids only.
             search_keywords = self.query_enhancer.extract_keywords(clarified_query)
-            logger.info(f"Original query: {query}")
-            logger.info(f"Refined query: {clarified_query}")
-            logger.info(f"Search keywords: {', '.join(search_keywords) if search_keywords else '[]'}")
+            logger.debug(f"Original query: {query}")
+            logger.debug(f"Refined query: {clarified_query}")
+            logger.debug(f"Search keywords: {', '.join(search_keywords) if search_keywords else '[]'}")
             metadata['clarification'] = {
                 'clarified_query': clarification.clarified_query,
                 'needs_clarification': clarification.needs_clarification,
@@ -735,19 +762,19 @@ class RAGPipeline:
             metadata['refined_query'] = clarified_query
             metadata['search_keywords'] = search_keywords
             
-            print(f"  Original: '{query}'")
+            logger.debug(f"  Original: '{query}'")
             if clarification.needs_clarification:
-                print(f"  ✓ Clarified: '{clarified_query}'")
-                print(f"  Reasoning: {clarification.resolution_notes}")
-                print(f"  Confidence: {clarification.confidence}")
+                logger.debug(f"  ✓ Clarified: '{clarified_query}'")
+                logger.debug(f"  Reasoning: {clarification.resolution_notes}")
+                logger.debug(f"  Confidence: {clarification.confidence}")
             else:
-                print(f"  ✓ No clarification needed")
+                logger.debug(f"  ✓ No clarification needed")
             
             if clarification.entities:
-                print(f"  Entities: {', '.join(clarification.entities)}")
+                logger.debug(f"  Entities: {', '.join(clarification.entities)}")
             
             # Step 3: Determine search strategy
-            print("\n🎯 Step 2: Search Strategy Selection")
+            logger.debug("\n🎯 Step 2: Search Strategy Selection")
             strategy = self.query_enhancer.determine_search_strategy(
                 query, clarified_query
             )
@@ -758,10 +785,10 @@ class RAGPipeline:
                 'expected_answer_type': strategy.expected_answer_type
             }
             
-            print(f"  Recommended: {strategy.recommended_strategy.upper()}")
-            print(f"  Query Type: {strategy.query_type}")
-            print(f"  Answer Type: {strategy.expected_answer_type}")
-            print(f"  Reasoning: {strategy.reasoning}")
+            logger.debug(f"  Recommended: {strategy.recommended_strategy.upper()}")
+            logger.debug(f"  Query Type: {strategy.query_type}")
+            logger.debug(f"  Answer Type: {strategy.expected_answer_type}")
+            logger.debug(f"  Reasoning: {strategy.reasoning}")
             
             # Use strategy recommendations or user overrides
             final_top_k = top_k if top_k is not None else strategy.suggested_top_k
@@ -769,10 +796,10 @@ class RAGPipeline:
             final_use_reranking = use_reranking if use_reranking is not None else strategy.use_reranking
             final_method = retrieval_method if retrieval_method is not None else strategy.recommended_strategy
             
-            print(f"  Settings: top_k={final_top_k}, expansion={final_use_expansion}, reranking={final_use_reranking}")
+            logger.debug(f"  Settings: top_k={final_top_k}, expansion={final_use_expansion}, reranking={final_use_reranking}")
             
             # Step 4: Generate optimized search queries
-            print("\n🔎 Step 3: Query Generation")
+            logger.debug("\n🔎 Step 3: Query Generation")
             search_queries = self.query_enhancer.generate_search_queries(
                 query, clarified_query, strategy
             )
@@ -782,13 +809,13 @@ class RAGPipeline:
             ]
             logger.info(f"Generated {len(search_queries)} search query variations")
             
-            print(f"  Generated {len(search_queries)} query variations:")
+            logger.debug(f"  Generated {len(search_queries)} query variations:")
             for i, sq in enumerate(search_queries[:5], 1):
-                print(f"    {i}. [{sq.type}] {sq.text}")
-                print(f"       Purpose: {sq.purpose}")
+                logger.debug(f"    {i}. [{sq.type}] {sq.text}")
+                logger.debug(f"       Purpose: {sq.purpose}")
             
             # Step 5: Retrieve with each query variation
-            print(f"\n📊 Step 4: Retrieval ({final_method} search)")
+            logger.debug(f"\n📊 Step 4: Retrieval ({final_method} search)")
             all_results = {}
             
             # Select queries based on method
@@ -797,14 +824,14 @@ class RAGPipeline:
             if not queries_to_use:
                 queries_to_use = [clarified_query]
             
-            print(f"  Using {len(queries_to_use)} queries for {final_method} search")
+            logger.debug(f"  Using {len(queries_to_use)} queries for {final_method} search")
             # Log search terms
             for q in queries_to_use:
-                logger.info(f"Search term: {q}")
+                logger.debug(f"Search term: {q}")
             
             for i, q in enumerate(queries_to_use, 1):
                 q_text = q if isinstance(q, str) else q.text
-                print(f"  Query {i}/{len(queries_to_use)}: '{q_text[:60]}...'")
+                logger.debug(f"  Query {i}/{len(queries_to_use)}: '{q_text[:60]}...'")
                 
                 if final_method == 'vector':
                     results = self.hybrid_retriever.vector_search(q_text, final_top_k * 3)
@@ -843,7 +870,7 @@ class RAGPipeline:
                 key=lambda x: x.score,
                 reverse=True
             )
-            print(f"  ✓ Retrieved {len(merged_results)} candidate chunks")
+            logger.debug(f"  ✓ Retrieved {len(merged_results)} candidate chunks")
             # Log full retrieval results (human-readable)
             # Gather retrieval configuration details
             vectordb_name = self.vector_db.get_name() if hasattr(self.vector_db, 'get_name') else None
@@ -863,14 +890,15 @@ class RAGPipeline:
             # Step 6: Rerank on all merged results using refined query (clarified_query), then take top-k
             # Always rerank in hybrid mode to utilize ensured inclusion mix
             if (final_use_reranking or final_method == 'hybrid') and len(merged_results) > final_top_k:
-                print(f"\n🎖️  Step 5: Reranking {len(merged_results)} results down to top {final_top_k}")
-                final_results = self.reranker.rerank(clarified_query, merged_results, final_top_k)
-                print(f"  ✓ Reranking complete")
-                print(f"  Used clarified query for reranking: {clarified_query}")
+                logger.debug(f"\n🎖️  Step 5: Reranking {len(merged_results)} results down to top {final_top_k}")
+                with T.stage(T.RERANK, candidates=len(merged_results)):
+                    final_results = self.reranker.rerank(clarified_query, merged_results, final_top_k)
+                logger.debug(f"  ✓ Reranking complete")
+                logger.debug(f"  Used clarified query for reranking: {clarified_query}")
             else:
                 # No rerank or not enough to rerank
                 final_results = merged_results[:final_top_k]
-                print(f"\n✓ Skipping reranking; using top {final_top_k} by score")
+                logger.debug(f"\n✓ Skipping reranking; using top {final_top_k} by score")
             
             metadata['num_results'] = len(final_results)
             
@@ -890,17 +918,21 @@ class RAGPipeline:
                 )
             
             # Print summary
-            print(f"\n{'='*80}")
-            print(f"✅ RETRIEVAL COMPLETE")
-            print(f"{'='*80}")
-            print(f"Results: {len(final_results)}")
+            logger.debug(f"\n{'='*80}")
+            logger.debug(f"✅ RETRIEVAL COMPLETE")
+            logger.debug(f"{'='*80}")
+            logger.debug(f"Results: {len(final_results)}")
             if final_results:
-                print(f"Top Score: {final_results[0].score:.4f}")
-                print(f"Top Result: {final_results[0].chunk.doc_title} - {final_results[0].chunk.section_title}")
-            print(f"{'='*80}\n")
+                logger.debug(f"Top Score: {final_results[0].score:.4f}")
+                logger.debug(f"Top Result: {final_results[0].chunk.doc_title} - {final_results[0].chunk.section_title}")
+            logger.debug(f"{'='*80}\n")
             
             return final_results, metadata
-            
+
+        except RESOURCE_CONTROL_EXCEPTIONS:
+            # The query's own limits speak for themselves; wrapping them
+            # would turn a deadline into a 500.
+            raise
         except Exception as e:
             raise RAGException(f"Retrieval failed: {e}")
 
@@ -935,11 +967,15 @@ class RAGPipeline:
             }
             if self.retrieval_profile == 'hybrid_rrf':
                 stats.setdefault("latency_ms", round((time.perf_counter() - started) * 1000.0, 1))
+                T.annotate(dense_hits=stats.get("dense_hits"), bm25_hits=stats.get("bm25_hits"),
+                           fused=stats.get("fused_candidates"), dense_used=bool(stats.get("dense_used")))
                 metadata["retrieval"] = stats
                 metadata["dense_used"] = bool(stats.get("dense_used"))
                 metadata["reindex_required"] = not bool(stats.get("dense_available"))
                 metadata["dense_unavailable_reason"] = stats.get("dense_unavailable_reason")
             return results, metadata
+        except RESOURCE_CONTROL_EXCEPTIONS:
+            raise
         except Exception as e:
             raise RAGException(f"Retrieval failed: {e}") from e
 
@@ -1007,13 +1043,15 @@ class RAGPipeline:
         (after the fallback, if one is configured); nothing here calls an
         ingest-time model."""
         retriever = self.hybrid_retriever
-        bundle = assemble_context(
-            retrieval_results,
-            max_tokens=int(getattr(self.settings, 'context_max_tokens', 3200)),
-            max_sources=int(getattr(self.settings, 'context_max_sources', 8)),
-            neighbor=getattr(retriever, 'neighbor', None),
-            expand_neighbors=bool(getattr(self.settings, 'context_expand_neighbors', True)),
-        )
+        with T.stage(T.CONTEXT, candidates=len(retrieval_results)):
+            bundle = assemble_context(
+                retrieval_results,
+                max_tokens=int(getattr(self.settings, 'context_max_tokens', 3200)),
+                max_sources=int(getattr(self.settings, 'context_max_sources', 8)),
+                neighbor=getattr(retriever, 'neighbor', None),
+                expand_neighbors=bool(getattr(self.settings, 'context_expand_neighbors', True)),
+            )
+            T.annotate(selected=len(bundle.sources), tokens=bundle.token_count)
         retrieval_ms = round((time.perf_counter() - started) * 1000.0, 1)
 
         user_prompt = "Kaynak parçalar:\n\n" + (bundle.text or "(kaynak bulunamadı)") + "\n\n"
@@ -1033,9 +1071,10 @@ class RAGPipeline:
             # A cited, multi-source answer needs room, and a reasoning model
             # spends part of the budget thinking: the route's default of 500
             # truncated list-style answers mid-item in the live smoke.
-            answer = self.llm_model.generate(
-                messages=messages, temperature=temperature, max_tokens=max(int(max_tokens), 1200)
-            ).strip()
+            with T.stage(T.ANSWER):
+                answer = self.answer_model.generate(
+                    messages=messages, temperature=temperature, max_tokens=max(int(max_tokens), 1200)
+                ).strip()
             call = dict(getattr(self.llm_model, 'last_call', None) or {
                 "provider": getattr(self.llm_model, 'provider_id', self.llm_model.get_name()),
                 "model": self.llm_model.get_model_name(),
@@ -1236,22 +1275,22 @@ class RAGPipeline:
         Returns:
             List of retrieval results
         """
-        print(f"\nProcessing query: '{query}'")
+        logger.debug(f"\nProcessing query: '{query}'")
         
         # Step 1: Understand query intent
-        print("  - Analyzing query intent...")
+        logger.debug("  - Analyzing query intent...")
         intent = self.query_enhancer.understand_intent(query)
-        print(f"    Intent: {intent.get('query_type', 'unknown')}")
+        logger.debug(f"    Intent: {intent.get('query_type', 'unknown')}")
         
         # Step 2: Expand query if needed
         queries = [query]
         if use_query_expansion:
-            print("  - Expanding query...")
+            logger.debug("  - Expanding query...")
             queries = self.query_enhancer.expand_query(query)
-            print(f"    Generated {len(queries)} query variations")
+            logger.debug(f"    Generated {len(queries)} query variations")
         
         # Step 3: Retrieve with each query variation
-        print(f"  - Retrieving with {retrieval_method} search...")
+        logger.debug(f"  - Retrieving with {retrieval_method} search...")
         all_results = {}
         
         for q in queries:
@@ -1287,16 +1326,16 @@ class RAGPipeline:
             reverse=True
         )[:top_k * 2]
         
-        print(f"    Found {len(merged_results)} candidates")
+        logger.debug(f"    Found {len(merged_results)} candidates")
         
         # Step 4: Rerank if requested (always rerank for hybrid to respect inclusion mix)
         if (use_reranking or retrieval_method == 'hybrid') and len(merged_results) > top_k:
-            print("  - Reranking results...")
+            logger.debug("  - Reranking results...")
             final_results = self.reranker.rerank(query, merged_results, top_k)
         else:
             final_results = merged_results[:top_k]
         
-        print(f"✓ Retrieved {len(final_results)} results")
+        logger.debug(f"✓ Retrieved {len(final_results)} results")
         return final_results
     
     def add_assistant_response(self, response: str):
@@ -1315,7 +1354,7 @@ class RAGPipeline:
         """Clear conversation history"""
         if self.enable_conversation and self.conversation:
             self.conversation.clear_history()
-            print("✓ Conversation history cleared")
+            logger.debug("✓ Conversation history cleared")
     
     def get_conversation_entities(self) -> List[str]:
         """Get entities mentioned in recent conversation"""
@@ -1375,7 +1414,7 @@ class RAGPipeline:
         Returns:
             Generated answer
         """
-        logger.info(f"Generating answer for query: {query}")
+        logger.debug(f"Generating answer for query: {query}")
         logger.debug(f"Number of retrieval results: {len(retrieval_results)}")
         
         if not retrieval_results:
@@ -1443,17 +1482,23 @@ Please provide a clear and accurate answer based on the context provided above."
         RAGLogger.log_llm_response(logger, "="*80, success=True)
         
         try:
-            response = self.llm_model.generate(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
+            with T.stage(T.ANSWER):
+                response = self.answer_model.generate(
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
             RAGLogger.log_llm_response(logger, "="*80, success=True)
             # Log full LLM response
             RAGLogger.log_llm_response(logger, response, success=True)
             logger.info(f"Answer generated successfully. Length: {len(response)} chars")
             logger.debug(f"Generated answer: {response}")
             return response.strip()
+        except RESOURCE_CONTROL_EXCEPTIONS:
+            # Not an answer: the query was stopped by its own limits, and
+            # the route turns that into a truthful status rather than a
+            # sentence that looks like a reply.
+            raise
         except Exception as e:
             error_msg = f"I encountered an error while generating the answer: {str(e)}"
             logger.error(f"Answer generation failed: {e}", exc_info=True)
@@ -1486,7 +1531,8 @@ Please provide a clear and accurate answer based on the context provided above."
             Dictionary with 'answer', 'sources', and 'metadata'
         """
         logger.info("="*80)
-        logger.info(f"QUERY START: {question}")
+        logger.info(f"QUERY START: {len(question)} chars")
+        logger.debug(f"Question: {question}")
         logger.info("="*80)
         started = time.perf_counter()
 
@@ -1499,13 +1545,14 @@ Please provide a clear and accurate answer based on the context provided above."
         
         # Retrieve relevant documents
         logger.info("Phase 1: Document Retrieval")
-        retrieval_results, metadata = self.retrieve(
-            query=question,
-            top_k=top_k,
-            use_query_expansion=use_query_expansion,
-            use_reranking=use_reranking,
-            retrieval_method=retrieval_method
-        )
+        with T.stage(T.RETRIEVE):
+            retrieval_results, metadata = self.retrieve(
+                query=question,
+                top_k=top_k,
+                use_query_expansion=use_query_expansion,
+                use_reranking=use_reranking,
+                retrieval_method=retrieval_method
+            )
         
         logger.info(f"Retrieved {len(retrieval_results)} documents")
 
@@ -1517,7 +1564,7 @@ Please provide a clear and accurate answer based on the context provided above."
 
         # Generate answer
         logger.info("Phase 2: Answer Generation")
-        print("\n💬 Generating answer...")
+        logger.debug("\n💬 Generating answer...")
         answer = self.generate_answer(
             query=question,
             retrieval_results=retrieval_results,

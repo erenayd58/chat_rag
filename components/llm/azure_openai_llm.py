@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 from openai import AzureOpenAI
 from .base import BaseLLM
 from utils.logger import RAGLogger, get_logger
+from components.ingest.limits import current_guard, deadline_timeout
 from core.exceptions import LLMException
 
 
@@ -54,6 +55,11 @@ class AzureOpenAILLM(BaseLLM):
             logger = get_logger("AzureOpenAILLM")
             RAGLogger.log_llm_request(logger, messages, temperature, max_tokens)
 
+            # Under a query deadline the request gets the time that is left.
+            guard = current_guard()
+            if guard is not None:
+                guard.check()
+                kwargs.setdefault("timeout", deadline_timeout(None))
             response = self.client.chat.completions.create(
                 model=self.deployment,
                 messages=messages,

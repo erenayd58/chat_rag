@@ -205,6 +205,27 @@ def checkpoint() -> None:
         guard.check()
 
 
+def deadline_timeout(configured: Optional[float]) -> Optional[float]:
+    """A transport's socket timeout, shortened to what the current guard has
+    left. ``configured`` unchanged when no guard is set on this thread.
+
+    For code that runs on the thread that owns the guard -- the answer model
+    on a request thread, unlike Deep's pool -- this is all the clamping there
+    is to do: read the remaining time right before the call and hand it to
+    the socket. Never below a millisecond, so a call made with no time left
+    fails fast rather than waiting forever on a zero.
+    """
+    guard = current_guard()
+    if guard is None:
+        return configured
+    remaining = guard.remaining()
+    if remaining is None:
+        return configured
+    if configured is None:
+        return max(0.001, remaining)
+    return max(0.001, min(float(configured), remaining))
+
+
 # ----------------------------------------------------------- the budgets
 #
 # Two, because they bound two different external services and one must not be
