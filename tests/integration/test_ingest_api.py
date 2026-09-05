@@ -305,7 +305,12 @@ def test_a_full_queue_is_refused_with_a_retry_after(client, jobs, monkeypatch, s
 
     health = test_client.get("/api/health").get_json()
     assert health["ingest"]["running"] == 1 and health["ingest"]["queued"] == 1
-    assert health["ingest"]["stats"]["rejected"] == 1
+    assert health["state"] == "overloaded", "the queue is full and uploads are refused"
+    # Counters live at the operational endpoint; health stays small enough for
+    # a probe to poll every few seconds.
+    metrics = test_client.get("/api/ops/metrics").get_json()
+    assert metrics["ingest"]["stats"]["rejected"] == 1
+    assert metrics["metrics"]["counters"]["ingest.rejected"] >= 1
 
     gate.set()
     assert manager.drain(20)

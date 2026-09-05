@@ -2,6 +2,7 @@
 """
 Main RAG pipeline orchestrator
 """
+import contextlib
 import json
 import re
 import time
@@ -37,9 +38,16 @@ from core.exceptions import (
     ConfigurationException, IndexIncompatibleException, IngestInterrupted, LLMException, RAGException,
 )
 from components.ingest.limits import checkpoint
+from components.observability import telemetry as T
 from utils.logger import get_logger, RAGLogger
 
 logger = get_logger("RAGPipeline")
+
+
+@contextlib.contextmanager
+def _no_stage():
+    """The branch that computes no vectors is not an embedding stage."""
+    yield
 
 
 def _source_pages(metadata: Optional[Dict[str, Any]]) -> Optional[List[Any]]:
@@ -314,21 +322,27 @@ class RAGPipeline:
             _parse_started = perf_counter()
 
             # Parse the file
-            document_text = self.parser_factory.parse_file(file_path)
+            # One stage covering everything the parser does for this file: the
+            # text, the structured units and the metadata. Measured once, so
+            # the number here and the one the Viewer shows are the same number.
+            with T.stage(T.PARSE):
+                document_text = self.parser_factory.parse_file(file_path)
 
-            # Parse structured canonical units when the parser supports it.
-            # Structure-aware chunkers need typed units (heading/list/table)
-            # with section_path and page provenance; without them every
-            # structural setting silently degrades to token-budget cutting.
-            try:
-                parsed_units = self.parser_factory.parse_units(file_path)
-            except Exception as exc:
-                print(f"  - Structured unit extraction unavailable: {exc}")
-                parsed_units = None
+                # Parse structured canonical units when the parser supports it.
+                # Structure-aware chunkers need typed units (heading/list/table)
+                # with section_path and page provenance; without them every
+                # structural setting silently degrades to token-budget cutting.
+                try:
+                    parsed_units = self.parser_factory.parse_units(file_path)
+                except Exception as exc:
+                    print(f"  - Structured unit extraction unavailable: {exc}")
+                    parsed_units = None
 
-            # Get metadata from parser
-            parser_metadata = self.parser_factory.get_metadata(file_path)
-            self.last_parse_seconds = round(perf_counter() - _parse_started, 2)
+                # Get metadata from parser
+                parser_metadata = self.parser_factory.get_metadata(file_path)
+                self.last_parse_seconds = round(perf_counter() - _parse_started, 2)
+                T.annotate(characters=len(document_text or ''),
+                           units=len(parsed_units) if parsed_units else 0)
 
             # A stage boundary: the file is parsed and nothing is written.
             # If this ingest is a job that has run out of time or been
@@ -530,24 +544,32 @@ class RAGPipeline:
                 # process-wide provider budget (components.ingest.limits).
                 # (None, None) means no model run: the contract runs alone.
                 provider, verifier_provider = limited_providers(configuration)
-                chunks, deep_report = self.chunker.chunk_text_deep(
-                    document_text, doc_id, doc_title, doc_summary,
-                    configuration=configuration,
-                    provider=provider,
-                    verifier_provider=verifier_provider,
-                    parser_metadata=additional_metadata,
-                    parsed_units=parsed_units
-                )
+                # The Deep stage covers the structural walk, the proposer, the
+                # selector and the verifier. The provider calls inside it are
+                # counted by the budget wrappers, so a report can say how much
+                # of this stage was spent waiting on a gateway.
+                with T.stage(T.DEEP):
+                    chunks, deep_report = self.chunker.chunk_text_deep(
+                        document_text, doc_id, doc_title, doc_summary,
+                        configuration=configuration,
+                        provider=provider,
+                        verifier_provider=verifier_provider,
+                        parser_metadata=additional_metadata,
+                        parsed_units=parsed_units
+                    )
+                    T.annotate(chunks=len(chunks) if chunks else 0)
                 self.last_deep_analysis_report = deep_report
                 print(f"  - Deep Analysis status: {deep_report.get('status')}")
             else:
                 print("  - Creating semantic chunks...")
-                chunks = self.chunker.chunk_text(
-                    document_text, doc_id, doc_title, doc_summary,
-                    embedding_model=self.embedding_model,
-                    parser_metadata=additional_metadata,
-                    parsed_units=parsed_units
-                )
+                with T.stage(T.CHUNK):
+                    chunks = self.chunker.chunk_text(
+                        document_text, doc_id, doc_title, doc_summary,
+                        embedding_model=self.embedding_model,
+                        parser_metadata=additional_metadata,
+                        parsed_units=parsed_units
+                    )
+                    T.annotate(chunks=len(chunks) if chunks else 0)
             
             if not chunks:
                 print(f"  ⚠️  Warning: No chunks created for document (text may be too short)")
@@ -574,63 +596,67 @@ class RAGPipeline:
                 self.hybrid_retriever, "requires_document_embeddings", True
             )
 
-            if not needs_embeddings:
-                # Lexical-only retrieval: no dense leg exists, so no vectors are
-                # computed and none are stored. Metadata still has to be applied
-                # because the chunk rows carry it into the store.
-                print("  - Skipping embeddings (lexical-only retrieval)")
-                if additional_metadata:
-                    for chunk in chunks:
-                        if chunk.metadata:
+            with T.stage(T.EMBED) if needs_embeddings else _no_stage():
+                if not needs_embeddings:
+                    # Lexical-only retrieval: no dense leg exists, so no vectors are
+                    # computed and none are stored. Metadata still has to be applied
+                    # because the chunk rows carry it into the store.
+                    print("  - Skipping embeddings (lexical-only retrieval)")
+                    if additional_metadata:
+                        for chunk in chunks:
+                            if chunk.metadata:
+                                chunk.metadata.update(additional_metadata)
+                elif self.retrieval_profile in ('benchmark_aligned', 'hybrid_rrf'):
+                    print("  - Generating embeddings...")
+                    # A table embeds as its pipes *and* its rendering: the
+                    # rendering is the half a question resembles, the markdown
+                    # keeps the sentences and row labels it was derived from, and
+                    # a chunk must never be searched for under less than its own
+                    # text. Answer context still reads ``content`` alone.
+                    matrix = self.embedding_model.encode_documents(
+                        [chunk.retrieval_text for chunk in chunks]
+                    )
+                    for chunk, embedding in zip(chunks, matrix, strict=True):
+                        chunk.embedding = embedding
+                        embeddings.append(embedding.tolist())
+                        if additional_metadata and chunk.metadata:
                             chunk.metadata.update(additional_metadata)
-            elif self.retrieval_profile in ('benchmark_aligned', 'hybrid_rrf'):
-                print("  - Generating embeddings...")
-                # A table embeds as its pipes *and* its rendering: the
-                # rendering is the half a question resembles, the markdown
-                # keeps the sentences and row labels it was derived from, and
-                # a chunk must never be searched for under less than its own
-                # text. Answer context still reads ``content`` alone.
-                matrix = self.embedding_model.encode_documents(
-                    [chunk.retrieval_text for chunk in chunks]
-                )
-                for chunk, embedding in zip(chunks, matrix, strict=True):
-                    chunk.embedding = embedding
-                    embeddings.append(embedding.tolist())
-                    if additional_metadata and chunk.metadata:
-                        chunk.metadata.update(additional_metadata)
-            else:
-                print("  - Generating embeddings...")
-                for chunk in chunks:
-                    # Create contextual representation for embedding
-                    contextual_text = self.contextual_enhancer.enrich_chunk_with_context(chunk)
+                else:
+                    print("  - Generating embeddings...")
+                    for chunk in chunks:
+                        # Create contextual representation for embedding
+                        contextual_text = self.contextual_enhancer.enrich_chunk_with_context(chunk)
 
-                    # Generate embedding
-                    embedding = self.embedding_model.encode(contextual_text, convert_to_tensor=False)
-                    chunk.embedding = embedding
-                    embeddings.append(embedding.tolist())
+                        # Generate embedding
+                        embedding = self.embedding_model.encode(contextual_text, convert_to_tensor=False)
+                        chunk.embedding = embedding
+                        embeddings.append(embedding.tolist())
 
-                    # Add additional metadata
-                    if additional_metadata and chunk.metadata:
-                        chunk.metadata.update(additional_metadata)
+                        # Add additional metadata
+                        if additional_metadata and chunk.metadata:
+                            chunk.metadata.update(additional_metadata)
+                T.annotate(vectors=len(embeddings))
             
             # Step 4: Store in vector database. The last seam before anything
             # is written: past this point the ingest runs to completion,
             # because a half-written store is worse than a late one.
             checkpoint()
-            print("  - Storing in vector database...")
-            if chunks and (embeddings or not needs_embeddings):
-                self.vector_db.add_chunks(chunks, embeddings)
-                if self.retrieval_profile == 'hybrid_rrf' and embeddings:
-                    self.hybrid_retriever.record_index(len(embeddings[0]))
-            else:
-                print(f"  ⚠️  Warning: No chunks to store")
-                return []
+            with T.stage(T.INDEX):
+                print("  - Storing in vector database...")
+                if chunks and (embeddings or not needs_embeddings):
+                    self.vector_db.add_chunks(chunks, embeddings)
+                    if self.retrieval_profile == 'hybrid_rrf' and embeddings:
+                        self.hybrid_retriever.record_index(len(embeddings[0]))
+                else:
+                    print(f"  ⚠️  Warning: No chunks to store")
+                    return []
             
-            # Step 5: Update BM25 index
-            print("  - Building BM25 index...")
-            all_chunks = self.vector_db.get_all_chunks()
-            if all_chunks:  # Only build index if we have chunks
-                self.hybrid_retriever.build_keyword_index(all_chunks)
+                # Step 5: Update BM25 index
+                print("  - Building BM25 index...")
+                all_chunks = self.vector_db.get_all_chunks()
+                if all_chunks:  # Only build index if we have chunks
+                    self.hybrid_retriever.build_keyword_index(all_chunks)
+                T.annotate(stored=len(chunks), indexed=len(all_chunks or []))
             
             print(f"✓ Document '{doc_title}' ingested successfully!")
             return chunks

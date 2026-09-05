@@ -150,9 +150,17 @@ def limited_providers(configuration: DeepAnalysisConfiguration) -> tuple[Any | N
     narrowest boundary there is -- one call, one slot -- so a Deep job with a
     pool of eight still shares the budget call by call with every other Deep
     job, rather than holding eight slots for the length of its run.
+
+    Both the job's guard and its trace are read *here* -- on the ingest
+    worker, before the Deep pipeline starts -- and handed to the wrappers,
+    because ``collect_votes`` makes every call on a ``ThreadPoolExecutor``
+    thread where neither thread-local exists. Binding them at this point is
+    what keeps a call's deadline and its measurement attached to the job that
+    asked for it.
     """
     if not configuration.llm_available:
         return None, None
+    from components.observability import telemetry as T
     from components.ingest.limits import LimitedProvider, current_guard, provider_budget
 
     proposer, verifier = build_transports(configuration.settings)
@@ -160,8 +168,11 @@ def limited_providers(configuration: DeepAnalysisConfiguration) -> tuple[Any | N
         return None, None
     budget = provider_budget()
     guard = current_guard()
-    limited_proposer = LimitedProvider(proposer, budget, guard)
-    limited_verifier = LimitedProvider(verifier, budget, guard) if verifier is not None else None
+    trace = T.current_trace()
+    limited_proposer = LimitedProvider(proposer, budget, guard, trace=trace)
+    limited_verifier = (
+        LimitedProvider(verifier, budget, guard, trace=trace) if verifier is not None else None
+    )
     return limited_proposer, limited_verifier
 
 

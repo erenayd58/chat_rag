@@ -3,11 +3,84 @@
 Centralized logging configuration for the RAG system
 """
 import logging
+import logging.handlers
 import os
 from datetime import datetime
 from pathlib import Path
 
 from config import paths
+
+#: What bounds the log directory. The application owns this sink -- it is not
+#: a container's stdout that someone else rotates -- and it was previously
+#: unbounded twice over: each file grew without limit, and every restart added
+#: another file that nothing ever removed. A long-running deployment would
+#: fill its disk with them, and the failure would look like a storage error in
+#: ingest rather than like a logging problem.
+#:
+#: Two small limits, both overridable, and no logging platform: a size cap
+#: with a few rotations bounds one run, and a count of retained runs bounds
+#: the directory. Worst case is LOG_MAX_BYTES * (LOG_BACKUPS + 1) *
+#: LOG_RUNS_KEPT, which at the defaults is a little under half a gigabyte.
+def _positive(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+LOG_MAX_BYTES = _positive("LOG_MAX_BYTES", 10 * 1024 * 1024)
+LOG_BACKUPS = _positive("LOG_BACKUPS", 3)
+LOG_RUNS_KEPT = _positive("LOG_RUNS_KEPT", 10)
+
+#: The file handler's level, and INFO is the default because DEBUG is not a
+#: safe thing for a deployment to do by accident.
+#:
+#: The static methods further down write full LLM prompts, full retrieved
+#: chunks and the whole answer context at DEBUG. Every one of those is a copy
+#: of the corpus, and a log file is the most-copied artefact a service has --
+#: it is tailed, shipped, pasted into tickets and attached to bug reports. A
+#: default that puts document text there is a decision nobody makes on
+#: purpose, so it is not the default.
+#:
+#: INFO keeps everything an operator needs: the RAG.ops lifecycle events are
+#: emitted at INFO and WARNING and carry no content by construction (see
+#: components/observability/events.py), as are start-up, ingest and error
+#: lines. A developer chasing a retrieval problem sets LOG_FILE_LEVEL=DEBUG
+#: explicitly, which is the point at which someone has decided to keep those
+#: dumps on disk.
+#: An unrecognised name falls back to INFO rather than to DEBUG: a typo in a
+#: deployment's configuration must not be the thing that starts writing
+#: document text to disk. A name is looked up in this table rather than on the
+#: logging module, so only a level can ever be named.
+LOG_LEVELS = {
+    "CRITICAL": logging.CRITICAL, "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING, "WARN": logging.WARNING,
+    "INFO": logging.INFO, "DEBUG": logging.DEBUG,
+}
+
+LOG_FILE_LEVEL = os.getenv("LOG_FILE_LEVEL", "INFO").strip().upper()
+if LOG_FILE_LEVEL not in LOG_LEVELS:
+    LOG_FILE_LEVEL = "INFO"
+
+
+def _prune_old_runs(log_dir: Path, keep: int) -> None:
+    """Leave the newest ``keep`` runs' logs; delete the rest.
+
+    Rotation bounds one run's file. This bounds how many runs accumulate,
+    which is the half that a restart loop would otherwise win. A file that
+    cannot be deleted -- another process on Windows still holding it -- is
+    left alone: pruning logs must never be able to stop the service starting.
+    """
+    runs: dict[str, list[Path]] = {}
+    for path in log_dir.glob("rag_*.log*"):
+        runs.setdefault(path.name.split(".log")[0], []).append(path)
+    for name in sorted(runs, reverse=True)[keep:]:
+        for path in runs[name]:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 class RAGLogger:
@@ -34,6 +107,7 @@ class RAGLogger:
         # Create log filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = log_dir / f"rag_{timestamp}.log"
+        _prune_old_runs(log_dir, LOG_RUNS_KEPT)
         
         # Configure root logger
         self.logger = logging.getLogger("RAG")
@@ -42,9 +116,12 @@ class RAGLogger:
         # Remove existing handlers
         self.logger.handlers.clear()
         
-        # File handler (detailed logs)
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)
+        # File handler (detailed logs), rotated so one long run cannot fill
+        # the disk.
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS, encoding='utf-8',
+        )
+        file_handler.setLevel(LOG_LEVELS[LOG_FILE_LEVEL])
         file_formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
@@ -63,7 +140,18 @@ class RAGLogger:
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
         
-        self.logger.info(f"Logging initialized. Log file: {log_file}")
+        self.logger.info(
+            f"Logging initialized. Log file: {log_file} "
+            f"(level {LOG_FILE_LEVEL}, rotate at {LOG_MAX_BYTES} bytes, "
+            f"{LOG_BACKUPS} backups, {LOG_RUNS_KEPT} runs kept)"
+        )
+        if file_handler.level <= logging.DEBUG:
+            # Said out loud, because it is the one setting whose consequence
+            # is invisible until someone reads the file.
+            self.logger.warning(
+                "LOG_FILE_LEVEL=DEBUG: prompts, retrieved chunks and answer "
+                "context will be written to the log file"
+            )
     
     def get_logger(self, name: str = None):
         """Get a logger instance"""

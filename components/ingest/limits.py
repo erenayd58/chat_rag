@@ -51,6 +51,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 
+from components.observability import telemetry as T
 from core.exceptions import IngestInterrupted
 
 #: What "deadline" means here, in one sentence, for anything that reports it.
@@ -84,6 +85,9 @@ class ProviderBudget:
         self.peak = 0
         self.acquired_total = 0
         self.refused_total = 0
+        #: How long callers have spent queueing for a slot, in total. The
+        #: number that says whether the limit is the bottleneck.
+        self.wait_seconds_total = 0.0
 
     @contextmanager
     def slot(self, timeout: Optional[float] = None) -> Iterator[None]:
@@ -97,7 +101,9 @@ class ProviderBudget:
             with self._lock:
                 self.refused_total += 1
             raise ProviderSlotTimeout("no time left to wait for a provider slot")
+        waited = time.perf_counter()
         acquired = self._slots.acquire(timeout=timeout)
+        wait_seconds = time.perf_counter() - waited
         if not acquired:
             with self._lock:
                 self.refused_total += 1
@@ -108,8 +114,9 @@ class ProviderBudget:
             self.inflight += 1
             self.acquired_total += 1
             self.peak = max(self.peak, self.inflight)
+            self.wait_seconds_total += wait_seconds
         try:
-            yield
+            yield wait_seconds
         finally:
             with self._lock:
                 self.inflight -= 1
@@ -123,6 +130,7 @@ class ProviderBudget:
                 "peak": self.peak,
                 "acquired_total": self.acquired_total,
                 "refused_total": self.refused_total,
+                "wait_seconds_total": round(self.wait_seconds_total, 3),
             }
 
 
@@ -305,12 +313,26 @@ class LimitedProvider:
     ``clamped`` counts the calls whose timeout was actually shortened, and
     ``unclampable`` counts transports that had no timeout to clamp, so the
     deadline claim is measurable rather than assumed.
+
+    **Both the guard and the trace are carried on the object, not looked up
+    per call.** ``amsc.agentic_chunker.collect_votes`` runs every proposer and
+    verifier call on a ``ThreadPoolExecutor``, and a thread-local set on the
+    ingest worker does not exist on a pool thread. The guard was already
+    passed in for that reason; the trace is captured here at construction --
+    which happens on the worker thread, inside the job's Deep stage -- so the
+    measurement of a call follows the job that asked for it rather than the
+    thread that happened to make it. Two Deep jobs running at once therefore
+    each count their own calls, whichever pool thread served them.
     """
 
-    def __init__(self, inner: Any, budget: ProviderBudget, guard: Optional[JobGuard] = None):
+    def __init__(self, inner: Any, budget: ProviderBudget, guard: Optional[JobGuard] = None,
+                 trace: Optional["T.JobTrace"] = None):
         self.inner = inner
         self.budget = budget
         self.guard = guard
+        #: The job this provider belongs to, bound now because ``complete``
+        #: will be called from threads that never had it.
+        self.trace = trace if trace is not None else T.current_trace()
         self.calls = 0
         self.refused = 0
         self.clamped = 0
@@ -326,7 +348,7 @@ class LimitedProvider:
             self.guard.check()
         timeout = self.guard.remaining() if self.guard is not None else None
         try:
-            with self.budget.slot(timeout=timeout):
+            with self.budget.slot(timeout=timeout) as waited:
                 # Taken *after* the slot: the wait for it spends the job's
                 # time too, and the call must not be given the whole of what
                 # was left before that wait began.
@@ -340,7 +362,20 @@ class LimitedProvider:
                         self.clamped += 1
                     elif remaining is not None:
                         self.unclampable += 1
-                return transport.complete(prompt)
+                started = time.perf_counter()
+                try:
+                    return transport.complete(prompt)
+                finally:
+                    # Recorded on the job's trace, not on a stage: these calls
+                    # happen on a pool several layers below the stage that
+                    # opened, and "how much of Deep was the gateway" is the
+                    # question they answer. The trace is the one bound at
+                    # construction, because this line often runs on a pool
+                    # thread where the thread-local is empty.
+                    trace = self.trace or T.current_trace()
+                    if trace is not None:
+                        trace.record_provider(seconds=time.perf_counter() - started,
+                                              wait_seconds=waited)
         except ProviderSlotTimeout:
             with self._lock:
                 self.refused += 1
@@ -359,6 +394,16 @@ class LimitedEmbeddingTransport:
 
     A local model is not wrapped: it makes no request, and its cost is CPU on
     a thread that an ingest worker already accounts for.
+
+    Unlike :class:`LimitedProvider`, this looks the guard and the trace up per
+    call rather than binding them, and that difference is deliberate. This
+    wrapper is built once per embedding object and an embedding object belongs
+    to a cached pipeline, so it outlives any one job and is shared by every job
+    and every query that uses that pipeline; binding a trace here would
+    attribute one job's embeddings to another. It can afford the lookup because
+    ``embed`` is always called on the thread that asked for it: ``ResilientBatches``
+    above hands down one batch at a time, so the transport below never reaches
+    its own pool, and there is no thread boundary between the caller and here.
     """
 
     def __init__(self, inner: Any, budget: ProviderBudget, guard_provider=None):
@@ -377,8 +422,15 @@ class LimitedEmbeddingTransport:
         timeout = guard.remaining() if guard is not None else None
         if guard is not None:
             guard.check()
-        with self.budget.slot(timeout=timeout):
+        with self.budget.slot(timeout=timeout) as waited:
             with self._lock:
                 self.slots_taken += 1
             transport = _Clamped.wrap(self.inner, timeout)
-            return transport.embed(texts)
+            started = time.perf_counter()
+            try:
+                return transport.embed(texts)
+            finally:
+                trace = T.current_trace()
+                if trace is not None:
+                    trace.record_embedding(seconds=time.perf_counter() - started,
+                                           wait_seconds=waited)

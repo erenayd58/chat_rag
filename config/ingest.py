@@ -36,6 +36,11 @@ The knobs, and what each one bounds:
 ``DEEP_ANALYSIS_CONCURRENCY``
     One Deep job's own pool. A job never has more than this many calls in
     flight, and all jobs together never have more than the global cap.
+``PIPELINE_CACHE_MAX`` / ``PIPELINE_CACHE_TTL``
+    How many built pipelines may be held, and how long an unused one is kept.
+    A pipeline holds an embedding model, a store handle and the knowledge
+    base's whole lexical index, so this is the largest single memory dial in
+    the process. Eviction never touches a pipeline that is in use.
 ``EMBEDDING_MAX_INFLIGHT``
     Process-wide cap on embedding requests in flight, when the embedding
     provider is a remote endpoint. It is separate from the Deep cap because
@@ -54,6 +59,8 @@ Embedding requests (remote)          ``EMBEDDING_MAX_INFLIGHT`` (global)
 Embedding batches (local model)      ``INGEST_WORKERS`` -- CPU on the
                                      worker that asked for them
 Parsing, chunking, indexing          ``INGEST_WORKERS``
+Built pipelines (models, stores,     ``PIPELINE_CACHE_MAX`` /
+lexical indexes)                     ``PIPELINE_CACHE_TTL``
 Viewer packaging (no provider call)  its single worker thread
 Answer model at query time           ``WAITRESS_THREADS`` -- one call per
                                      request thread, and no ingest path
@@ -79,6 +86,8 @@ class IngestLimits:
     provider_max_inflight: int = 8
     deep_concurrency: int = 8
     embedding_max_inflight: int = 4
+    pipeline_cache_max: int = 8
+    pipeline_cache_ttl_seconds: float = 1800.0
 
     def validate(self) -> "IngestLimits":
         problems = []
@@ -100,6 +109,10 @@ class IngestLimits:
             problems.append("DEEP_ANALYSIS_CONCURRENCY must be at least 1")
         if self.embedding_max_inflight < 1:
             problems.append("EMBEDDING_MAX_INFLIGHT must be at least 1")
+        if self.pipeline_cache_max < 1:
+            problems.append("PIPELINE_CACHE_MAX must be at least 1")
+        if self.pipeline_cache_ttl_seconds < 0:
+            problems.append("PIPELINE_CACHE_TTL must be 0 or more seconds")
         if problems:
             raise ValueError("invalid ingest configuration: " + "; ".join(problems))
         return self
@@ -120,6 +133,8 @@ class IngestLimits:
             "provider_max_inflight": self.provider_max_inflight,
             "deep_concurrency": self.deep_concurrency,
             "embedding_max_inflight": self.embedding_max_inflight,
+            "pipeline_cache_max": self.pipeline_cache_max,
+            "pipeline_cache_ttl_seconds": self.pipeline_cache_ttl_seconds,
             "deadline_semantics": "cooperative-with-clamped-calls",
         }
 
@@ -153,4 +168,6 @@ def limits_from_env(env: Mapping[str, str] | None = None) -> IngestLimits:
         provider_max_inflight=_number(env, "PROVIDER_MAX_INFLIGHT", "8", int),
         deep_concurrency=_number(env, "DEEP_ANALYSIS_CONCURRENCY", "8", int),
         embedding_max_inflight=_number(env, "EMBEDDING_MAX_INFLIGHT", "4", int),
+        pipeline_cache_max=_number(env, "PIPELINE_CACHE_MAX", "8", int),
+        pipeline_cache_ttl_seconds=_number(env, "PIPELINE_CACHE_TTL", "1800", float),
     ).validate()

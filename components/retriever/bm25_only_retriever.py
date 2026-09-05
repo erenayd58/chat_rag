@@ -109,6 +109,19 @@ class BM25OnlyRetriever:
         if self._bm25 is None:
             self.build_index(self.vector_db.get_all_chunks())
 
+    def invalidate_index(self) -> None:
+        """Forget the lexical index so the next search rebuilds it.
+
+        Called when the knowledge base changed underneath this pipeline --
+        another session ingested or deleted a document. The pipeline that did
+        the writing rebuilds its own index directly; every other pipeline for
+        that knowledge base is told here, and rebuilds lazily on its next
+        query rather than eagerly for a user who may never come back.
+        """
+        self._bm25 = None
+        self.chunks_list = []
+        self._chunks_by_id = {}
+
     def hybrid_search(self, query: str, top_k: int = 5, *args, **kwargs) -> List[RetrievalResult]:
         try:
             self.ensure_index()

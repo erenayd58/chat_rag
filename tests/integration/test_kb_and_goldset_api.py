@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from types import SimpleNamespace
+
 import app as flask_app
 from components.goldset import GoldSetManager
 from components.knowledgebase.manager import KnowledgeBaseManager
@@ -248,11 +250,15 @@ def test_a_store_shared_with_another_knowledge_base_is_kept(client):
 def test_deleting_drops_the_cached_pipeline(client, monkeypatch):
     """A live Chroma client holds the store's sqlite open."""
     created = client.post("/api/kb", json={"name": "kb"}).get_json()["kb"]
-    flask_app.pipelines[f"global:{created['kb_id']}"] = object()
+    kb_id = created["kb_id"]
+    monkeypatch.setattr(flask_app.pipeline_cache, "_build",
+                        lambda session_id, kb: SimpleNamespace(vector_db=None))
+    flask_app.pipeline_cache.get("global", kb_id)
+    assert kb_id in flask_app.pipeline_cache.snapshot()["knowledge_bases"]
 
-    client.delete(f"/api/kb/{created['kb_id']}")
+    client.delete(f"/api/kb/{kb_id}")
 
-    assert not [k for k in flask_app.pipelines if k.endswith(f":{created['kb_id']}")]
+    assert kb_id not in flask_app.pipeline_cache.snapshot()["knowledge_bases"]
 
 
 def test_the_vector_store_releases_its_files_when_closed(tmp_path):

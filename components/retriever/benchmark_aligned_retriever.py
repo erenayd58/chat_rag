@@ -156,6 +156,19 @@ class BenchmarkAlignedRetriever:
         """Compatibility hook: the frozen index builds dense and BM25 together."""
         self.build_index(chunks)
 
+    def invalidate_index(self) -> None:
+        """Forget the lexical index so the next search rebuilds it.
+
+        Called when the knowledge base changed underneath this pipeline --
+        another session ingested or deleted a document. The pipeline that did
+        the writing rebuilds its own index directly; every other pipeline for
+        that knowledge base is told here, and rebuilds lazily on its next
+        query rather than eagerly for a user who may never come back.
+        """
+        self._index = None
+        self.chunks_list = []
+        self._chunks_by_id = {}
+
     def build_index(
         self,
         chunks: List[DocumentChunk],

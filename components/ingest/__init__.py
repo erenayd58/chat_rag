@@ -5,6 +5,7 @@ from .jobs import (  # noqa: F401
     TIMED_OUT, IngestJob, IngestManager, sweep_staging,
 )
 from .journal import JobJournal  # noqa: F401
+from .pipelines import PipelineCache  # noqa: F401
 from .limits import (  # noqa: F401
     JOB_DEADLINE_SEMANTICS, JobGuard, LimitedEmbeddingTransport, LimitedProvider,
     ProviderBudget, ProviderSlotTimeout, budgets, checkpoint, configure_budget,

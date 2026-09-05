@@ -62,6 +62,9 @@ from typing import Any, Callable, Optional
 from config.ingest import IngestLimits
 from core.exceptions import IngestInterrupted, IngestOverloaded
 
+from components.observability import events
+from components.observability import telemetry as T
+
 from .journal import INTERRUPTED, JobJournal
 from .limits import JobGuard, budgets, use_guard
 
@@ -155,8 +158,12 @@ class IngestJob:
     #: Set on a record settled by a restart rather than observed running.
     restart_recovered: bool = False
     resolution: Optional[str] = None
+    error_category: str = "none"
     guard: JobGuard = field(default_factory=JobGuard)
     done: threading.Event = field(default_factory=threading.Event)
+    #: Where this job's time went. Written by the stages the pipeline opens
+    #: (components/observability/telemetry.py) and read by /api/ops/metrics.
+    trace: Optional[T.JobTrace] = None
     _submitted_mono: float = field(default_factory=time.monotonic)
     _started_mono: Optional[float] = None
     _finished_mono: Optional[float] = None
@@ -190,6 +197,9 @@ class IngestJob:
             "result": self.result,
             "restart_recovered": self.restart_recovered,
             "resolution": self.resolution,
+            "error_category": self.error_category,
+            # Where the time went, for this one job. Counts and seconds only.
+            "timing": self.trace.as_dict() if self.trace is not None else None,
             # Wall-clock, for the journal's retention window. The rest of the
             # timing is monotonic and meaningless across a restart.
             "journalled_at": time.time(),
@@ -257,6 +267,9 @@ class IngestManager:
                 twin.attached_count += 1
                 self.stats["attached"] += 1
                 job, attached = twin, True
+                events.emit("ingest.job.attached", job_id=twin.job_id, kb_id=kb_id,
+                            filename=filename, attached_uploads=twin.attached_count)
+                T.metrics().count("ingest.attached")
             elif len(self._running) + len(self._queue) >= self.limits.admission_capacity:
                 # Running plus waiting is the bound: with every worker busy
                 # the queue holds at most INGEST_QUEUE_CAPACITY jobs, and an
@@ -270,6 +283,12 @@ class IngestManager:
                     retry_after_seconds=retry_after,
                 )
                 job, attached = None, False
+                events.warn("ingest.job.rejected", kb_id=kb_id, filename=filename,
+                            running=len(self._running), queued=len(self._queue),
+                            queue_capacity=self.limits.queue_capacity,
+                            retry_after_seconds=retry_after)
+                T.metrics().count("ingest.rejected")
+                T.metrics().record_error("overloaded", str(overload))
             else:
                 job = IngestJob(
                     job_id=uuid.uuid4().hex[:12],
@@ -287,6 +306,11 @@ class IngestManager:
                 self._by_identity[identity] = job
                 self._journal_locked(job)
                 self.stats["accepted"] += 1
+                events.emit("ingest.job.accepted", job_id=job.job_id, kb_id=kb_id,
+                            filename=filename, mode=job.chunking_mode,
+                            methods=",".join(methods), queued=len(self._queue),
+                            running=len(self._running))
+                T.metrics().count("ingest.accepted")
                 self.stats["peak_queued"] = max(self.stats["peak_queued"], len(self._queue))
                 self._prune_finished_locked()
                 self._ensure_workers_locked()
@@ -429,11 +453,17 @@ class IngestManager:
                 self._by_identity.pop(job.identity, None)
                 job.status = CANCELLED
                 job.error = reason
+                job.error_category = "cancelled"
                 self._finish_locked(job)
                 path = job.temp_path
+                events.emit("ingest.job.cancelled", job_id=job.job_id, kb_id=job.kb_id,
+                            was="queued", reason=reason)
+                T.metrics().count("ingest.cancelled")
             elif job.status == RUNNING:
                 job.guard.cancel(reason)
                 path = None
+                events.emit("ingest.job.cancel_requested", job_id=job.job_id,
+                            kb_id=job.kb_id, was="running", reason=reason)
             else:
                 path = None
         if path:
@@ -472,8 +502,18 @@ class IngestManager:
                 job.started_at = datetime.now().isoformat(timespec="seconds")
                 job._started_mono = time.monotonic()
                 job.guard = JobGuard.for_timeout(self.limits.job_timeout_seconds)
+                job.trace = T.JobTrace(job_id=job.job_id, kb_id=job.kb_id,
+                                       mode=job.chunking_mode)
+                # How long this job sat in the queue: the first number an
+                # operator wants when uploads feel slow, because it separates
+                # "the system is busy" from "the work itself is slow".
+                job.trace.queue_seconds = job._started_mono - job._submitted_mono
                 self._journal_locked(job)
                 self.stats["peak_active"] = max(self.stats["peak_active"], len(self._running))
+                events.emit("ingest.job.started", job_id=job.job_id, kb_id=job.kb_id,
+                            mode=job.chunking_mode,
+                            queue_seconds=round(job.trace.queue_seconds, 3),
+                            running=len(self._running), queued=len(self._queue))
             self._run(job)
             with self._cond:
                 self._running.pop(job.job_id, None)
@@ -485,8 +525,9 @@ class IngestManager:
             job.done.set()
 
     def _run(self, job: IngestJob) -> None:
+        started = time.monotonic()
         try:
-            with use_guard(job.guard):
+            with use_guard(job.guard), T.use_trace(job.trace):
                 result = self._execute(job)
             job.result = result
             job.doc_id = (result or {}).get("doc_id")
@@ -495,14 +536,47 @@ class IngestManager:
             job.status = TIMED_OUT if stop.kind == "timed_out" else CANCELLED
             job.error = str(stop)
             job.exception = stop
+            job.error_category = T.categorise(stop)
             logger.warning("ingest job %s %s: %s", job.job_id, job.status, stop)
         except Exception as error:  # noqa: BLE001 - a failed job is a state, not a crash
             job.status = FAILED
             job.error = str(error) or type(error).__name__
             job.exception = error
+            job.error_category = T.categorise(error)
             logger.error("ingest job %s failed: %s", job.job_id, error, exc_info=True)
         finally:
             _discard_file(job.temp_path)
+            self._record(job, time.monotonic() - started)
+
+    def _record(self, job: IngestJob, seconds: float) -> None:
+        """Close this job's trace and say what happened, once, in one place."""
+        metrics = T.metrics()
+        if job.trace is not None:
+            job.trace.total_seconds = seconds
+            job.trace.status = job.status
+            job.trace.error_category = job.error_category
+            metrics.finish(job.trace)
+        metrics.count(f"ingest.{job.status}")
+        fields = {
+            "job_id": job.job_id, "kb_id": job.kb_id, "mode": job.chunking_mode,
+            "doc_id": job.doc_id, "seconds": round(seconds, 3),
+            "queue_seconds": round(job.trace.queue_seconds, 3) if job.trace else None,
+        }
+        if job.trace is not None:
+            timing = job.trace.as_dict()
+            fields.update({f"t_{name}": value for name, value in timing["stages"].items()})
+            if timing["provider"]["calls"]:
+                fields["provider_calls"] = timing["provider"]["calls"]
+                fields["provider_seconds"] = timing["provider"]["seconds"]
+            if timing["embedding"]["calls"]:
+                fields["embedding_calls"] = timing["embedding"]["calls"]
+        if job.status == SUCCEEDED:
+            events.emit("ingest.job.succeeded", chunks=(job.result or {}).get("chunks_created"),
+                        **fields)
+        else:
+            metrics.record_error(job.error_category, job.error or "")
+            events.warn(f"ingest.job.{job.status}", error_category=job.error_category,
+                        error=job.error, **fields)
 
     def _finish_locked(self, job: IngestJob) -> None:
         job.finished_at = datetime.now().isoformat(timespec="seconds")
@@ -585,4 +659,13 @@ class IngestManager:
                 if record.get("restart_recovered"):
                     in_flight.append(record)
             self._prune_finished_locked()
+        for record in in_flight:
+            interrupted = record.get("status") == INTERRUPTED
+            events.warn("ingest.job.restart_settled", job_id=record.get("job_id"),
+                        kb_id=record.get("kb_id"), status=record.get("status"),
+                        resolution=record.get("resolution"))
+            T.metrics().count("ingest.restart_settled")
+            if interrupted:
+                T.metrics().count("ingest.interrupted")
+                T.metrics().record_error("interrupted", str(record.get("error") or ""))
         return in_flight

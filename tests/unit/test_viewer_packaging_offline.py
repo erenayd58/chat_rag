@@ -160,6 +160,74 @@ def test_packaging_holds_no_provider_slot(workspace, no_network, monkeypatch):
         state = analysis.read_state("probe-doc")
         assert state["status"] == analysis.STATUS_READY, state
         assert budget.snapshot() == {"limit": 2, "inflight": 0, "peak": 0,
-                                     "acquired_total": 0, "refused_total": 0}
+                                     "acquired_total": 0, "refused_total": 0,
+                                     "wait_seconds_total": 0.0}
     finally:
         L.configure_budget(8)
+
+
+def test_the_hybrid_boundary_model_is_loaded_at_most_once(monkeypatch):
+    """Phase 1D's finding, now closed.
+
+    ``_chunk_rows`` used to construct the sentence-transformers boundary model
+    inside itself, so every Hybrid build read a few hundred megabytes of
+    weights again for a model that is stateless and identical every time. It
+    is shared now; this counts the loads rather than trusting the change.
+    """
+    from amsc import embeddings as amsc_embeddings
+
+    loads = {"count": 0}
+
+    class FakeModel:
+        def embed(self, texts):  # pragma: no cover - never called here
+            raise AssertionError("no embedding is needed to count loads")
+
+    def counted(*args, **kwargs):
+        loads["count"] += 1
+        return FakeModel()
+
+    monkeypatch.setattr(
+        amsc_embeddings.SentenceTransformerBoundaryEmbedder, "from_pretrained",
+        staticmethod(counted),
+    )
+    analysis.release_boundary_model()
+    try:
+        first = analysis._boundary_embedder()
+        for _ in range(5):
+            assert analysis._boundary_embedder() is first
+        assert loads["count"] == 1, "one load, however many Hybrid builds"
+        assert analysis.boundary_model_stats()["loaded"] is True
+    finally:
+        analysis.release_boundary_model()
+
+
+def test_the_boundary_model_is_not_loaded_until_hybrid_is_asked_for(monkeypatch):
+    """A deployment that never packages a Hybrid variant never pays for it."""
+    from amsc import embeddings as amsc_embeddings
+
+    def refuse(*args, **kwargs):  # pragma: no cover - the point is it is not called
+        raise AssertionError("the boundary model was loaded without Hybrid being asked for")
+
+    monkeypatch.setattr(
+        amsc_embeddings.SentenceTransformerBoundaryEmbedder, "from_pretrained",
+        staticmethod(refuse),
+    )
+    analysis.release_boundary_model()
+    stats = analysis.boundary_model_stats()
+    assert stats["loaded"] is False
+    assert stats["model"] == M.BOUNDARY_MODEL
+
+
+def test_the_boundary_model_can_be_released_to_reclaim_memory(monkeypatch):
+    from amsc import embeddings as amsc_embeddings
+
+    monkeypatch.setattr(
+        amsc_embeddings.SentenceTransformerBoundaryEmbedder, "from_pretrained",
+        staticmethod(lambda *a, **k: object()),
+    )
+    analysis.release_boundary_model()
+    analysis._boundary_embedder()
+    assert analysis.boundary_model_stats()["loaded"] is True
+    assert analysis.release_boundary_model() is True
+    assert analysis.boundary_model_stats()["loaded"] is False
+    assert analysis.release_boundary_model() is False

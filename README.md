@@ -290,6 +290,119 @@ including both budgets and how many finished jobs are retained;
 `DELETE /api/ingest/jobs/<job_id>` cancels a queued job at once and a running
 one at its next boundary.
 
+## Operating it: health, metrics and the caches
+
+`GET /api/health` is the small one, for a probe: liveness, readiness and a
+line of capacity. It answers three different questions with three fields,
+and they are not the same question:
+
+| Field | Question | When it changes |
+|---|---|---|
+| `status` | Is the process alive? | Never, while it answers at all. It is the historical `healthy` value, kept so existing probes and the serve smoke keep working. |
+| `ready` | May traffic be sent here? | Never, in practice. It stays true while overloaded and while degraded, because refusing traffic during an overload makes the overload worse and a degraded process still serves reads. |
+| `state` | What should an operator do? | `ok`, `overloaded` (the ingest queue is full, so uploads are being refused; chat and search still work -- wait, do not restart) or `degraded` (something needs a person, named in `reasons`). |
+
+`degraded` has two causes: the knowledge base records cannot be read, or the
+last `DEGRADED_AFTER_JOBS` (5) ingest jobs all failed -- the "healthy but
+broken" case, where the process is serving and the queue is empty because
+every job dies. It is a ratio over the bounded metrics window rather than a
+latch, so a service that recovers stops reporting it. Where both apply,
+`degraded` wins over `overloaded`: being full is transient, and failing is not.
+
+`reasons` are written for an operator, and go through the same redaction as
+everything else here -- a storage error names what failed, not where the data
+root lives.
+
+`GET /api/ops/metrics` is the one to read when health says to look closer:
+
+* **counters** — jobs accepted, succeeded, failed, timed out, cancelled,
+  rejected, and restart-settled;
+* **stage latency** — p50/p95/max for `parse`, `chunk`, `deep_analysis`,
+  `embed`, `index`, `ledger` and `viewer_stage`, plus queue wait and total job
+  time, over a bounded window of recent jobs;
+* **errors** — counts by category (`configuration`, `provider`, `storage`,
+  `timeout`, `overloaded`, …) with a few example messages each;
+* **capacity** — workers, queue, both provider budgets and how long callers
+  have spent waiting for a slot;
+* **caches** — the pipeline cache's size against its bound, and whether the
+  Hybrid boundary model is resident.
+
+`?recent=N` (max 25) sets how many individual job traces come back. Every
+part of this answer is bounded by construction, so its size does not grow
+with uptime. A single job's own timing is on its job record, at
+`GET /api/ingest/jobs/<job_id>`.
+
+**What this endpoint may contain.** Counts, durations, categories, states,
+and the ids an operator needs to correlate a job with a log line -- job ids,
+knowledge base ids, chunking modes. No document text, no chunk, no filename,
+no temp path, no key. The one place arbitrary text could arrive is the few
+example messages kept per error category, and an exception string is written
+for a developer standing in a source tree: an ordinary `[Errno 2]` names the
+account, the deployment's layout and the document, none of which a credential
+filter would catch. Every such message is therefore redacted where it is
+stored -- credential shapes blanked, absolute paths replaced by `<path>`,
+length capped -- so what is served says *what* failed and not *where*. The
+endpoint has no access boundary of its own because the application has none
+to reuse: everything it serves is aggregate by construction, and strictly
+less than `/api/kb` and `/api/chunks` already return to the same caller.
+
+**Where the logs go, and how big they get.** This application owns its file
+sink -- it is not a container's stdout that something else rotates. It writes
+`logs/rag_<timestamp>.log` under the data root, and to the console as well.
+That file used to grow in two directions at once: without a size limit, and
+with one more file per restart that nothing ever removed. Both are bounded
+now, by `LOG_MAX_BYTES` x (`LOG_BACKUPS` + 1) for a single run and
+`LOG_RUNS_KEPT` for the directory -- a little under half a gigabyte at the
+defaults, and no logging platform involved. Console output stays the
+deployment's to collect.
+
+**The file handler is at `INFO` by default, and that is deliberate.** This
+system's request and retrieval dumps -- full prompts, full retrieved chunks,
+the whole answer context -- are written at `DEBUG`, and a log file is the
+most-copied artefact a service has: tailed, shipped, pasted into tickets. A
+default that puts a copy of the corpus there is a decision nobody makes on
+purpose, so it is not the default. Everything an operator needs stays at
+`INFO`: the lifecycle events below, start-up, ingest and every error.
+
+A developer debugging retrieval opts in explicitly with `LOG_FILE_LEVEL=DEBUG`,
+and the process says so in a warning line at start-up. An unrecognised value
+falls back to `INFO`, not to `DEBUG` -- a typo in a deployment's configuration
+must not be the thing that starts writing document text to disk.
+
+**Operational logs.** Lifecycle events are written to the `RAG.ops` logger as
+one line each, in a stable `event=… job_id=… kb_id=…` shape:
+`ingest.job.accepted`, `.started`, `.succeeded`, `.failed`, `.timed_out`,
+`.cancelled`, `.rejected`, `.attached`, `.restart_settled`. Values are
+redacted before they are written -- document text, chunks, prompts and
+anything credential-shaped cannot reach a log line through this path, which
+is what makes it safe to leave on and to paste into a ticket.
+
+**What is bounded, and by what**
+
+| Resource | Bound |
+|---|---|
+| Built pipelines (models, store handles, lexical indexes) | `PIPELINE_CACHE_MAX` (8), `PIPELINE_CACHE_TTL` (1800 s) |
+| Job registry and journal | `INGEST_JOB_RETENTION` (3600 s), 500 records |
+| Metrics window | 200 traces, 5 messages per error category |
+| Hybrid boundary model | one shared instance, loaded on first use |
+| Staged uploads | deleted with the job; swept at start-up |
+| `logs/` | `LOG_MAX_BYTES` (10 MB) x (`LOG_BACKUPS` + 1) per run, `LOG_RUNS_KEPT` (10) runs kept; `LOG_FILE_LEVEL` is `INFO`, so no content is written |
+
+A pipeline is evicted only when nothing is using it: an ingest job leases its
+pipeline for the length of the job, so a burst of browser traffic cannot
+close the store a job is writing to. When a document is ingested, every
+*other* pipeline for that knowledge base drops its lexical index and rebuilds
+it on the next query -- without that, a document uploaded in one browser was
+missing from keyword search in another until the process restarted.
+
+**Deliberately not bounded**, with the reason:
+
+| Grows with | Why it is left alone |
+|---|---|
+| `artifacts/viewer-live/` — one directory per analysed document | Product data, not a cache: it is what the Viewer reads. It is deleted with its document and is regenerable from an ingest. Bounding it would mean deleting analyses a user still expects to open. |
+| `.cache/canonical-units/`, `.cache/embeddings/`, `.cache/boundary-embeddings/` | Content-addressed caches on disk, not in memory. They trade disk for a re-parse or a re-embed, and both are safe to delete at any time. Capping them needs an eviction policy and a size accounting that this product has no evidence it needs yet. |
+| Chat history per session | Already bounded by `MAX_CONVERSATION_HISTORY`, and it goes when its pipeline is evicted. |
+
 ## Running with Docker
 
 One container runs the whole application. There is no separate database,

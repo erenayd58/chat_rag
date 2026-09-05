@@ -80,6 +80,8 @@ class Settings:
         self.provider_max_inflight = self.ingest_limits.provider_max_inflight
         self.deep_analysis_concurrency = self.ingest_limits.deep_concurrency
         self.embedding_max_inflight = self.ingest_limits.embedding_max_inflight
+        self.pipeline_cache_max = self.ingest_limits.pipeline_cache_max
+        self.pipeline_cache_ttl = self.ingest_limits.pipeline_cache_ttl_seconds
 
         # Answer model (chat generation). The final chain answers with an
         # OpenAI-compatible gateway model (minimax/minimax-m2.7 through

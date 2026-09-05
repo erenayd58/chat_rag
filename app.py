@@ -30,8 +30,10 @@ from core.exceptions import (
     ConfigurationException, IndexIncompatibleException, IngestOverloaded, LLMException,
 )
 from components.ingest import (
-    IngestManager, JobJournal, configure_budget, configure_embedding_budget, sweep_staging,
+    IngestManager, JobJournal, PipelineCache, configure_budget, configure_embedding_budget,
+    sweep_staging,
 )
+from components.observability import events, telemetry as T
 from config import paths
 from components.retriever import (
     method_is_available,
@@ -91,9 +93,14 @@ gold_manager = GoldSetManager()
 configure_budget(settings.provider_max_inflight)
 configure_embedding_budget(settings.embedding_max_inflight)
 
-# Store pipeline instances per session (for multi-user support)
-pipelines = {}
-_pipelines_lock = threading.Lock()
+# Built pipelines, per session and knowledge base, bounded (see
+# components/ingest/pipelines.py for why the session stays in the key and how
+# eviction avoids closing a store somebody is using).
+pipeline_cache = PipelineCache(
+    build=lambda session_id, kb_id: _build_pipeline(kb_id),
+    max_entries=settings.pipeline_cache_max,
+    ttl_seconds=settings.pipeline_cache_ttl,
+)
 
 # Ingest runs as jobs (components/ingest): bounded workers, a bounded queue,
 # an explicit lifecycle. The function that runs one job is looked up when it
@@ -152,25 +159,26 @@ def build_settings_for_kb(kb_cfg: dict, kb_id: str = None) -> Settings:
     return s
 
 
-def get_pipeline(session_id: str, kb_id: str = None) -> RAGPipeline:
-    """Get or create pipeline for session.
+def _build_pipeline(kb_id: str = None) -> RAGPipeline:
+    """One pipeline for one knowledge base. Called by the cache, under its
+    lock, so two threads asking at once build one pipeline rather than two."""
+    if kb_id:
+        kb = kb_manager.get(kb_id)
+        if not kb:
+            raise ValueError("Knowledge base not found")
+        return RAGPipeline(settings=build_settings_for_kb(kb, kb_id))
+    return RAGPipeline(settings=settings)
 
-    Built under a lock: an ingest worker and a request thread asking for the
-    same knowledge base at the same moment would otherwise each build a
-    pipeline -- two embedding models, two store handles -- and keep one.
+
+def get_pipeline(session_id: str, kb_id: str = None) -> RAGPipeline:
+    """The pipeline for this session and knowledge base.
+
+    A thin front for the bounded cache, kept because every route and the CLI
+    call it. Use ``pipeline_cache.lease(...)`` instead for work that runs
+    longer than a request -- an ingest job -- so the pipeline cannot be
+    evicted while it is being used.
     """
-    key = f"{session_id}:{kb_id or 'default'}"
-    with _pipelines_lock:
-        if key not in pipelines:
-            if kb_id:
-                kb = kb_manager.get(kb_id)
-                if not kb:
-                    raise ValueError("Knowledge base not found")
-                kb_settings = build_settings_for_kb(kb, kb_id)
-                pipelines[key] = RAGPipeline(settings=kb_settings)
-            else:
-                pipelines[key] = RAGPipeline(settings=settings)
-        return pipelines[key]
+    return pipeline_cache.get(session_id, kb_id)
 
 
 def _ensure_session():
@@ -774,18 +782,126 @@ def get_stats():
         }), 500
 
 
+#: How many consecutive failed jobs it takes before the service calls itself
+#: degraded. Small enough to notice a broken provider, large enough that one
+#: unreadable upload is not an incident.
+DEGRADED_AFTER_JOBS = 5
+
+
+def _service_state() -> tuple[str, bool, list]:
+    """``(status, ready, reasons)`` -- what this process can do right now.
+
+    Three states, because they call for three different actions and nothing
+    finer would be acted on differently:
+
+    * ``ok`` -- serving, with room to accept work.
+    * ``overloaded`` -- serving, but the ingest queue is full, so an upload
+      would be refused. Retrying later is the answer, not a restart.
+    * ``degraded`` -- serving reads, but something an operator should look at:
+      no knowledge base can be reached, or every recent ingest failed.
+
+    ``ready`` is separate from ``status`` on purpose: it answers "may this
+    process be sent traffic", which stays true while overloaded (uploads are
+    refused politely, chat and search still work) and while degraded.
+    """
+    reasons = []
+    status = 'ok'
+    capacity = ingest_jobs.snapshot()
+    if capacity['queued'] >= capacity['queue_capacity'] and capacity['queue_capacity'] >= 0:
+        if capacity['running'] >= capacity['workers']:
+            status = 'overloaded'
+            reasons.append('the ingest queue is full; uploads are being refused')
+    # After the queue check, because the two states are not equal: being full
+    # is transient and needs patience, while every recent job failing needs a
+    # person. Degraded therefore wins when both are true.
+    measured, failed = T.metrics().recent_outcomes()
+    if measured >= DEGRADED_AFTER_JOBS and failed == measured:
+        status = 'degraded'
+        reasons.append(f'the last {measured} ingest jobs all failed')
+    try:
+        kb_manager.list()
+    except Exception as error:  # noqa: BLE001 - reported, not raised
+        status = 'degraded'
+        # Redacted: this reason is served by /api/health and /api/ops/metrics,
+        # and a storage error names the deployment's data root in full.
+        reasons.append(
+            'the knowledge base records could not be read: '
+            + events.redact_message(error)
+        )
+    # Ready means "this process can serve"; it is not made false by being
+    # busy, because refusing traffic would make the overload worse.
+    return status, True, reasons
+
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
+    """Liveness, readiness and one line of capacity. Deliberately small.
+
+    Detail belongs at ``/api/ops/metrics``: an endpoint that a load balancer
+    polls every few seconds must not carry a history, and an operator reading
+    this one wants to know whether to look further, not to read everything.
+    """
+    status, ready, reasons = _service_state()
+    capacity = ingest_jobs.snapshot()
     return jsonify({
+        # 'healthy' is kept as the historical value of this field so existing
+        # probes and the serve smoke keep working; 'status' is the new one.
         'status': 'healthy',
+        'state': status,
+        'ready': ready,
+        'reasons': reasons,
         'timestamp': datetime.now().isoformat(),
         'llm_provider': settings.llm_provider,
         'embedding_model': settings.embedding_model_name,
-        # Running, queued, the queue's bound and the provider budget: the
-        # capacity picture, so "is it busy" is answered without a job id.
-        'ingest': ingest_jobs.snapshot(),
+        'ingest': {
+            'running': capacity['running'],
+            'queued': capacity['queued'],
+            'queue_capacity': capacity['queue_capacity'],
+            'workers': capacity['workers'],
+            'provider_inflight': capacity['budgets']['deep_analysis']['inflight'],
+            'provider_limit': capacity['budgets']['deep_analysis']['limit'],
+            'embedding_inflight': capacity['budgets']['embedding']['inflight'],
+            'embedding_limit': capacity['budgets']['embedding']['limit'],
+        },
     })
+
+
+@app.route('/api/ops/metrics', methods=['GET'])
+def ops_metrics():
+    """Everything an operator needs when health says to look closer.
+
+    Counters, utilisation, stage and job latency over a bounded window of
+    recent jobs, error categories with a few example messages, and the state
+    of the caches that could otherwise grow. All of it is bounded by
+    construction: the trace window has a fixed length and the recent-job list
+    is capped, so this endpoint's answer cannot grow with uptime.
+
+    ``?recent=N`` (max 25) sets how many individual job traces come back.
+    """
+    try:
+        recent = int(request.args.get('recent', 10))
+    except ValueError:
+        recent = 10
+    capacity = ingest_jobs.snapshot()
+    state, ready, reasons = _service_state()
+    return jsonify({
+        'success': True,
+        'state': state,
+        'ready': ready,
+        'reasons': reasons,
+        'ingest': capacity,
+        'metrics': T.metrics().snapshot(recent=recent),
+        'caches': {
+            'pipelines': pipeline_cache.snapshot(),
+            'viewer_boundary_model': _viewer_model_stats(),
+        },
+    })
+
+
+def _viewer_model_stats() -> dict:
+    from components.viewer import analysis as viewer_analysis
+
+    return viewer_analysis.boundary_model_stats()
 
 
 # Legacy route redirects: the old documents screen became the KB detail
@@ -1293,15 +1409,8 @@ def _release_vector_store_handles(kb_id: str) -> None:
     from the cache does not close anything, so each store is closed explicitly
     first.
     """
-    for key in [k for k in pipelines if k.endswith(f":{kb_id}")]:
-        pipeline = pipelines.pop(key, None)
-        store = getattr(pipeline, "vector_db", None)
-        closer = getattr(store, "close", None)
-        if callable(closer):
-            try:
-                closer()
-            except Exception:
-                logger.warning("Could not close the vector store for %s", kb_id)
+    dropped = pipeline_cache.discard_kb(kb_id)
+    events.emit("pipeline.cache.discarded", kb_id=kb_id, pipelines=dropped)
     gc.collect()
 
 
@@ -1885,11 +1994,20 @@ def _execute_ingest(job) -> dict:
     if not kb:
         raise RuntimeError(f'Knowledge base "{job.kb_id}" no longer exists')
 
-    user_pipeline = get_pipeline(job.session_id, job.kb_id)
     chunking_mode = job.chunking_mode
     deep_analysis = job.deep_analysis
     selected = list(job.methods)
 
+    # Leased, not merely fetched: an ingest outlives the request that asked
+    # for it, and nothing may evict this pipeline -- closing the store it is
+    # writing to -- while the job is running. It still comes from
+    # ``get_pipeline``, so there is one seam for "the pipeline for this
+    # session" and the lease is taken on whatever that seam returned.
+    with pipeline_cache.lease_via(get_pipeline, job.session_id, job.kb_id) as user_pipeline:
+        return _run_ingest(job, kb, user_pipeline, chunking_mode, deep_analysis, selected)
+
+
+def _run_ingest(job, kb, user_pipeline, chunking_mode, deep_analysis, selected) -> dict:
     if deep_analysis and not hasattr(user_pipeline.chunker, 'chunk_text_deep'):
         raise ConfigurationException(
             'Deep Analysis requires the structure-first chunker; this knowledge '
@@ -1955,16 +2073,17 @@ def _execute_ingest(job) -> dict:
         doc_metadata['deep_analysis_status'] = deep_status
         doc_metadata['deep_analysis'] = deep_report
 
-    recorded = tracker.mark_as_ingested(
-        file_path=job.temp_path,
-        doc_id=doc_id,
-        chunk_count=len(chunks),
-        metadata=doc_metadata,
-        kb_id=job.kb_id,
-        pipeline_snapshot=pipeline_snapshot,
-        status='indexed',
-        chunking_mode=chunking_mode,
-    )
+    with T.stage(T.LEDGER):
+        recorded = tracker.mark_as_ingested(
+            file_path=job.temp_path,
+            doc_id=doc_id,
+            chunk_count=len(chunks),
+            metadata=doc_metadata,
+            kb_id=job.kb_id,
+            pipeline_snapshot=pipeline_snapshot,
+            status='indexed',
+            chunking_mode=chunking_mode,
+        )
     if recorded is False:
         # The store holds the rows and the ledger does not know them: that is
         # the partial registration a job must never leave. Take the rows back
@@ -1977,6 +2096,15 @@ def _execute_ingest(job) -> dict:
 
     logger.info(f"Document processed successfully: {len(chunks)} chunks created")
 
+    # Every other pipeline for this knowledge base is now holding a lexical
+    # index that predates this document. Tell them; each rebuilds on its next
+    # query. Without this a document ingested in one browser session is
+    # missing from keyword search in another until the process restarts.
+    stale = pipeline_cache.invalidate_indexes(job.kb_id, except_pipeline=user_pipeline)
+    if stale:
+        events.emit("pipeline.index.invalidated", kb_id=job.kb_id, pipelines=stale,
+                    doc_id=doc_id)
+
     # Hand this ingest's own outputs to the Viewer packager: the
     # canonical the chunker just normalised, and -- on a Deep Analysis
     # upload -- the run it just produced. Both are already in memory,
@@ -1986,25 +2114,26 @@ def _execute_ingest(job) -> dict:
     # fail an upload that already succeeded.
     viewer_state = None
     try:
-        chunker = getattr(user_pipeline, 'chunker', None)
-        viewer_state = stage_viewer_analysis(
-            doc_id,
-            label=job.filename,
-            kb_id=job.kb_id,
-            kb_name=kb.get('name'),
-            chunking_mode=chunking_mode,
-            methods=selected,
-            # Identity is the document's content: the same PDF
-            # uploaded again is the same document, gaining variants
-            # rather than becoming a second entry. Hashed once, at
-            # submission.
-            content_sha=job.content_sha,
-            units=getattr(chunker, 'last_canonical_units', None),
-            deep_result=getattr(chunker, 'last_deep_result', None) if deep_analysis else None,
-            # Measured by the pipeline at this very upload; None for
-            # paths that never parsed (then the Viewer shows no time).
-            parse_seconds=getattr(user_pipeline, 'last_parse_seconds', None),
-        )
+        with T.stage(T.VIEWER):
+            chunker = getattr(user_pipeline, 'chunker', None)
+            viewer_state = stage_viewer_analysis(
+                doc_id,
+                label=job.filename,
+                kb_id=job.kb_id,
+                kb_name=kb.get('name'),
+                chunking_mode=chunking_mode,
+                methods=selected,
+                # Identity is the document's content: the same PDF
+                # uploaded again is the same document, gaining variants
+                # rather than becoming a second entry. Hashed once, at
+                # submission.
+                content_sha=job.content_sha,
+                units=getattr(chunker, 'last_canonical_units', None),
+                deep_result=getattr(chunker, 'last_deep_result', None) if deep_analysis else None,
+                # Measured by the pipeline at this very upload; None for
+                # paths that never parsed (then the Viewer shows no time).
+                parse_seconds=getattr(user_pipeline, 'last_parse_seconds', None),
+            )
     except Exception as viewer_error:  # noqa: BLE001
         logger.warning(f"Could not stage {doc_id} for the viewer: {viewer_error}")
     finally:

@@ -169,6 +169,36 @@ def _isolated_environment():
     paths._ignored_from_env_file.update(ignored)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_process_caches():
+    """Give every test the process-wide caches in their empty state.
+
+    Phase 3 added two things that live for the length of the process on
+    purpose -- the shared Hybrid boundary model and the metrics registry --
+    and process-wide state is exactly what one test leaves behind for the
+    next. A test that expects the boundary model to be loaded would otherwise
+    find one an earlier test had already put there, and counters would carry
+    a previous test's jobs. Both are reset here, for the same reason the
+    environment is: a test's shared state should be its own.
+
+    Only modules that are already imported are touched, so this costs nothing
+    for the tests that never reach them.
+    """
+    import sys
+
+    yield
+
+    analysis = sys.modules.get("components.viewer.analysis")
+    if analysis is not None:
+        analysis.release_boundary_model()
+    telemetry = sys.modules.get("components.observability.telemetry")
+    if telemetry is not None and telemetry._registry is not None:
+        telemetry._registry.reset()
+    app_module = sys.modules.get("app")
+    if app_module is not None and hasattr(app_module, "pipeline_cache"):
+        app_module.pipeline_cache.clear()
+
+
 @pytest.fixture(scope="session")
 def session_state_root() -> str:
     """Where this session's cwd-relative state lives, for tests that want to

@@ -483,20 +483,70 @@ def _chunk_rows(method: str, units: Sequence[Any]) -> list[dict]:
         return structural_chunker.chunk_units(units, counter=counter, **budget)
     if method == M.HYBRID:
         from amsc import hybrid_chunker
-        from amsc.cache import FileEmbeddingCache
-        from amsc.embeddings import (
-            CachedSemanticBoundaryEmbedder, SentenceTransformerBoundaryEmbedder,
-        )
 
-        # The same model, prefix and cache the frozen benchmark's Hybrid arm
-        # used: a live Hybrid variant is that arm, not a lookalike.
-        embedder = CachedSemanticBoundaryEmbedder(
-            SentenceTransformerBoundaryEmbedder.from_pretrained(M.BOUNDARY_MODEL),
-            FileEmbeddingCache(Path(paths.boundary_embedding_cache())),
-        )
-        return hybrid_chunker.chunk_units(units, counter=counter, boundary_embedder=embedder,
+        return hybrid_chunker.chunk_units(units, counter=counter,
+                                          boundary_embedder=_boundary_embedder(),
                                           **budget).chunks
     raise ValueError(f"{method!r} is not a chunker this module runs")
+
+
+#: The Hybrid variant's semantic boundary model, loaded at most once.
+#:
+#: This used to be constructed inside ``_chunk_rows``, so every Hybrid build
+#: loaded ``intfloat/multilingual-e5-base`` again -- a few hundred megabytes of
+#: weights read from disk and turned into a torch model, per document, for a
+#: model that is stateless and identical every time. One process-wide instance
+#: is safe precisely because it is stateless: it maps text to a vector, holds
+#: no per-document state, and the only writer is the single packaging thread.
+#: It is built lazily, so a deployment that never packages a Hybrid variant
+#: never pays for it at all.
+_boundary_lock = threading.Lock()
+_boundary_embedder_instance = None
+_boundary_loads = 0
+
+
+def _boundary_embedder():
+    """The shared boundary model, built on first use."""
+    global _boundary_embedder_instance, _boundary_loads
+    with _boundary_lock:
+        if _boundary_embedder_instance is None:
+            from amsc.cache import FileEmbeddingCache
+            from amsc.embeddings import (
+                CachedSemanticBoundaryEmbedder, SentenceTransformerBoundaryEmbedder,
+            )
+
+            # The same model, prefix and cache the frozen benchmark's Hybrid
+            # arm used: a live Hybrid variant is that arm, not a lookalike.
+            _boundary_embedder_instance = CachedSemanticBoundaryEmbedder(
+                SentenceTransformerBoundaryEmbedder.from_pretrained(M.BOUNDARY_MODEL),
+                FileEmbeddingCache(Path(paths.boundary_embedding_cache())),
+            )
+            _boundary_loads += 1
+        return _boundary_embedder_instance
+
+
+def boundary_model_stats() -> dict:
+    """Whether the Hybrid model is resident, and how often it was built.
+
+    ``loads`` above one means something is dropping the instance between
+    builds, which is the regression this cache exists to prevent.
+    """
+    with _boundary_lock:
+        return {
+            "model": M.BOUNDARY_MODEL,
+            "loaded": _boundary_embedder_instance is not None,
+            "loads": _boundary_loads,
+        }
+
+
+def release_boundary_model() -> bool:
+    """Drop the shared model. For tests and for an operator reclaiming memory
+    on a process that will not package Hybrid again."""
+    global _boundary_embedder_instance
+    with _boundary_lock:
+        had = _boundary_embedder_instance is not None
+        _boundary_embedder_instance = None
+        return had
 
 
 def _deterministic_deep(key: str) -> Any:
