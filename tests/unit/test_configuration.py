@@ -26,6 +26,7 @@ What is proved here:
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -332,11 +333,7 @@ def _code_default(name: str) -> str | None:
         for field, value in limits.to_dict().items():
             if field.upper() == name or f"{field.upper()}_SECONDS" == name:
                 return str(value)
-    import config.settings as settings_module
-
     source = (REPO / "config" / "settings.py").read_text(encoding="utf-8")
-    import re
-
     match = re.search(rf'getenv\(\s*"{re.escape(name)}"\s*,\s*"([^"]*)"', source)
     if match:
         return match.group(1)
@@ -379,7 +376,13 @@ def test_every_declared_override_is_still_a_real_difference(filename):
 
 def test_no_env_file_documents_a_setting_nothing_reads():
     """``env.example`` used to offer circuit breakers, retries, rate limits and
-    a cache that no code has ever read."""
+    a cache that no code has ever read.
+
+    This asks the weaker of the two questions -- is the variable read at all.
+    ``test_every_setting_read_is_a_setting_applied`` below asks the other one,
+    because being read into an attribute nobody looks at is the same silence
+    with an extra step.
+    """
     sources = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in sorted(REPO.glob("**/*.py"))
@@ -429,3 +432,104 @@ def test_a_test_leaves_no_environment_behind(clean_env, monkeypatch):
     test made itself."""
     monkeypatch.setenv("WAITRESS_THREADS", "31")
     assert os.environ["WAITRESS_THREADS"] == "31"
+
+
+# ------------------------------------------- read is not the same as applied
+
+#: Attributes of :class:`Settings` that no other module reads, because
+#: ``Settings`` itself is their consumer. Naming them keeps "used internally"
+#: from becoming a hiding place for "used by nothing": each is here with a
+#: reason, and an attribute that stops having one fails the test below.
+#:
+#: ``runtime_limits``  the thread pool, handed to ``cross_check`` and reported
+#:                     by ``effective_configuration``. The one number anything
+#:                     else needs is lifted out as ``request_threads``.
+#: ``configuration_warnings``  what ``cross_check`` said, for the start-up
+#:                     banner and ``/api/ops/metrics`` to print.
+READ_BY_SETTINGS_ITSELF = frozenset({"runtime_limits", "configuration_warnings"})
+
+
+def test_every_setting_read_is_a_setting_applied():
+    """A knob that turns nothing is worse than no knob at all.
+
+    Phase 7B found ``LOG_TOKEN_USAGE`` and ``LOG_PARSING_STATS`` read into
+    attributes nothing ever looked at. Phase 8 found ten more beside them --
+    the PDF backend, OCR language, text encoding, batch sizes, the generation
+    temperature -- each documented in ``env.example`` as though setting it did
+    something. ``test_no_env_file_documents_a_setting_nothing_reads`` could
+    not see any of them, because they *were* read; they were simply never used.
+
+    So: every attribute ``Settings.__init__`` assigns must be read by
+    something. Its own methods count -- a value ``Settings`` itself consumes
+    is applied, and says so by being listed in ``READ_BY_SETTINGS_ITSELF``. A
+    test does not count, because a setting only tests exercise is a setting
+    production ignores.
+    """
+    import ast
+
+    source = (REPO / "config" / "settings.py").read_text(encoding="utf-8")
+    assigned = {
+        node.attr
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.ctx, ast.Store)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    }
+
+    consumers = [
+        path
+        for path in sorted(REPO.rglob("*.py"))
+        if not (
+            set(path.relative_to(REPO).parts)
+            & {"venv", ".venv", "__pycache__", "tests", "artifacts"}
+        )
+        and path != REPO / "config" / "settings.py"
+    ]
+    elsewhere = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace") for path in consumers
+    )
+
+    inert = []
+    for name in sorted(assigned):
+        if re.search(rf"\b{re.escape(name)}\b", elsewhere):
+            continue
+        reads = len(re.findall(rf"self\.{re.escape(name)}\b", source)) - len(
+            re.findall(rf"self\.{re.escape(name)}\s*=", source)
+        )
+        if reads > 0:
+            if name not in READ_BY_SETTINGS_ITSELF:
+                inert.append(
+                    f"{name} -- read only by Settings itself; add it to "
+                    "READ_BY_SETTINGS_ITSELF, with the reason, if that is right"
+                )
+            continue
+        inert.append(f"{name} -- read by nothing at all")
+
+    assert inert == [], (
+        "these settings are read and then never applied; wire each one, or "
+        "remove it from config/settings.py, env.example and the README:\n  "
+        + "\n  ".join(inert)
+    )
+
+
+def test_the_config_package_builds_no_settings_at_import():
+    """Importing ``config`` applies the ``.env`` file, and does nothing else.
+
+    It used to construct a module-level ``Settings()`` as well, so anything
+    wanting only ``config.paths`` -- a smoke tool, a test, ``utils.logger`` --
+    paid for a full configuration read, and would have failed at *import time*
+    on a bad value, before any process had said it wanted one. Nothing ever
+    imported the instance.
+    """
+    import types
+
+    import config
+    import config.settings as settings_module
+
+    assert not hasattr(settings_module, "settings"), (
+        "config/settings.py builds a module-level Settings() again"
+    )
+    assert "settings" not in config.__all__
+    # ``config.settings`` is the submodule, and only ever that.
+    assert isinstance(config.settings, types.ModuleType)

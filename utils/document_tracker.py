@@ -155,22 +155,6 @@ class DocumentTracker:
             self.ingested_docs = records
             return applied is not False
 
-    def _save_tracking_data(self):
-        """Persist the records this instance holds.
-
-        For callers that edit ``ingested_docs`` directly. It replaces the whole
-        ledger with this instance's view, so it can still drop a record written
-        elsewhere since it loaded; the methods below go through :meth:`_mutate`,
-        which re-reads first and cannot.
-        """
-        snapshot = dict(self.ingested_docs)
-
-        def overwrite(records: Dict[str, Dict]) -> None:
-            records.clear()
-            records.update(snapshot)
-
-        self._mutate(overwrite)
-
     def _compute_file_hash(self, file_path: str) -> str:
         """
         Compute hash of file content

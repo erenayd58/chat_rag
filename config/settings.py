@@ -85,16 +85,15 @@ class Settings:
 
         # Bounded ingest (config/ingest.py documents every knob). Read and
         # validated here so a bad value stops the process at start-up, when
-        # someone is looking, rather than refusing the first upload.
+        # someone is looking, rather than refusing the first upload. The
+        # limits object is the value; only the few names something actually
+        # reads off ``settings`` are lifted out of it, because a mirror
+        # nothing reads is a second place for the same number to live.
         from .ingest import limits_from_env
 
         self.ingest_limits = limits_from_env()
-        self.ingest_workers = self.ingest_limits.workers
-        self.ingest_queue_capacity = self.ingest_limits.queue_capacity
-        self.ingest_job_timeout = self.ingest_limits.job_timeout_seconds
         self.ingest_sync_wait = self.ingest_limits.sync_wait_seconds
         self.ingest_job_retention = self.ingest_limits.job_retention_seconds
-        self.ingest_sync_waiters = self.ingest_limits.sync_waiters
         self.provider_max_inflight = self.ingest_limits.provider_max_inflight
         self.deep_analysis_concurrency = self.ingest_limits.deep_concurrency
         self.embedding_max_inflight = self.ingest_limits.embedding_max_inflight
@@ -110,7 +109,6 @@ class Settings:
         self.query_max_active = self.query_limits.max_active
         self.answer_max_inflight = self.query_limits.answer_max_inflight
         self.query_timeout = self.query_limits.timeout_seconds
-        self.answer_slot_wait = self.query_limits.answer_wait_seconds
 
         # The rules that span two groups -- a synchronous upload that outlives
         # the connection, a thread ration that leaves nothing free -- checked
@@ -212,35 +210,19 @@ class Settings:
         self.enable_conversation = os.getenv("ENABLE_CONVERSATION", "true").lower() == "true"
         self.max_conversation_history = int(os.getenv("MAX_CONVERSATION_HISTORY", "10"))
         
-        # LLM Generation Settings
-        self.llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.3"))
-        self.llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "200"))
-        
         # Reranker Settings
         self.reranker_type = os.getenv("RERANKER_TYPE", "llm")  # 'llm' or 'cross_encoder'
         self.cross_encoder_model = os.getenv("CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-        
-        # Document Parser Settings
-        self.pdf_parser_backend = os.getenv("PDF_PARSER_BACKEND", "pymupdf")  # 'pymupdf' or 'unstructured'
-        self.pdf_extract_images = os.getenv("PDF_EXTRACT_IMAGES", "false").lower() == "true"
-        self.pdf_extract_tables = os.getenv("PDF_EXTRACT_TABLES", "true").lower() == "true"
-        self.ocr_language = os.getenv("OCR_LANGUAGE", "eng")
-        self.markdown_strip_formatting = os.getenv("MARKDOWN_STRIP_FORMATTING", "false").lower() == "true"
-        self.text_encoding = os.getenv("TEXT_ENCODING", "utf-8")
         
         # Document Input Settings
         self.documents_input_path = os.getenv("DOCUMENTS_INPUT_PATH", "./documents")
         self.documents_recursive = os.getenv("DOCUMENTS_RECURSIVE", "true").lower() == "true"
         
-        # Batch Processing Settings
-        self.max_parallel_documents = int(os.getenv("MAX_PARALLEL_DOCUMENTS", "5"))
-        self.max_file_size_mb = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
-        
-        # Logging Settings
-        self.log_level = os.getenv("LOG_LEVEL", "INFO")
-        self.log_token_usage = os.getenv("LOG_TOKEN_USAGE", "true").lower() == "true"
-        self.log_parsing_stats = os.getenv("LOG_PARSING_STATS", "true").lower() == "true"
-    
+        # Logging is not read here at all: utils/logger.py owns LOG_LEVEL,
+        # LOG_FILE_LEVEL and the rotation limits, and is the one group that
+        # falls back rather than refusing to start (docs/configuration.md).
+        # A second reader here would be a second answer to the same question.
+
     def to_dict(self) -> Dict[str, Any]:
         """Every setting, with credentials redacted.
 
@@ -300,18 +282,4 @@ class Settings:
     def get(self, key: str, default: Any = None) -> Any:
         """Get a setting value"""
         return getattr(self, key, default)
-    
-    def validate(self) -> bool:
-        """Validate required settings"""
-        if self.llm_provider == "azure":
-            if not self.azure_endpoint or not self.azure_api_key:
-                raise ValueError("Azure endpoint and API key are required when using Azure OpenAI")
-        elif self.llm_provider == "ollama":
-            if not self.ollama_base_url or not self.ollama_model:
-                raise ValueError("Ollama base URL and model are required when using Ollama")
-        return True
-
-
-# Global settings instance
-settings = Settings()
 

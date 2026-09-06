@@ -14,6 +14,12 @@ previous ledger intact. These tests are what hold that.
 
 Nothing here touches the developer's ``.ingested_documents.json`` -- every
 tracker is pointed at a file under ``tmp_path``.
+
+Phase 8 removed the last way back to the old behaviour: ``_save_tracking_data``
+survived Phase 1B as an unused private method that wrote this instance's whole
+in-memory view over the file, documented as able to drop a record written
+elsewhere. Nothing called it, so it was one wrong ``self._save...()`` away from
+undoing all of the above. The test at the end of this file holds that gone.
 """
 
 from __future__ import annotations
@@ -199,3 +205,31 @@ def test_an_unparseable_ledger_is_kept_rather_than_destroyed(ledger, documents, 
     kept = sorted(tmp_path.joinpath("state").glob("ingested_documents.json.corrupt-*"))
     assert len(kept) == 1, f"the unreadable ledger was not kept: {kept}"
     assert "doc-from-before" in kept[0].read_text(encoding="utf-8")
+
+
+def test_the_ledger_has_no_write_path_that_skips_the_re_read(ledger, documents):
+    """Every change goes through ``_mutate``, which re-reads inside the lock.
+
+    ``_save_tracking_data`` was the exception -- it replaced the file with
+    this instance's in-memory snapshot, which is exactly the lost update the
+    rest of this file exists to prevent. It had no caller and was removed;
+    this is what stops it, or another like it, from coming back unnoticed.
+    """
+    tracker = DocumentTracker(str(ledger))
+
+    assert not hasattr(tracker, "_save_tracking_data")
+
+    public = [
+        name for name in dir(tracker)
+        if not name.startswith("__") and callable(getattr(tracker, name))
+    ]
+    import inspect
+
+    for name in public:
+        source = inspect.getsource(getattr(tracker, name))
+        if "_write_records(" not in source:
+            continue
+        assert name in ("_mutate", "_write_records"), (
+            f"{name} writes the ledger without going through _mutate, so a "
+            "concurrent writer's record can be lost"
+        )

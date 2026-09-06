@@ -951,11 +951,6 @@ def enqueue(key: str) -> str:
     return STATUS_PENDING
 
 
-def pending_count() -> int:
-    with _lock:
-        return len(_inflight)
-
-
 def sweep_scratch() -> int:
     """Remove the scratch files a killed process left behind.
 

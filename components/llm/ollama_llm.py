@@ -128,33 +128,6 @@ class OllamaLLM(BaseLLM):
             RAGLogger.log_llm_response(logger, error_msg, success=False)
             raise LLMException(error_msg)
     
-    def _format_messages(self, messages: List[Dict[str, str]]) -> str:
-        """
-        Format messages into a prompt string for Ollama
-        
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-        
-        Returns:
-            Formatted prompt string
-        """
-        prompt_parts = []
-        
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            
-            if role == "system":
-                prompt_parts.append(f"System: {content}")
-            elif role == "user":
-                prompt_parts.append(f"User: {content}")
-            elif role == "assistant":
-                prompt_parts.append(f"Assistant: {content}")
-        
-        # Note: We avoid adding an explicit trailing assistant cue to reduce odd completions in JSON mode
-        
-        return "\n\n".join(prompt_parts)
-    
     def get_name(self) -> str:
         """Get the LLM provider name"""
         return "Ollama"

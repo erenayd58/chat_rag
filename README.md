@@ -807,9 +807,9 @@ CROSS_ENCODER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
 DOCUMENTS_INPUT_PATH=./documents
 DOCUMENTS_RECURSIVE=true
 
-# Logging
+# Logging (utils/logger.py owns these)
 LOG_LEVEL=INFO
-LOG_TOKEN_USAGE=true
+LOG_FILE_LEVEL=INFO
 ```
 
 For complete configuration options, see `env.example`.
@@ -818,11 +818,12 @@ For complete configuration options, see `env.example`.
 
 `CHUNKER_TYPE=legacy` preserves the existing `SemanticChunker`. Setting
 `CHUNKER_TYPE=v4`, or selecting `v4` while creating a knowledge base in the
-web UI, uses the Phase-5 AMSC V4/A4 implementation. The dependency is pinned to
-`erenayd58/chunk` commit
-`1e7f7186c13729c739ccb3170da0892f7350cb27`; the integration rejects any V4
-config whose semantic hash differs from `f29f805deee9189c`. V4 does not accept
-runtime chunk-size or threshold parameters.
+web UI, uses the Phase-5 AMSC V4/A4 implementation. The `amsc-poc` revision it runs
+against is the one `requirements.txt` pins — that line is the only place the
+commit is written, and `tests/unit/test_amsc_pin.py` checks it — and the
+integration rejects any V4 config whose semantic hash differs from
+`FROZEN_V4_CONFIG_HASH` in `components/chunker/frozen_v4_chunker.py`. V4 does
+not accept runtime chunk-size or threshold parameters.
 
 The current parsers return flat text. The normalization adapter therefore maps
 blank-line-delimited parser blocks to ordered canonical paragraphs and does not
@@ -844,8 +845,8 @@ boundary embeddings use `.cache/boundary-embeddings`.
 ### Retrieval profiles
 
 `RETRIEVAL_PROFILE=legacy` preserves the existing chat_rag retrieval behavior.
-`RETRIEVAL_PROFILE=benchmark_aligned` selects the Phase 4/5 profile pinned at
-commit `1e7f7186c13729c739ccb3170da0892f7350cb27`: multilingual E5 role prefixes,
+`RETRIEVAL_PROFILE=benchmark_aligned` selects the frozen Phase 4/5 profile:
+multilingual E5 role prefixes,
 normalized deterministic long-text pooling, Unicode BM25, and equal-weight RRF
 with a 100-result pool and `k=60`. Query expansion, contextualization, and
 reranking are disabled in this profile. Its E5 model is loaded with

@@ -20,6 +20,12 @@ The fifth owner is outside this package: ``utils/logger.py`` resolves
 ``LOG_LEVEL``, ``LOG_FILE_LEVEL`` and the rotation limits, and deliberately
 falls back rather than refusing to start. ``docs/configuration.md`` says why.
 
+The class, not an instance: importing ``config`` reads the ``.env`` file and
+nothing else. A process builds its own :class:`Settings` when it is ready to
+(``app.py`` does, and hands a per-knowledge-base copy to each pipeline), so a
+tool that only wants ``config.paths`` does not pay for -- or fail on -- a full
+configuration it never asked for.
+
 ``.env`` is applied **here**, once, before any config module reads anything.
 It used to be applied by ``config.settings``, which meant a module that
 imported ``config.paths`` or ``utils.logger`` first could read the environment
@@ -41,6 +47,6 @@ ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
 #: must not move them.
 APPLIED_ENV_FILE = paths.load_env_file(ENV_FILE)
 
-from .settings import Settings, settings  # noqa: E402  (after the .env is applied)
+from .settings import Settings  # noqa: E402  (after the .env is applied)
 
-__all__ = ["Settings", "settings", "paths", "ENV_FILE", "APPLIED_ENV_FILE"]
+__all__ = ["Settings", "paths", "ENV_FILE", "APPLIED_ENV_FILE"]
