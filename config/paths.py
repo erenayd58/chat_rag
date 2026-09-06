@@ -193,7 +193,7 @@ def canonical_cache() -> str:
 
 
 def viewer_live_analysis() -> str:
-    """Where this console packages its documents for the Viewer v2.
+    """Where this console packages its documents for the Viewer.
 
     One directory per ingested document, holding the canonical units the
     chunking ran on, the packaged Deep Analysis arm and the viewer payload

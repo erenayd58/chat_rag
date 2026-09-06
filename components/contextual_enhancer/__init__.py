@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/contextual_enhancer/__init__.py
 """
 Contextual enhancer component
 """

@@ -1,6 +1,6 @@
 """Configuration for the RAG console.
 
-Five owners, one each, and one precedence rule:
+Six owners, one each, and one precedence rule:
 
     the real process environment  >  accepted values from ``.env``  >  the
     application default written on the setting's own dataclass field
@@ -16,7 +16,7 @@ Five owners, one each, and one precedence rule:
 the three limit objects, validated at construction so a bad value stops the
 process at start-up rather than at the first request.
 
-The fifth owner is outside this package: ``utils/logger.py`` resolves
+The sixth owner is outside this package: ``utils/logger.py`` resolves
 ``LOG_LEVEL``, ``LOG_FILE_LEVEL`` and the rotation limits, and deliberately
 falls back rather than refusing to start. ``docs/configuration.md`` says why.
 

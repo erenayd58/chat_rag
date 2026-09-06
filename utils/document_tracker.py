@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/utils/document_tracker.py
 """
 Document tracking system to avoid re-ingesting documents
 """

@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/examples/ollama_example.py
 """
 Example demonstrating Ollama LLM usage
 """

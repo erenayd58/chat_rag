@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/main_new.py
 """
 CLI Chat application with automatic document ingestion
 """

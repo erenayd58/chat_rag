@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/chunker/base.py
 """
 Base chunker abstraction
 """

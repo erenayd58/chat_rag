@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/embedding/base.py
 """
 Base embedding abstraction
 """

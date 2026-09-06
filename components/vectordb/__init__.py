@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/vectordb/__init__.py
 """
 Vector database component
 """

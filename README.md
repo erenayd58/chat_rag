@@ -1,89 +1,162 @@
-# /Users/murseltasgin/projects/chat_rag/README.md
-# Advanced RAG System with Conversational Context
+# RAG Console — retrieval-augmented question answering over PDF documents
 
-A modular, production-ready Retrieval-Augmented Generation (RAG) system with sophisticated ingestion and query pipelines.
+Upload a PDF into a knowledge base, and ask questions of it. The document is
+parsed once into canonical units, chunked by a chosen method, embedded and
+indexed; a question retrieves from that index, assembles a labelled context
+and gets one answer that cites its sources. A companion **Viewer** shows where
+each chunking method put its boundaries, on the same documents.
 
-## Features
+The system is two repositories:
 
-- **Semantic Chunking**: Context-preserving document chunking with overlap
-- **Contextual RAG**: Document metadata enrichment and context awareness
-- **Query Understanding**: Automatic query clarification and expansion
-- **Hybrid Retrieval**: Combines vector search (semantic) with BM25 (keyword)
-- **Intelligent Reranking**: LLM-based or Cross-Encoder reranking for optimal results
-- **Conversation Tracking**: Multi-turn conversation support with reference resolution
-- **Smart Search Strategy**: Automatically selects optimal retrieval method
-- **Multiple LLM Providers**: Support for Azure OpenAI and Ollama
-- **Multiple Vector DBs**: Support for ChromaDB and FAISS
-- **Knowledge Base Management**: Create and manage multiple knowledge bases
-- **Document Tracking**: Automatic tracking to avoid re-processing documents
-- **Web Interface**: Modern browser-based UI for document management and chat
-- **CLI Interface**: Command-line chat application with automatic ingestion
-- **Modular Architecture**: Pluggable components following SOLID principles
+| repo | what it is |
+|---|---|
+| **`chat_rag`** (this one) | the product — Flask console and API, ingest jobs, retrieval, the answer chain, resource limits, observability, configuration |
+| **`chunk`** (`amsc-poc`) | the chunking library, installed from a pinned commit — chunking methods, Deep Analysis, the canonical PDF adapter, the Viewer page builder and server, all research and benchmark code |
 
-## Architecture
+`chunk` is expected beside this checkout (`../chunk`).
+[docs/architecture.md](docs/architecture.md) is the map: what each repo owns,
+the two runtime flows, and which file to open for what.
 
-```
-chat_rag/
-├── config/                  # Configuration management
-│   ├── __init__.py
-│   └── settings.py         # Central config from .env
-├── core/                   # Core data models and exceptions
-│   ├── __init__.py
-│   ├── models.py          # Data models (DocumentChunk, RetrievalResult, etc.)
-│   └── exceptions.py      # Custom exceptions
-├── components/            # Pluggable components
-│   ├── chunker/          # Text chunking strategies
-│   │   ├── base.py       # Base chunker interface
-│   │   └── semantic_chunker.py
-│   ├── embedding/        # Embedding models
-│   │   ├── base.py       # Base embedding interface
-│   │   └── sentence_transformer_embedding.py
-│   ├── vectordb/         # Vector database providers
-│   │   ├── base.py       # Base vectordb interface
-│   │   ├── chroma_vectordb.py  # ChromaDB implementation
-│   │   └── faiss_vectordb.py   # FAISS implementation
-│   ├── llm/              # LLM providers
-│   │   ├── base.py       # Base LLM interface
-│   │   ├── azure_openai_llm.py  # Azure OpenAI implementation
-│   │   └── ollama_llm.py        # Ollama implementation
-│   ├── retriever/        # Retrieval strategies
-│   │   ├── base.py       # Base retriever interface
-│   │   └── hybrid_retriever.py
-│   ├── query_processor/  # Query understanding and enhancement
-│   │   └── query_enhancer.py
-│   ├── reranker/         # Result reranking
-│   │   ├── base.py      # Base reranker interface
-│   │   ├── reranker.py  # LLM-based reranker
-│   │   └── cross_encoder_reranker.py  # Cross-encoder reranker
-│   ├── conversation/     # Conversation management
-│   │   └── conversation_manager.py
-│   ├── document_processor/ # Document preprocessing
-│   │   └── document_processor.py
-│   ├── parsers/            # Document parsers
-│   │   ├── base.py        # Base parser interface
-│   │   ├── pdf_parser.py  # PDF parsing
-│   │   ├── docx_parser.py # DOCX parsing
-│   │   ├── markdown_parser.py  # Markdown parsing
-│   │   ├── text_parser.py # Plain text parsing
-│   │   ├── image_parser.py # Image OCR parsing
-│   │   └── parser_factory.py  # Parser factory
-│   └── contextual_enhancer/ # Contextual enrichment
-│       └── contextual_enhancer.py
-│   └── knowledgebase/    # Knowledge base management
-│       └── manager.py    # Multi-KB manager
-├── pipeline/             # Main orchestration
-│   ├── __init__.py
-│   └── rag_pipeline.py   # Main RAG pipeline
-├── utils/                # Utilities
-│   ├── logger.py         # Logging utilities
-│   └── document_tracker.py # Document ingestion tracking
-├── main_new.py           # CLI chat application
-├── app.py                # Web application (Flask)
-├── requirements.txt      # Dependencies
-└── env.example          # Environment variables template
+---
+
+## Documentation
+
+Start here, then follow the question you have:
+
+| doc | answers |
+|---|---|
+| **[docs/architecture.md](docs/architecture.md)** | What is the system, which repo owns what, where is the code for X |
+| **[docs/operations.md](docs/operations.md)** | How do I run it, what are the limits, and what does *this* 503 mean |
+| **[docs/configuration.md](docs/configuration.md)** | Where does a setting come from, who owns it, what wins |
+| **[docs/testing.md](docs/testing.md)** | What to run before calling a change done, and the order for cross-repo changes |
+| **[docs/limitations.md](docs/limitations.md)** | What this system does not do, and why |
+| **[../chunk/docs/adding-a-chunker.md](../chunk/docs/adding-a-chunker.md)** | How to add a chunking method, end to end |
+| **[../chunk/docs/viewer-architecture.md](../chunk/docs/viewer-architecture.md)** | How the Viewer works across both repos, and how to debug a package |
+| **[../chunk/docs/library-surface.md](../chunk/docs/library-surface.md)** | What is product, research and legacy in the library, and what the console may import |
+| [CHUNK_YONTEMLERI_VE_SORGU_EKRANI.md](CHUNK_YONTEMLERI_VE_SORGU_EKRANI.md) | The four chunking methods and the query screen, in plain Turkish, for a non-technical reader |
+
+---
+
+## First day
+
+Ten steps from a clone to having added a chunking method. Each is explained
+further down or in the doc it names.
+
+```bash
+# 1. clone both repositories side by side
+git clone <chat_rag-url> chat_rag
+git clone <chunk-url>    chunk
+cd chat_rag
+
+# 2. environment
+python -m venv venv                       # Python 3.11–3.13
+venv\Scripts\activate                     # macOS/Linux: source venv/bin/activate
+pip install -r requirements.txt
+python setup_nltk.py
+cp env.example .env                       # PowerShell: Copy-Item env.example .env
+
+# 3. prove the declared source installs and runs (minutes; needs Docker)
+python tools/verify_reproducibility.py --local
+
+# 4. start the product and the Viewer
+.\start-demo.ps1                          # or: python app.py  (see "Running it by hand")
 ```
 
-## The model chain
+Then, in the browser and the terminal:
+
+5. **upload a PDF** — open <http://127.0.0.1:5005>, create a knowledge base,
+   upload a document, choose **Deep Analysis** if a provider key is configured
+   and **Standard** if not. The first parse of a PDF takes minutes; the second
+   takes under a second.
+6. **ask a question** — `/chat`, pick the knowledge base, ask. The answer
+   cites `[S1]`, `[S2]`… back to the chunks it used.
+7. **open the Viewer** — <http://127.0.0.1:8765>, pick the document, select
+   two methods, and step through the boundaries where they disagree.
+8. **look at the instruments** — `GET /api/health` (three fields: alive,
+   ready, what an operator should do) and `GET /api/ops/metrics` (counters,
+   stage latency, error categories, budgets, caches).
+   [docs/operations.md](docs/operations.md) reads them for you.
+9. **run the tests** — `python -m pytest -q` here, `py -3.11 -m pytest` in
+   `../chunk`. [docs/testing.md](docs/testing.md).
+10. **add a trivial chunker** — copy `chunk/src/amsc/example_chunker.py`, add
+    one `ChunkMethod` to `amsc/methods.py`, add a test. It appears in the
+    upload form, the Viewer and the benchmark with no console change.
+    [../chunk/docs/adding-a-chunker.md](../chunk/docs/adding-a-chunker.md).
+
+---
+
+## Local setup
+
+### Prerequisites
+
+| | |
+|---|---|
+| Python | **3.11–3.13**. The library (`chunk`) declares `>=3.11,<3.14`, and the reproducibility gate builds its clean environment with 3.11. |
+| The `chunk` checkout | beside this one (`../chunk`), or named by `CHUNK_REPO` / `start-demo.ps1 -ChunkPath` |
+| A provider key | optional. Without one: uploading, parsing, chunking, structural QA and BM25 search all work; generated answers do not. |
+| Ollama | optional, for local answers or as the fallback model. It runs on the host, not in this process. |
+| Docker | only for the container run and the full reproducibility gate |
+
+### Install
+
+```bash
+python -m venv venv
+venv\Scripts\activate            # macOS/Linux: source venv/bin/activate
+pip install -r requirements.txt
+python setup_nltk.py             # NLTK data used by the legacy chunker
+cp env.example .env
+```
+
+`requirements.txt` installs `amsc-poc` from a pinned commit of the `chunk`
+repository. For library development install it editable instead, so your
+working tree is what the console imports:
+
+```bash
+pip install -e ../chunk
+```
+
+### Configure
+
+`env.example` is the map: every application default appears as a commented-out
+line, and the uncommented lines are the demo profile. Copy it to `.env` and
+change what you need. The full precedence rules and who owns which setting are
+in [docs/configuration.md](docs/configuration.md).
+
+The minimum for generated answers is one key:
+
+```env
+OPENROUTER_API_KEY=<your key>
+```
+
+With `.env` as shipped, that key serves all three model roles. With no key at
+all the console still runs — see the table above.
+
+### Run it by hand
+
+```bash
+python app.py        # development: Werkzeug, loopback only, debugger on
+python -m wsgi       # production: waitress, all interfaces, no debugger
+```
+
+Both serve <http://127.0.0.1:5005>. Which one is running is not a detail —
+[docs/operations.md](docs/operations.md) says why.
+
+### Common startup failures
+
+| symptom | cause |
+|---|---|
+| `ValueError` naming an env variable, before the server binds | a configuration value was refused. That is deliberate: bad values stop the process while someone is looking. [docs/configuration.md](docs/configuration.md) |
+| `ModuleNotFoundError: amsc` | `pip install -r requirements.txt` did not run, or the pinned commit is unreachable. `python tools/import_smoke.py` says which `amsc` answered |
+| the Viewer link is dead, or `start-demo.ps1` fails on the Viewer | the Viewer page is a build artifact, not in version control. The launcher builds it; by hand it is `py -3.11 -m amsc.viewer_v3 --output artifacts/viewer-v3/index.html` in `../chunk` |
+| a port is already in use | `start-demo.ps1` recognises a server it already started and refuses a port held by something else. `-ProductPort` / `-ViewerPort` move them |
+| the first upload seems to hang | it does not — layout parsing is minutes per document on CPU, and the job is running. Poll `GET /api/ingest/jobs/<job_id>` |
+| answers fail but search works | no provider key, or an unreachable gateway. The answer model carries the reason; retrieval never depended on it |
+
+---
+
+## What runs, and where
+
+### The model chain
 
 Three model roles, one OpenRouter key, each role configured on its own:
 
@@ -117,12 +190,142 @@ its token estimate, embedding model and fingerprint, answer provider and
 model, whether the fallback answered, and per-stage latency. Prompts and
 keys are never stored.
 
+### The chunking modes
+
+Chosen at upload, never at query time.
+
+| Mode | What runs | When the model is unavailable |
+|---|---|---|
+| Standard | The frozen structure-first walk (`amsc.structural_chunker`). Fast, deterministic, no model. | — |
+| Deep Analysis | `amsc.deep_pipeline.chunk_document(mode="deep")`: the same structural walk, a backend LLM **proposer** (one bounded prompt per section that still has a choice), the deterministic **quality selector** (never worse than Standard on any smell type), the double-order **verifier** (a change is kept only when it wins in both orders) and the quality measurement. | The ingest still completes on the deterministic quality contract and the document is labelled with the pipeline status — never passed off as Standard. |
+
+Deep Analysis statuses, as recorded on the document and shown under the
+chunking badge: `ok` (quality checks passed), `deterministic` (LLM not
+requested), `fallback_no_provider` (model or key not configured),
+`fallback_provider_error` (every model call failed), `degraded` (some calls
+failed; those sections kept their deterministic result). The document's
+**Details** row shows quality before → after, model/verifier usage and the
+structural checks (hard token cap, coverage).
+
+Configuration is backend-only (`DEEP_ANALYSIS_MODEL`, `DEEP_ANALYSIS_ENDPOINT`,
+`DEEP_ANALYSIS_API_KEY_ENV`, `DEEP_ANALYSIS_VERIFY`, …; see `env.example`).
+Only the *name* of the key variable is configured; the key is read at request
+time by the provider and never stored, logged or written to provenance. Chat
+reads the chunks that were indexed at upload; no ingest model runs during a
+question.
+
+An upload also chooses **which chunking methods to analyse the document
+with**, independently of the mode it is indexed under: the PDF is parsed once
+and every chosen method runs over that one canonical, so the Viewer can
+compare them side by side. `GET /api/demo/methods` says which methods this
+machine can run, and why one cannot.
+
+### Default demo profile
+
+The low-cost profile validated on the KKB documents:
+
+```env
+CHUNKER_TYPE=structure_first
+RETRIEVAL_PROFILE=bm25_only
+```
+
+Structure-first chunking lets document structure decide chunk boundaries
+(a chunk opens at every heading and section change, oversized units split at
+table row / list item / sentence seams) and BM25-only retrieval loads no
+embedding model at all: no dense vectors are computed or stored in this
+profile. The legacy and V4 chunkers and the `legacy` / `benchmark_aligned`
+retrieval profiles remain selectable for comparison.
+
+**First upload of a PDF is slow.** Parsing runs layout inference over every
+logical page, which is a few seconds per page on CPU -- an 85-page report takes
+roughly ten minutes, and essentially all of it is layout model inference rather
+than anything in this repository. The resulting canonical units are cached on
+disk under `.cache/canonical-units/`, keyed by the PDF content hash, so
+re-ingesting the same document afterwards takes well under a second. For a
+demo, upload the document once beforehand. Deleting the cache directory is
+safe; it is regenerated on the next ingest. Set `STRUCTURED_PARSER_CACHE` to
+move it elsewhere.
+
+### LLM Provider Setup
+
+**Option 1: Azure OpenAI (Cloud-based)**
+```env
+LLM_PROVIDER=azure
+AZURE_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_API_KEY=your-api-key
+AZURE_DEPLOYMENT=gpt-4o
+```
+
+**Option 2: Ollama (Local, Free)**
+```bash
+# Install Ollama first from https://ollama.ai
+# Pull a model
+ollama pull llama2
+
+# Configure in .env
+LLM_PROVIDER=ollama
+OLLAMA_MODEL=llama2
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+Ollama runs on the host, not in this process. With `ANSWER_PROVIDER`
+unset, `LLM_PROVIDER` still selects the answer model, which is why both
+names appear in `env.example`.
+
+### The indexing chunker
+
+A knowledge base is created with one **indexing** chunker — what its retrieval
+index actually holds. This is a deliberately smaller table than the analysis
+methods above (`components/chunker/registry.py`), and an analysis method is
+never accepted as one:
+
+| `CHUNKER_TYPE` | what it is |
+|---|---|
+| `structure_first` | the demo profile: document structure decides the boundaries |
+| `legacy` | the original `SemanticChunker` — word windows with overlap |
+| `v4` | the frozen AMSC V4/A4 implementation, for comparison |
+
+`v4` is frozen: the `amsc-poc` revision it runs
+against is the one `requirements.txt` pins — that line is the only place the
+commit is written, and `tests/unit/test_amsc_pin.py` checks it — and the
+integration rejects any V4 config whose semantic hash differs from
+`FROZEN_V4_CONFIG_HASH` in `components/chunker/frozen_v4_chunker.py`. V4 does
+not accept runtime chunk-size or threshold parameters.
+
+The current parsers return flat text. The normalization adapter therefore maps
+blank-line-delimited parser blocks to ordered canonical paragraphs and does not
+guess headings, pages, tables, lists, or visuals. If a parser supplies structured
+unit metadata, the same adapter preserves those fields directly.
+
+To compare two indexing chunkers, create one knowledge base with each, upload
+the same document to both, and run the identical query against each in the
+Lab's retrieval experimentation.
+
+The first V4 ingestion may download `intfloat/multilingual-e5-base`; subsequent
+boundary embeddings use `.cache/boundary-embeddings`.
+
+### Retrieval profiles
+
+`RETRIEVAL_PROFILE=legacy` preserves the existing chat_rag retrieval behavior.
+`RETRIEVAL_PROFILE=benchmark_aligned` selects the frozen Phase 4/5 profile:
+multilingual E5 role prefixes,
+normalized deterministic long-text pooling, Unicode BM25, and equal-weight RRF
+with a 100-result pool and `k=60`. Query expansion, contextualization, and
+reranking are disabled in this profile. Its E5 model is loaded with
+`local_files_only=true`, matching the frozen benchmark configuration.
+
+Indexes are profile-specific because the embedding models and dimensions differ.
+Use a new vector-database path/collection and re-ingest documents when changing
+profiles; do not point `benchmark_aligned` at an index created by `legacy`.
+
+---
+
 ## Demo mode (product + Agentic Chunking Viewer)
 
 The proof of concept has two faces: this product (how it is used) and the
-chunk repository's **Viewer v2** (what the chunking technology does
-underneath — Sunum / Sorgu / Debug / Benchmark). They stay separate servers;
-one script starts both for a presentation.
+chunk repository's **Viewer v3** (what the chunking technology does
+underneath — where each method put its boundaries, and why). They stay
+separate servers; one script starts both for a presentation.
 
 ```powershell
 .\start-demo.ps1      # start both, wait until each answers, open the product
@@ -230,304 +433,7 @@ with sources; **4.** Agentic Chunking Viewer; **5.** Sunum (the four methods
 side by side) → Debug (why each boundary) → Benchmark; then back to the
 product.
 
-## Bounded ingest (uploads as jobs)
-
-An upload is an **ingest job**. `POST /api/documents/upload` validates the
-request, stages the file and queues the job; the parse, the chunking, any
-Deep Analysis model calls, the embeddings, the store write and the ledger
-write happen on an ingest worker. Two answers are possible:
-
-* `async=1` (what the console sends): **202** at once with `job_id` and the
-  job; poll `GET /api/ingest/jobs/<job_id>` until `status` is terminal.
-* otherwise the request waits for the job (up to `INGEST_SYNC_WAIT` seconds)
-  and answers exactly as before: **200** with the document, **409** when the
-  store must be re-indexed first, **503** when Deep Analysis cannot run on this
-  knowledge base, **500** on failure. A job still running when the wait runs
-  out is answered **202** with the job to poll.
-
-Job states: `queued` → `running` → `succeeded` | `failed` | `timed_out` |
-`cancelled` | `interrupted`. A full queue refuses the upload with **503**,
-`overloaded: true` and a `Retry-After` header; nothing is queued and nothing
-is kept. The same file uploaded again for the same knowledge base and methods
-while the first is still in flight is *attached* to that job (`attached:
-true`, same `job_id`). One ingest runs per knowledge base at a time;
-different knowledge bases run in parallel up to `INGEST_WORKERS`.
-
-| Setting | Default | Bounds |
-|---|---|---|
-| `INGEST_WORKERS` | 2 | jobs running at once (parsing, chunking, local embedding) |
-| `INGEST_QUEUE_CAPACITY` | 8 | jobs waiting behind busy workers |
-| `INGEST_JOB_TIMEOUT` | 1800 s | how long a job may run once started |
-| `INGEST_SYNC_WAIT` | 840 s | how long a synchronous upload waits before 202 |
-| `INGEST_SYNC_WAITERS` | half of `WAITRESS_THREADS` | request threads that may block on an upload |
-| `INGEST_JOB_RETENTION` | 3600 s | how long a finished job stays queryable |
-| `PROVIDER_MAX_INFLIGHT` | 8 | Deep proposer + verifier calls in flight, process-wide |
-| `DEEP_ANALYSIS_CONCURRENCY` | 8 | one Deep job's own call pool |
-| `EMBEDDING_MAX_INFLIGHT` | 4 | embedding requests in flight, process-wide |
-
-**The resource model.** Every externally multiplying call is bounded, and by
-its own limit so that one service cannot starve another:
-
-| Work | Bound |
-|---|---|
-| Deep proposer / verifier calls | `PROVIDER_MAX_INFLIGHT` global, `DEEP_ANALYSIS_CONCURRENCY` per job |
-| Embedding requests (remote provider) | `EMBEDDING_MAX_INFLIGHT` global |
-| Embedding batches (local model) | `INGEST_WORKERS` — CPU on the worker |
-| Parsing, chunking, indexing | `INGEST_WORKERS` |
-| Viewer packaging | its single thread; it makes no provider call |
-| Answer model at query time | `ANSWER_MAX_INFLIGHT` global; request threads in a query by `QUERY_MAX_ACTIVE`; the whole query by `QUERY_TIMEOUT` (see *Bounded queries*) |
-
-Both caps are taken per call, not per job: a Deep job's pool of eight shares
-`PROVIDER_MAX_INFLIGHT` slots call by call with every other Deep job, and the
-number in flight across the process never exceeds it. A budget guarantees
-**boundedness, not fairness** — no ordering among waiters is promised, and a
-waiter cannot hang because every wait is bounded by the job's own deadline.
-
-**Deadline semantics: cooperative, with the network boundary enforced.** The
-deadline is checked at stage boundaries — after parsing, after chunking,
-before the store write — and before every outbound call, so a job that runs
-out of time stops with nothing committed. Work already inside a stage runs to
-the end of that stage; a parse is not interrupted. The one place where the
-overshoot would otherwise be a whole `DEEP_ANALYSIS_TIMEOUT` is a network
-call, so each call's socket timeout is clamped to the time the job has left.
-A ledger that cannot be written takes the store rows back out.
-
-**Restart.** Jobs live in memory and none is resumed — nothing was committed,
-because the ledger write is a job's last act. What does survive is the
-*answer*: every job journals its transitions (`INGEST_JOB_RETENTION` applies
-to those records too), and start-up settles whatever was in flight against
-the ledger. A client holding a `job_id` from before a restart gets
-`succeeded` when the ledger holds the document that job wrote, and
-`interrupted` — "the server stopped, nothing was registered, upload it
-again" — when it does not. **404** now means only that the job is older than
-the retention window. The staging directory is swept at start-up, because a
-file there belongs to no job.
-
-`GET /api/health` and `GET /api/ingest/jobs` show the capacity picture,
-including both budgets and how many finished jobs are retained;
-`DELETE /api/ingest/jobs/<job_id>` cancels a queued job at once and a running
-one at its next boundary.
-
-## Bounded queries (chat under limits)
-
-A question is answered on the request thread that received it: retrieval,
-context assembly and the answer-model call all happen there, because a chat
-answer is synchronous. What multiplies under load is therefore request
-threads held for the length of a provider call, and three bounds close that
-(`components/query/limits.py`, `config/query.py`):
-
-| Setting | Default | Bounds |
-|---|---|---|
-| `QUERY_MAX_ACTIVE` | `WAITRESS_THREADS - INGEST_SYNC_WAITERS - 1` (3) | request threads inside a query at once |
-| `ANSWER_MAX_INFLIGHT` | 4 | answer-model calls in flight, process-wide, every session |
-| `QUERY_TIMEOUT` | 180 s | one question, start to answer |
-| `ANSWER_SLOT_WAIT` | 30 s | how long a question waits for an answer slot before it is refused |
-
-**Admission is immediate and never queues.** `POST /api/query` either enters
-now or is refused now with **503**, `overloaded: true`, `reason: admission`
-and a `Retry-After` (derived from the median recent query time, within 2–30
-seconds). A queued question would hold the very thread the limit exists to
-keep free. The default is derived so that questions and synchronous uploads
-together can never take every request thread, which is what keeps
-`/api/health`, `/api/ops/metrics` and job polling answerable under any burst
-of either; `tests/integration/test_query_starvation.py` proves it on the
-real server, and the process warns at start-up when an explicit setting
-gives that guarantee up. The chat page puts the question back in the box
-with a "busy, try again in N seconds" notice.
-
-**The answer budget is a third budget on purpose.** In the demo all three
-roles — Deep Analysis, embeddings, answers — reach one gateway with one
-key, so one cap on "OpenRouter calls" is the obvious alternative, and the
-wrong one. A Deep call is one short vote among dozens made in bulk from a
-background worker; an answer is one long interactive completion a person is
-watching. One semaphore would let a Deep job holding eight slots make every
-chat wait for an ingest, and a busy afternoon of chat stall the ingest
-queue. The fallback answer model is also a local Ollama whose cost is this
-host's CPU, which Deep calls to a remote gateway must not spend. Separate
-budgets give each path a floor whatever the other is doing. A question that
-cannot get an answer slot within `ANSWER_SLOT_WAIT` is refused as
-`reason: answer_capacity`, the same **503** shape, so "raise
-`QUERY_MAX_ACTIVE`" and "raise `ANSWER_MAX_INFLIGHT`" stay distinguishable.
-
-**Deadline semantics: cooperative, with the network boundary enforced** —
-the same claim ingest makes, and no stronger. The deadline is checked before
-every outbound call and while waiting for a slot; each answer attempt's
-socket timeout is clamped to the time left and a retry there is no time for
-is skipped; the fallback model is not tried with no time left; the query's
-own embedding call goes through the ingest embedding wrapper, which already
-honours the guard. What is *not* interrupted: a lexical index rebuild on the
-request thread, a store lookup, a local model's forward pass, and an Ollama
-call — its client timeout is fixed at construction and `chat` takes none per
-call, so it is refused before it starts but never shortened. A question can
-overshoot `QUERY_TIMEOUT` by the longest such stage, never by a whole
-provider timeout on top. When it passes, the answer is **504**,
-`timed_out: true`. Capacity — admission, the answer slot, the pipeline
-lease — is released on every exit.
-
-**Local models are loaded once per name.** A pipeline is built per browser
-session and knowledge base; each used to load its own copy of the
-sentence-transformers embedder (and, on the legacy profile, the
-cross-encoder), so `PIPELINE_CACHE_MAX` was also a multiplier on model
-memory. Both are now shared process-wide by model name; `caches.local_models`
-on the metrics endpoint shows what is resident and how often it was loaded.
-
-**The Lab's search endpoints run under the same limits.** `POST
-/api/chunks/search-vector`, `/api/chunks/search-bm25`,
-`/api/experiment/search_chunks` and `/api/experiment/rank_chunks` do the
-front half of a query on the request thread — embed the question, search the
-store, build the lexical index if this pipeline has not built it yet — so
-under no limit at all they were a way around `QUERY_MAX_ACTIVE`: a burst of
-them could hold every request thread, each waiting an unbounded time for an
-embedding slot. They take the same admission counter (the bound is on
-request threads doing retrieval, whichever endpoint asked), the same
-deadline, the same pipeline lease and the same telemetry, under
-`mode: lab.*` so an operator can tell them from chat. They make no
-answer-model call, so they are given no answer budget. Their answers are
-unchanged apart from the two refusals every query path shares: **503** when
-admission is full, **504** past the deadline.
-
-**A limit is never a fallback.** The enhancement paths degrade on purpose —
-a clarification the model could not produce falls back to the original
-question, a strategy to hybrid, a document summary to the title — and that
-stays. It must not extend to a deadline, a refused budget or a
-cancellation: swallowed into a fallback, those become a query that runs on
-past its deadline making calls that are refused in turn and then answers
-from heuristics as though nothing happened. `RESOURCE_CONTROL_EXCEPTIONS`
-(`core/exceptions.py`) names the four, and every fallback handler in the
-query enhancer, the contextual enhancer, the LLM reranker and the pipeline
-re-raises them first.
-
-**Every query is measured with the ingest instrument.** A query is a trace
-of kind `query` with stages `retrieve`, `rerank` (legacy profile), `context`
-and `answer`, plus provider seconds and slot wait recorded by the budget
-wrapper. `GET /api/ops/metrics` carries `metrics.queries` — active and peak
-active, p50/p95/max per stage, provider wait, outcomes (`succeeded`,
-`failed`, `timed_out`, `rejected`) and the last few traces — and `query`
-(admission and answer-budget counters, the limits, the deadline semantics
-in one sentence). `/api/health` carries one line: `query.active`,
-`max_active`, `answer_inflight`, `answer_limit`, and reports `overloaded`
-while every query slot is in use. The response's `metadata.query` carries
-the same timing for that one question, so a slow answer can be correlated
-with the metrics by `query_id`. The log carries the question's length, the
-stage times and the outcome; never the question, a chunk or the answer. The
-legacy profile's step-by-step retrieval trace — which used to print the
-question, the clarified rewrite, every generated variation and the
-conversation so far to stdout, a deployment's log stream — is at `DEBUG`
-with the rest of the content-bearing output, so `LOG_FILE_LEVEL=DEBUG` still
-gets all of it and the default gets none of it.
-
-## Operating it: health, metrics and the caches
-
-`GET /api/health` is the small one, for a probe: liveness, readiness and a
-line of capacity. It answers three different questions with three fields,
-and they are not the same question:
-
-| Field | Question | When it changes |
-|---|---|---|
-| `status` | Is the process alive? | Never, while it answers at all. It is the historical `healthy` value, kept so existing probes and the serve smoke keep working. |
-| `ready` | May traffic be sent here? | Never, in practice. It stays true while overloaded and while degraded, because refusing traffic during an overload makes the overload worse and a degraded process still serves reads. |
-| `state` | What should an operator do? | `ok`, `overloaded` (the ingest queue is full, so uploads are being refused; chat and search still work -- wait, do not restart) or `degraded` (something needs a person, named in `reasons`). |
-
-`degraded` has two causes: the knowledge base records cannot be read, or the
-last `DEGRADED_AFTER_JOBS` (5) ingest jobs all failed -- the "healthy but
-broken" case, where the process is serving and the queue is empty because
-every job dies. It is a ratio over the bounded metrics window rather than a
-latch, so a service that recovers stops reporting it. Where both apply,
-`degraded` wins over `overloaded`: being full is transient, and failing is not.
-
-`reasons` are written for an operator, and go through the same redaction as
-everything else here -- a storage error names what failed, not where the data
-root lives.
-
-`GET /api/ops/metrics` is the one to read when health says to look closer:
-
-* **counters** — jobs accepted, succeeded, failed, timed out, cancelled,
-  rejected, and restart-settled;
-* **stage latency** — p50/p95/max for `parse`, `chunk`, `deep_analysis`,
-  `embed`, `index`, `ledger` and `viewer_stage`, plus queue wait and total job
-  time, over a bounded window of recent jobs;
-* **errors** — counts by category (`configuration`, `provider`, `storage`,
-  `timeout`, `overloaded`, …) with a few example messages each;
-* **capacity** — workers, queue, both provider budgets and how long callers
-  have spent waiting for a slot;
-* **caches** — the pipeline cache's size against its bound, and whether the
-  Hybrid boundary model is resident.
-
-`?recent=N` (max 25) sets how many individual job traces come back. Every
-part of this answer is bounded by construction, so its size does not grow
-with uptime. A single job's own timing is on its job record, at
-`GET /api/ingest/jobs/<job_id>`.
-
-**What this endpoint may contain.** Counts, durations, categories, states,
-and the ids an operator needs to correlate a job with a log line -- job ids,
-knowledge base ids, chunking modes. No document text, no chunk, no filename,
-no temp path, no key. The one place arbitrary text could arrive is the few
-example messages kept per error category, and an exception string is written
-for a developer standing in a source tree: an ordinary `[Errno 2]` names the
-account, the deployment's layout and the document, none of which a credential
-filter would catch. Every such message is therefore redacted where it is
-stored -- credential shapes blanked, absolute paths replaced by `<path>`,
-length capped -- so what is served says *what* failed and not *where*. The
-endpoint has no access boundary of its own because the application has none
-to reuse: everything it serves is aggregate by construction, and strictly
-less than `/api/kb` and `/api/chunks` already return to the same caller.
-
-**Where the logs go, and how big they get.** This application owns its file
-sink -- it is not a container's stdout that something else rotates. It writes
-`logs/rag_<timestamp>.log` under the data root, and to the console as well.
-That file used to grow in two directions at once: without a size limit, and
-with one more file per restart that nothing ever removed. Both are bounded
-now, by `LOG_MAX_BYTES` x (`LOG_BACKUPS` + 1) for a single run and
-`LOG_RUNS_KEPT` for the directory -- a little under half a gigabyte at the
-defaults, and no logging platform involved. Console output stays the
-deployment's to collect.
-
-**The file handler is at `INFO` by default, and that is deliberate.** This
-system's request and retrieval dumps -- full prompts, full retrieved chunks,
-the whole answer context -- are written at `DEBUG`, and a log file is the
-most-copied artefact a service has: tailed, shipped, pasted into tickets. A
-default that puts a copy of the corpus there is a decision nobody makes on
-purpose, so it is not the default. Everything an operator needs stays at
-`INFO`: the lifecycle events below, start-up, ingest and every error.
-
-A developer debugging retrieval opts in explicitly with `LOG_FILE_LEVEL=DEBUG`,
-and the process says so in a warning line at start-up. An unrecognised value
-falls back to `INFO`, not to `DEBUG` -- a typo in a deployment's configuration
-must not be the thing that starts writing document text to disk.
-
-**Operational logs.** Lifecycle events are written to the `RAG.ops` logger as
-one line each, in a stable `event=… job_id=… kb_id=…` shape:
-`ingest.job.accepted`, `.started`, `.succeeded`, `.failed`, `.timed_out`,
-`.cancelled`, `.rejected`, `.attached`, `.restart_settled`. Values are
-redacted before they are written -- document text, chunks, prompts and
-anything credential-shaped cannot reach a log line through this path, which
-is what makes it safe to leave on and to paste into a ticket.
-
-**What is bounded, and by what**
-
-| Resource | Bound |
-|---|---|
-| Built pipelines (models, store handles, lexical indexes) | `PIPELINE_CACHE_MAX` (8), `PIPELINE_CACHE_TTL` (1800 s) |
-| Job registry and journal | `INGEST_JOB_RETENTION` (3600 s), 500 records |
-| Metrics window | 200 traces, 5 messages per error category |
-| Hybrid boundary model | one shared instance, loaded on first use |
-| Staged uploads | deleted with the job; swept at start-up |
-| `logs/` | `LOG_MAX_BYTES` (10 MB) x (`LOG_BACKUPS` + 1) per run, `LOG_RUNS_KEPT` (10) runs kept; `LOG_FILE_LEVEL` is `INFO`, so no content is written |
-
-A pipeline is evicted only when nothing is using it: an ingest job leases its
-pipeline for the length of the job, so a burst of browser traffic cannot
-close the store a job is writing to. When a document is ingested, every
-*other* pipeline for that knowledge base drops its lexical index and rebuilds
-it on the next query -- without that, a document uploaded in one browser was
-missing from keyword search in another until the process restarted.
-
-**Deliberately not bounded**, with the reason:
-
-| Grows with | Why it is left alone |
-|---|---|
-| `artifacts/viewer-live/` — one directory per analysed document | Product data, not a cache: it is what the Viewer reads. It is deleted with its document and is regenerable from an ingest. Bounding it would mean deleting analyses a user still expects to open. |
-| `.cache/canonical-units/`, `.cache/embeddings/`, `.cache/boundary-embeddings/` | Content-addressed caches on disk, not in memory. They trade disk for a re-parse or a re-embed, and both are safe to delete at any time. Capping them needs an eviction policy and a size accounting that this product has no evidence it needs yet. |
-| Chat history per session | Already bounded by `MAX_CONVERSATION_HISTORY`, and it goes when its pipeline is evicted. |
+---
 
 ## Running with Docker
 
@@ -641,747 +547,40 @@ healthcheck calls.
 docker compose ps          # STATUS shows (healthy)
 ```
 
-## Installation
+---
 
-### Prerequisites
+## The console API
 
-- Python 3.8 or higher
-- pip package manager
-- (Optional) Ollama installed locally if using Ollama LLM provider
+The screens are `/` (knowledge bases), `/chat`, `/documents`, `/chunks` and
+`/lab`. Everything they do is an HTTP call you can make yourself:
 
-### Step-by-Step Installation
-
-1. **Clone the repository**
-```bash
-git clone <repository-url>
-cd chat_rag
-```
-
-2. **Create a virtual environment (recommended)**
-```bash
-python -m venv venv
-
-# On macOS/Linux:
-source venv/bin/activate
-
-# On Windows:
-venv\Scripts\activate
-```
-
-3. **Install dependencies**
-```bash
-pip install -r requirements.txt
-```
-
-4. **Download NLTK data**
-```bash
-python setup_nltk.py
-```
-
-5. **Configure environment**
-```bash
-# Copy the example environment file
-cp env.example .env
-
-# Edit .env with your configuration
-# For Azure OpenAI: Set AZURE_ENDPOINT, AZURE_API_KEY, AZURE_DEPLOYMENT
-# For Ollama: Set LLM_PROVIDER=ollama and OLLAMA_MODEL
-```
-
-### Default demo profile
-
-The low-cost profile validated on the KKB documents:
-
-```env
-CHUNKER_TYPE=structure_first
-RETRIEVAL_PROFILE=bm25_only
-```
-
-Structure-first chunking lets document structure decide chunk boundaries
-(a chunk opens at every heading and section change, oversized units split at
-table row / list item / sentence seams) and BM25-only retrieval loads no
-embedding model at all: no dense vectors are computed or stored in this
-profile. The legacy and V4 chunkers and the `legacy` / `benchmark_aligned`
-retrieval profiles remain selectable for comparison.
-
-**First upload of a PDF is slow.** Parsing runs layout inference over every
-logical page, which is a few seconds per page on CPU -- an 85-page report takes
-roughly ten minutes, and essentially all of it is layout model inference rather
-than anything in this repository. The resulting canonical units are cached on
-disk under `.cache/canonical-units/`, keyed by the PDF content hash, so
-re-ingesting the same document afterwards takes well under a second. For a
-demo, upload the document once beforehand. Deleting the cache directory is
-safe; it is regenerated on the next ingest. Set `STRUCTURED_PARSER_CACHE` to
-move it elsewhere.
-
-### LLM Provider Setup
-
-**Option 1: Azure OpenAI (Cloud-based)**
-```env
-LLM_PROVIDER=azure
-AZURE_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_API_KEY=your-api-key
-AZURE_DEPLOYMENT=gpt-4o
-```
-
-**Option 2: Ollama (Local, Free)**
-```bash
-# Install Ollama first from https://ollama.ai
-# Pull a model
-ollama pull llama2
-
-# Configure in .env
-LLM_PROVIDER=ollama
-OLLAMA_MODEL=llama2
-OLLAMA_BASE_URL=http://localhost:11434
-```
-
-See [Ollama Guide](docs/OLLAMA_GUIDE.md) for more details.
-
-## Configuration
-
-Precedence, highest first: **the real process environment**, then **`.env`**,
-then **the application default** written on the setting's own dataclass field.
-`.env` is applied once by `config/__init__.py`, before any config module reads
-anything; it is the only dotenv read in the application. One deliberate
-exception: a state path (`VECTOR_DB_PATH`, `STRUCTURED_PARSER_CACHE`) from
-`.env` is ignored once `CHAT_RAG_DATA_DIR` is set, so a leftover local file
-cannot move a deployment's data.
-
-Five owners, one each: `config/paths.py` (where state goes),
-`config/runtime.py` (host, port, request threads, channel timeout),
-`config/ingest.py`, `config/query.py` and `config/settings.py` (models,
-endpoints, retrieval, parsing). `utils/logger.py` owns the logging settings and
-is the one group that falls back rather than refusing to start — see the note
-on why. An invalid value stops the process at start-up with the variable's
-name.
-
-`env.example` shows every default as a commented-out line; the uncommented
-lines are the demo profile. **[docs/configuration.md](docs/configuration.md)**
-is the full map: precedence, the owners, cross-setting rules, Docker
-differences, secrets, diagnostics and how to add a setting.
-
-### Key Configuration Options
-
-```env
-# LLM Provider (azure or ollama)
-LLM_PROVIDER=azure
-
-# Azure OpenAI (when LLM_PROVIDER=azure)
-AZURE_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_API_KEY=your-api-key
-AZURE_DEPLOYMENT=gpt-4o
-
-# Ollama (when LLM_PROVIDER=ollama)
-OLLAMA_MODEL=llama2
-OLLAMA_BASE_URL=http://localhost:11434
-
-# Embedding Model
-EMBEDDING_MODEL=all-MiniLM-L6-v2
-
-# Vector Database Provider (chroma or faiss)
-VECTOR_DB_PROVIDER=chroma
-VECTOR_DB_PATH=./chroma_db
-
-# Chunking
-CHUNKER_TYPE=legacy  # legacy or v4
-CHUNK_SIZE=512
-CHUNK_OVERLAP=128
-MIN_CHUNK_SIZE=50
-
-# Retrieval
-RETRIEVAL_PROFILE=legacy  # legacy or benchmark_aligned
-DEFAULT_TOP_K=5
-VECTOR_WEIGHT=0.7
-BM25_WEIGHT=0.3
-
-# Conversation
-ENABLE_CONVERSATION=true
-MAX_CONVERSATION_HISTORY=10
-
-# Reranker Configuration
-RERANKER_TYPE=cross_encoder  # Options: 'llm' or 'cross_encoder'
-CROSS_ENCODER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
-
-# Document Input
-DOCUMENTS_INPUT_PATH=./documents
-DOCUMENTS_RECURSIVE=true
-
-# Logging (utils/logger.py owns these)
-LOG_LEVEL=INFO
-LOG_FILE_LEVEL=INFO
-```
-
-For complete configuration options, see `env.example`.
-
-### Frozen V4/A4 chunking
-
-`CHUNKER_TYPE=legacy` preserves the existing `SemanticChunker`. Setting
-`CHUNKER_TYPE=v4`, or selecting `v4` while creating a knowledge base in the
-web UI, uses the Phase-5 AMSC V4/A4 implementation. The `amsc-poc` revision it runs
-against is the one `requirements.txt` pins — that line is the only place the
-commit is written, and `tests/unit/test_amsc_pin.py` checks it — and the
-integration rejects any V4 config whose semantic hash differs from
-`FROZEN_V4_CONFIG_HASH` in `components/chunker/frozen_v4_chunker.py`. V4 does
-not accept runtime chunk-size or threshold parameters.
-
-The current parsers return flat text. The normalization adapter therefore maps
-blank-line-delimited parser blocks to ordered canonical paragraphs and does not
-guess headings, pages, tables, lists, or visuals. If a parser supplies structured
-unit metadata, the same adapter preserves those fields directly.
-
-To run the minimal product demo:
-
-1. Install `requirements.txt` and start `python app.py` (or `python -m wsgi`).
-2. Create one knowledge base with chunker `legacy` and another with `v4`.
-3. Upload a document to either knowledge base and ask a question from the chat.
-4. Open `/documents` to inspect the stored chunks and retrieval results.
-5. To compare the same query, select each knowledge base in turn in Retrieval
-   Experimentation and run the identical query.
-
-The first V4 ingestion may download `intfloat/multilingual-e5-base`; subsequent
-boundary embeddings use `.cache/boundary-embeddings`.
-
-### Retrieval profiles
-
-`RETRIEVAL_PROFILE=legacy` preserves the existing chat_rag retrieval behavior.
-`RETRIEVAL_PROFILE=benchmark_aligned` selects the frozen Phase 4/5 profile:
-multilingual E5 role prefixes,
-normalized deterministic long-text pooling, Unicode BM25, and equal-weight RRF
-with a 100-result pool and `k=60`. Query expansion, contextualization, and
-reranking are disabled in this profile. Its E5 model is loaded with
-`local_files_only=true`, matching the frozen benchmark configuration.
-
-Indexes are profile-specific because the embedding models and dimensions differ.
-Use a new vector-database path/collection and re-ingest documents when changing
-profiles; do not point `benchmark_aligned` at an index created by `legacy`.
-
-## Running it
-
-There are two entrypoints, and which one is running is not a detail.
-
-| | Command | Server | Binds | Debugger |
-|---|---|---|---|---|
-| Development | `python app.py` | Werkzeug | `127.0.0.1` | on (`FLASK_DEBUG=false` turns it off) |
-| Production | `python -m wsgi` | waitress | `0.0.0.0` | none |
-
-`python app.py` is for a developer at a keyboard: it keeps the reloader and the
-traceback page, and it listens on loopback only so neither is offered to the
-network the machine has joined. It is not a production runtime and is no longer
-what a deployment reaches -- the container's `CMD` is `python -m wsgi`.
-
-`python -m wsgi` serves the same application on waitress: **one process** with a
-bounded pool of request threads (`WAITRESS_THREADS`, default 8), plus the one
-background thread that packages documents for the Viewer. One process is a
-deliberate choice, not a limitation of the server -- the packaging queue lives
-in memory, the per-knowledge-base pipeline cache is a module global, and the
-vector store is an embedded database rather than a database server, so a second
-worker process would duplicate all three. `wsgi.py` says so in more detail.
-
-It stops on SIGTERM (what `docker stop` and service managers send) as well as on
-Ctrl+C, draining in-flight requests first.
-
-### Where state goes
-
-One setting decides: `CHAT_RAG_DATA_DIR`. Set it, and the knowledge base
-records, the ingest ledger, the gold set, the vector stores, the parser's
-canonical-unit cache and the logs all live under it. Leave it unset -- a local
-checkout -- and every path stays exactly where it has always been, relative to
-the working directory.
-
-`VECTOR_DB_PATH` still names the fallback vector store outright, for a
-deployment that really does keep it elsewhere. But it is honoured only from the
-actual environment: a value for it in `.env` is ignored once a data directory
-has been declared, because `.env` describes a developer's own layout and a
-deployment that has named its data directory has not asked for that layout. The
-start-up banner says which paths are in effect and names anything it refused.
-
-Two checks prove a build can run at all, both cheap enough for the image build:
-
-```bash
-python tools/import_smoke.py   # the declared dependencies satisfy every import
-python tools/serve_smoke.py    # `python -m wsgi` binds, answers /api/health, stops
-```
-
-### Does a clean clone work?
-
-Green tests do not answer that. They once stayed green through a
-`requirements.txt` that could not be installed at all, because every machine
-running them already had the package and an editable checkout of the sibling
-library. So there is a separate gate, and it is one command:
-
-```bash
-python tools/verify_reproducibility.py
-```
-
-It clones this repository from the remote, checks the clone carries no state
-from your machine, installs the pinned `amsc` revision into a fresh Python 3.11
-environment, imports it, builds the Viewer v3 product shell from it, then
-builds and runs the container and asks it for `/api/health`. Every check
-reports PASS, FAIL or SKIP -- SKIP means a capability is missing (no Docker, no
-Python 3.11, no network) or a tier was not asked for, never that something was
-checked and forgiven.
-
-| Flag | What it adds |
+| group | endpoints |
 |---|---|
-| `--with-host-install` | installs `requirements.txt` into a fresh venv on this machine as well (several minutes, ~1 GB of wheels) |
-| `--local` | clones this checkout instead of the remote, to run the gate before pushing |
-| `--no-docker` | skips the container checks |
-| `--keep` | leaves the temporary clone and environments behind for inspection |
+| knowledge bases | `GET|POST /api/kb`, `GET|PUT|DELETE /api/kb/<kb_id>`, `GET /api/kb/options`, `GET /api/kb/<kb_id>/embedding-index`, `POST /api/kb/<kb_id>/reindex-embeddings` |
+| documents | `POST /api/documents/upload`, `GET /api/documents`, `DELETE /api/documents/<doc_id>`, `GET /api/documents/<doc_id>/chunks`, `GET /api/documents/<doc_id>/canonical-units` |
+| ingest jobs | `GET /api/ingest/jobs`, `GET|DELETE /api/ingest/jobs/<job_id>` |
+| asking | `POST /api/query`, `POST /api/clear` |
+| the Lab | `POST /api/chunks/search-vector`, `POST /api/chunks/search-bm25`, `POST /api/experiment/search_chunks`, `POST /api/experiment/rank_chunks` |
+| chunks | `GET|POST /api/chunks`, `GET|PUT|DELETE /api/chunks/<chunk_id>` |
+| gold set | `GET|POST /api/goldset`, `DELETE /api/goldset/<entry_id>` |
+| the Viewer bridge | `GET /api/demo/workspace`, `GET /api/demo/methods`, `GET|POST /api/demo/viewer-analysis/<doc_id>`, `POST /api/demo/viewer-analysis/<doc_id>/methods` |
+| instruments | `GET /api/health`, `GET /api/ops/metrics`, `GET /api/stats`, `GET /api/models`, `GET /api/retrieval/capabilities` |
 
-The same command runs in CI on every push to `main` and
-`refactor/productionization` (`.github/workflows/reproducibility.yml`), so what
-fails there fails here too, with the same output.
+`POST /api/documents/upload` and `POST /api/query` are the two that can refuse
+you under load, with **503** and a `Retry-After`, or **504** past a deadline.
+[docs/operations.md](docs/operations.md) says what each refusal means.
 
-## Quick Start
+## The offline CLI
 
-### 1. Installation (5 minutes)
+For evaluating a knowledge base without the browser:
 
 ```bash
-# Clone and navigate
-git clone <repository-url>
-cd chat_rag
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Setup NLTK data
-python setup_nltk.py
-
-# Configure environment
-cp env.example .env
-# Edit .env with your credentials
+python -m cli inspect --kb <name>                                  # how it is configured
+python -m cli search  --kb <name> --query "..."                    # one query, with sources
+python -m cli qa      --kb <name>                                  # structural QA over the corpus
+python -m cli report  --kb <name> --gold artifacts/gold/<set>.json # an exportable QA package
+python -m cli eval    --kb <name> --gold artifacts/gold/<set>.json # a frozen gold set through retrieval
+python -m cli gold    --help                                       # freeze reviewed marks into a gold set
 ```
 
-### 2. Choose Your Interface
-
-**Option A: CLI Chat (Simple)**
-```bash
-# Add documents to ./documents folder
-# Start CLI application
-python main_new.py
-```
-
-**Option B: Web Application (Full Features)**
-```bash
-# Development server (reloader and debugger, loopback only)
-python app.py
-# Open browser: http://127.0.0.1:5005
-```
-
-For anything that is not a developer at a keyboard, run the production server
-instead -- see [Running it](#running-it):
-```bash
-python -m wsgi
-```
-
-### 3. Start Chatting
-
-- CLI: Type questions directly in the terminal
-- Web: Use the browser interface to chat and manage documents
-
-See detailed usage sections below for more information.
-
-## Usage
-
-### CLI Chat Application
-
-The command-line interface provides an interactive chat experience with automatic document ingestion.
-
-**Start the CLI application:**
-```bash
-python main_new.py
-```
-
-**What happens when you start:**
-1. Configuration is loaded from `.env` file
-2. RAG pipeline is initialized with your settings
-3. Documents are automatically scanned from `DOCUMENTS_INPUT_PATH` (default: `./documents`)
-4. New documents are ingested (already processed documents are skipped)
-5. Interactive chat session begins
-
-**Available CLI Commands:**
-- Type your question and press Enter to chat
-- `help` - Show available commands
-- `stats` - Display document statistics (total documents, chunks, size, etc.)
-- `clear` - Clear conversation history
-- `exit` or `quit` - Exit the application
-
-**Example CLI Session:**
-```bash
-$ python main_new.py
-
-================================================================================
-  RAG CONVERSATIONAL CHAT
-  Retrieval-Augmented Generation with Document Ingestion
-================================================================================
-
-⚙️  Loading configuration...
-✓ Configuration loaded
-
-🚀 Initializing RAG pipeline...
-✓ Pipeline initialized
-
-================================================================================
-DOCUMENT INGESTION
-================================================================================
-
-📂 Scanning for documents in: ./documents
-   Found 2 new document(s)
-   Skipping 0 already ingested document(s)
-
-📥 Ingesting new documents...
-
-[1/2] Processing: report.pdf
-  ✓ Success: 15 chunks created
-
-[2/2] Processing: notes.pdf
-  ✓ Success: 22 chunks created
-
-✓ Successfully ingested 2 new document(s)
-
-📊 DOCUMENT STATISTICS
-================================================================================
-Total Documents: 2
-Total Chunks: 37
-Total Size: 2.45 MB
-
-================================================================================
-💬 CHAT MODE
-================================================================================
-
-You: What is the main topic?
-Assistant: The main topic covers project documentation and requirements...
-
-📚 Show sources? (y/n): y
-
-📄 Sources:
-1. report.pdf
-   Section: Introduction
-   Relevance Score: 0.856
-   Preview: The document discusses...
-
-You: 
-```
-
-### Web Application
-
-The web application provides a modern browser-based interface with advanced features.
-
-**Start the web application:**
-```bash
-python app.py
-```
-
-**Access the application:**
-Open your browser to: `http://localhost:5005`
-
-**Web Application Features:**
-- 🎨 Modern UI with gradient design
-- 💬 Real-time conversational chat with multi-turn support
-- 📚 Source citations with relevance scores
-- 📊 Document and knowledge base statistics
-- 📁 Document management (upload, view, delete)
-- 🔍 Chunk browsing and editing
-- 🗄️ Multiple knowledge base support
-- 🗑️ Clear conversation history
-- 📱 Fully responsive design
-
-**Important Notes:**
-- The web app runs on port **5005** (not 5000)
-- Documents can be managed through the web interface at `/documents`
-- Multiple knowledge bases can be created and managed
-- Each knowledge base can have its own vector database, embedding model, and chunker configuration
-
-### Knowledge Base Management
-
-The system supports multiple knowledge bases, each with its own configuration:
-
-**Creating a Knowledge Base (via Web UI):**
-1. Click "➕ New KB" button in the web interface
-2. Configure:
-   - Name: Descriptive name for the KB
-   - Vector DB Provider: chroma or faiss
-   - Embedding Model: Model name for embeddings
-   - Chunker Config: Chunking parameters
-   - Vector DB Path: Storage location (optional)
-
-**Using Knowledge Bases:**
-- Each KB has a unique ID
-- Documents are ingested into specific KBs
-- Queries can target specific KBs or use the default
-- KBs can be managed through the web interface
-
-**Programmatic KB Management:**
-```python
-from components.knowledgebase.manager import KnowledgeBaseManager
-
-kb_manager = KnowledgeBaseManager()
-
-# Create a new KB
-kb = kb_manager.create(
-    name="Technical Documentation",
-    vector_db_provider="faiss",
-    embedding_model_name="all-MiniLM-L6-v2"
-)
-
-# List all KBs
-all_kbs = kb_manager.list()
-
-# Get a specific KB
-kb_config = kb_manager.get(kb_id="abc12345")
-
-# Update a KB
-kb_manager.update(kb_id="abc12345", updates={"name": "Updated Name"})
-
-# Delete a KB
-kb_manager.delete(kb_id="abc12345")
-```
-
-### Document Ingestion
-
-**Automatic Ingestion (CLI):**
-- Documents in `./documents` folder are automatically ingested on startup
-- Already processed documents are skipped (tracked in `.ingested_documents.json`)
-
-**Manual Ingestion (Web UI):**
-- Open a knowledge base and use **Upload Document**
-- Choose the chunking mode per document: **Standard** or **Deep Analysis**
-- Documents are processed and indexed automatically
-
-**Chunking modes (chosen at upload, never at query time):**
-
-| Mode | What runs | When the model is unavailable |
-|---|---|---|
-| Standard | The frozen structure-first walk (`amsc.structural_chunker`). Fast, deterministic, no model. | — |
-| Deep Analysis | `amsc.deep_pipeline.chunk_document(mode="deep")`: the same structural walk, a backend LLM **proposer** (one bounded prompt per section that still has a choice), the deterministic **quality selector** (never worse than Standard on any smell type), the double-order **verifier** (a change is kept only when it wins in both orders) and the quality measurement. | The ingest still completes on the deterministic quality contract and the document is labelled with the pipeline status — never passed off as Standard. |
-
-Deep Analysis statuses, as recorded on the document and shown under the
-chunking badge: `ok` (quality checks passed), `deterministic` (LLM not
-requested), `fallback_no_provider` (model or key not configured),
-`fallback_provider_error` (every model call failed), `degraded` (some calls
-failed; those sections kept their deterministic result). The document's
-**Details** row shows quality before → after, model/verifier usage and the
-structural checks (hard token cap, coverage).
-
-Configuration is backend-only (`DEEP_ANALYSIS_MODEL`, `DEEP_ANALYSIS_ENDPOINT`,
-`DEEP_ANALYSIS_API_KEY_ENV`, `DEEP_ANALYSIS_VERIFY`, …; see `env.example`).
-Only the *name* of the key variable is configured; the key is read at request
-time by the provider and never stored, logged or written to provenance. Chat
-reads the chunks that were indexed at upload; no ingest model runs during a
-question.
-
-**Programmatic Ingestion:**
-```python
-from pipeline import RAGPipeline
-from config import Settings
-
-settings = Settings()
-pipeline = RAGPipeline(settings=settings)
-
-# Ingest from directory
-results = pipeline.ingest_documents_from_directory(
-    directory_path="./my_documents",
-    recursive=True
-)
-
-# Ingest single file
-chunks = pipeline.ingest_document_from_file("./documents/report.pdf")
-```
-
-### Basic Usage
-
-```python
-from pipeline import RAGPipeline
-from config import Settings
-
-# Initialize
-settings = Settings()
-rag_pipeline = RAGPipeline(settings=settings)
-
-# Ingest documents from default directory (set in .env: DOCUMENTS_INPUT_PATH)
-results = rag_pipeline.ingest_documents_from_directory()
-
-# Or specify a custom directory
-results = rag_pipeline.ingest_documents_from_directory(
-    directory_path="./my_documents",
-    recursive=True,
-    file_pattern="*.pdf"  # Optional: filter by file type
-)
-
-# Ingest a single document
-chunks = rag_pipeline.ingest_document_from_file("./documents/report.pdf")
-
-# Retrieve relevant information
-results, metadata = rag_pipeline.retrieve(
-    query="What is John Smith's role?",
-    top_k=5
-)
-
-# Format results for LLM
-context = rag_pipeline.get_retrieval_context(results)
-print(context)
-```
-
-### Conversational Usage
-
-```python
-# Turn 1
-results1, _ = rag_pipeline.retrieve("What is John Smith's role?")
-assistant_response = "John Smith is a Senior Software Engineer."
-rag_pipeline.add_assistant_response(assistant_response)
-
-# Turn 2 - Ambiguous reference resolved automatically
-results2, _ = rag_pipeline.retrieve("How old is he?")
-# System automatically clarifies to "How old is John Smith?"
-
-# View conversation history
-print(rag_pipeline.get_conversation_summary())
-```
-
-### Custom Components
-
-You can replace any component with your own implementation:
-
-```python
-from components.llm import BaseLLM
-from components.embedding import BaseEmbedding
-from components.reranker import CrossEncoderReranker
-
-# Use cross-encoder reranker for better performance
-cross_encoder = CrossEncoderReranker(
-    model_name="cross-encoder/ms-marco-MiniLM-L-6-v2"
-)
-rag_pipeline = RAGPipeline(reranker=cross_encoder, settings=settings)
-
-# Custom LLM
-class MyCustomLLM(BaseLLM):
-    def generate(self, messages, temperature=0.3, max_tokens=200, **kwargs):
-        # Your implementation
-        pass
-    
-    def get_name(self):
-        return "MyCustomLLM"
-    
-    def get_model_name(self):
-        return "custom-model"
-
-# Use custom component
-custom_llm = MyCustomLLM()
-rag_pipeline = RAGPipeline(llm_model=custom_llm, settings=settings)
-```
-
-## Adding New Components
-
-### Adding a New LLM Provider
-
-1. Create a new file: `components/llm/my_llm.py`
-2. Implement `BaseLLM` interface
-3. Import in `components/llm/__init__.py`
-4. Use in pipeline initialization
-
-```python
-from components.llm.base import BaseLLM
-
-class MyLLM(BaseLLM):
-    def generate(self, messages, temperature=0.3, max_tokens=200, **kwargs):
-        # Implementation
-        pass
-    
-    def get_name(self):
-        return "MyLLM"
-    
-    def get_model_name(self):
-        return "my-model-v1"
-```
-
-### Adding a New Vector Database
-
-1. Create: `components/vectordb/my_vectordb.py`
-2. Implement `BaseVectorDB` interface
-3. Import in `components/vectordb/__init__.py`
-
-## Design Principles
-
-This codebase follows these key principles:
-
-1. **Abstraction**: No hardcoded technology-specific code in main components
-2. **Separation of Concerns**: Data access, business logic, and presentation are separated
-3. **Strategy Pattern**: Algorithms are pluggable (retrieval, chunking, etc.)
-4. **Interface Segregation**: Components depend only on methods they use
-5. **Modularity**: Code is organized in small, focused modules (< 500 lines per file)
-6. **Centralized Configuration**: All config through central settings module
-7. **Resilience**: Exception handling and graceful degradation
-8. **Extensibility**: Easy to add new components without changing existing code
-
-## Testing
-
-```bash
-# Run unit tests
-python -m pytest tests/
-
-# Run integration tests
-python -m pytest tests/integration/
-
-# Run end-to-end tests
-python -m pytest tests/e2e/
-
-# Run example with cross-encoder reranker
-python examples/cross_encoder_reranker_example.py
-```
-
-## Reranking Strategies
-
-The system supports two reranking strategies:
-
-1. **LLM Reranker**: Uses language model for relevance assessment (flexible but slower)
-2. **Cross-Encoder Reranker**: Uses specialized cross-encoder model (fast and accurate)
-
-See [Reranker Guide](docs/RERANKER_GUIDE.md) for detailed comparison and usage.
-
-**Quick Start with Cross-Encoder:**
-```python
-# Set in .env
-RERANKER_TYPE=cross_encoder
-
-# Or in code
-from components.reranker import CrossEncoderReranker
-reranker = CrossEncoderReranker()
-pipeline = RAGPipeline(reranker=reranker)
-```
-
-## Logging and Metrics
-
-The system includes:
-- Standard logging for debugging
-- Token usage tracking
-- Performance metrics
-- Input/output logging for LLM calls
-
-## Health Checks
-
-For API deployments, health check endpoints verify:
-- LLM connectivity
-- Vector database status
-- Embedding model availability
-
-## Contributing
-
-1. Follow the existing code structure
-2. Keep files under 500-600 lines
-3. Keep functions/methods under 20-30 lines
-4. Add unit tests for new components
-5. Update documentation
-
-## License
-
-[Your License]
-
-## Support
-
-For issues and questions, please open a GitHub issue.
-
+The same commands run inside the container — see *Running with Docker*.

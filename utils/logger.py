@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/utils/logger.py
 """
 Centralized logging configuration for the RAG system
 """

@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/document_processor/document_processor.py
 """
 Document preprocessing and cleaning
 """

@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/vectordb/base.py
 """
 Base vector database abstraction
 """

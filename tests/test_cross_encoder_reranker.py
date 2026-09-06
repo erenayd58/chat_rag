@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/tests/test_cross_encoder_reranker.py
 """
 Unit tests for cross-encoder reranker
 """

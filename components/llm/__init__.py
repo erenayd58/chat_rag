@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/llm/__init__.py
 """
 LLM component
 """

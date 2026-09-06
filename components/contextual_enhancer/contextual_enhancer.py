@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/contextual_enhancer/contextual_enhancer.py
 """
 Contextual enhancement for RAG
 """

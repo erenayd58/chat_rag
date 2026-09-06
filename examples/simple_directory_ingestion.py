@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/examples/simple_directory_ingestion.py
 """
 Simple example showing how to ingest documents from a directory
 """

@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/core/exceptions.py
 """
 Custom exceptions for the RAG system
 """

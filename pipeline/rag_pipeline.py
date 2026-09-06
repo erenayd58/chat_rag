@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/pipeline/rag_pipeline.py
 """
 Main RAG pipeline orchestrator
 """

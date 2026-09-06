@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/vectordb/chroma_vectordb.py
 """
 ChromaDB vector database implementation
 """

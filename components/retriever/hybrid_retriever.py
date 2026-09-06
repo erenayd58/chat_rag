@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/retriever/hybrid_retriever.py
 """
 Hybrid retriever combining vector and BM25 search
 """

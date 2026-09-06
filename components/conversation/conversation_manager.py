@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/conversation/conversation_manager.py
 """
 Conversation history management
 """

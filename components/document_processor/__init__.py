@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/document_processor/__init__.py
 """
 Document processor component
 """

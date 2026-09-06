@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/reranker/__init__.py
 """
 Reranker component
 """

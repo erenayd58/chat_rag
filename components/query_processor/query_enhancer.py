@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/query_processor/query_enhancer.py
 """
 Query enhancement and understanding
 """

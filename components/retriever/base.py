@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/retriever/base.py
 """
 Base retriever abstraction
 """

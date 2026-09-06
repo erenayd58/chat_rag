@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/chunker/semantic_chunker.py
 """
 Semantic chunker with context preservation
 """

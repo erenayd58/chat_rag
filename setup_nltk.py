@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/setup_nltk.py
 """
 Script to download required NLTK data
 """

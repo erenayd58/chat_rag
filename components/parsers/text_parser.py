@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/parsers/text_parser.py
 """
 Plain text file parser
 """

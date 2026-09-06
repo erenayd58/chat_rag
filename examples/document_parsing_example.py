@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/examples/document_parsing_example.py
 """
 Example demonstrating document parsing from various file formats
 """

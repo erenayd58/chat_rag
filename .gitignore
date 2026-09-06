@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/.gitignore
 # Python
 __pycache__/
 *.py[cod]
@@ -80,9 +79,14 @@ chroma_db/*
 documents/*
 archive/*
 docs/*
-# ...except the practical notes a clone needs. docs/ is otherwise scratch and
-# generated output; a document the README links to has to travel with it.
+# ...except the handover package. docs/ is otherwise scratch and generated
+# output, so it is ignored by default and each document the README links to is
+# named here -- a doc that does not travel with a clone is worse than no doc.
+!docs/architecture.md
 !docs/configuration.md
+!docs/limitations.md
+!docs/operations.md
+!docs/testing.md
 # Regenerable caches: canonical units from the structured PDF parser,
 # plus the embedding caches used by the comparison profiles.
 .cache/

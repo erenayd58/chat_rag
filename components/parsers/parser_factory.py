@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/parsers/parser_factory.py
 """
 Parser factory for automatic parser selection
 """

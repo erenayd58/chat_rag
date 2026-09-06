@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/embedding/sentence_transformer_embedding.py
 """
 Sentence Transformer embedding implementation
 """

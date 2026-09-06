@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/parsers/pdf_parser.py
 """
 PDF document parser using PyMuPDF (fitz) or unstructured
 """

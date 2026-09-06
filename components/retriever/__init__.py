@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/retriever/__init__.py
 """
 Retriever component
 """

@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/llm/azure_openai_llm.py
 """
 Azure OpenAI LLM implementation
 """

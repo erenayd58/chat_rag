@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/vectordb/faiss_vectordb.py
 """
 FAISS vector database implementation with on-disk persistence and optional BM25/keyword search.
 """

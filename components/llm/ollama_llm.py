@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/llm/ollama_llm.py
 """
 Ollama LLM implementation for local models
 """

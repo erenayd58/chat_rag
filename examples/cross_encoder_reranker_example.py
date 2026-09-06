@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/examples/cross_encoder_reranker_example.py
 """
 Example demonstrating the cross-encoder reranker
 """

@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/parsers/__init__.py
 """
 Document parsers component
 """

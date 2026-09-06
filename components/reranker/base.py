@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/reranker/base.py
 """
 Base reranker abstraction
 """

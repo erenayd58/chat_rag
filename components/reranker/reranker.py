@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/reranker/reranker.py
 """
 Result reranking using LLM
 """

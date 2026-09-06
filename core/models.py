@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/core/models.py
 """
 Data models and schemas used across the application
 """

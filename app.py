@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/app.py
 """
 Flask web application for RAG Chat
 """

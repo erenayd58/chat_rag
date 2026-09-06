@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/parsers/base.py
 """
 Base parser abstraction
 """

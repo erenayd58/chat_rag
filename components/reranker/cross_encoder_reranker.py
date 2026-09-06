@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/reranker/cross_encoder_reranker.py
 """
 Cross-encoder based reranking
 """

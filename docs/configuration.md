@@ -25,7 +25,7 @@ anything, so import order cannot change what a setting resolves to. It is the
 only place in the application that reads a dotenv file, and a test asserts
 that.
 
-## The five owners
+## The owners — five in `config/`, and one outside it
 
 | owner | what it decides | validation |
 |---|---|---|
@@ -39,6 +39,23 @@ that.
 `Settings` builds the three limit objects at construction, so an invalid value
 stops the process at start-up, when somebody is looking, rather than refusing
 the first upload.
+
+### The groups, and what each is for
+
+| group | variables | what changing them does |
+|---|---|---|
+| **state** | `CHAT_RAG_DATA_DIR`, `VECTOR_DB_PATH`, `STRUCTURED_PARSER_CACHE` | moves where everything the process persists lives. One directory covers all of it |
+| **server** | `FLASK_HOST`, `FLASK_PORT`, `WAITRESS_THREADS`, `WAITRESS_CHANNEL_TIMEOUT`, `FLASK_SECRET_KEY` | the process itself. `WAITRESS_THREADS` is the number every other ration is sized against |
+| **ingest limits** | `INGEST_WORKERS`, `INGEST_QUEUE_CAPACITY`, `INGEST_JOB_TIMEOUT`, `INGEST_SYNC_WAIT`, `INGEST_SYNC_WAITERS`, `INGEST_JOB_RETENTION` | how much uploading can happen at once and for how long |
+| **provider budgets** | `PROVIDER_MAX_INFLIGHT`, `DEEP_ANALYSIS_CONCURRENCY`, `EMBEDDING_MAX_INFLIGHT`, `ANSWER_MAX_INFLIGHT` | how many calls may be in flight to each external service. Three separate caps so no path can starve another |
+| **query limits** | `QUERY_MAX_ACTIVE`, `QUERY_TIMEOUT`, `ANSWER_SLOT_WAIT` | how many questions run at once, and for how long |
+| **caches** | `PIPELINE_CACHE_MAX`, `PIPELINE_CACHE_TTL` | the largest memory dial in the process |
+| **models** | `ANSWER_*`, `EMBEDDING_*`, `DEEP_ANALYSIS_*`, `OLLAMA_*`, `AZURE_*`, `LLM_PROVIDER` | which model answers, embeds and proposes boundaries, and through which gateway |
+| **retrieval and chunking** | `RETRIEVAL_PROFILE`, `CHUNKER_TYPE`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `MIN_CHUNK_SIZE`, `DEFAULT_TOP_K`, `CONTEXT_*`, `RERANKER_TYPE` | what gets indexed and what gets found |
+| **logging** | `LOG_LEVEL`, `LOG_FILE_LEVEL`, `LOG_MAX_BYTES`, `LOG_BACKUPS`, `LOG_RUNS_KEPT` | what is written and how much is kept. `LOG_FILE_LEVEL=DEBUG` writes document content to disk |
+
+The relationships that matter are in *Cross-setting rules* below; how each
+limit behaves under load is in [operations.md](operations.md).
 
 ### Why logging validates differently
 
@@ -142,3 +159,10 @@ logging setup, and any warnings. It is not an environment dump.
    `tests/unit/test_configuration.py`.
 5. If an operator would need to see it while debugging, add it to
    `effective_configuration()` — never a credential.
+
+**A setting that is read must be applied.** `test_every_setting_read_is_a_setting_applied`
+walks every attribute `Settings.__init__` assigns and fails unless shipping
+code reads it; a test reading it does not count. This is the guard that found
+twelve knobs (`LOG_TOKEN_USAGE`, `PDF_PARSER_BACKEND`, `OCR_LANGUAGE`,
+`LLM_MAX_TOKENS`, …) which were read into attributes nothing ever looked at.
+A knob that turns nothing is worse than no knob, so wire it or do not add it.

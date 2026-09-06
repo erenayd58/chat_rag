@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/parsers/docx_parser.py
 """
 Microsoft Word document parser
 """

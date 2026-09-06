@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/pipeline/__init__.py
 """
 RAG pipeline module
 """

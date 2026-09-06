@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/parsers/markdown_parser.py
 """
 Markdown document parser
 """

@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/llm/base.py
 """
 Base LLM abstraction
 """

@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/knowledgebase/manager.py
 """
 Knowledge Base manager with JSON persistence.
 Each KB defines: name, chunker config, embedding model, vector db provider/path, retrieval method defaults.

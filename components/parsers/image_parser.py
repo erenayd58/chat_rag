@@ -1,4 +1,3 @@
-# /Users/murseltasgin/projects/chat_rag/components/parsers/image_parser.py
 """
 Image document parser with OCR
 """
