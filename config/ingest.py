@@ -76,6 +76,12 @@ import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+#: The number parser and the request-thread count both live in
+#: :mod:`config.runtime`, which owns the server's own settings. Re-exported
+#: here because ``config.query`` and this module were both written against
+#: ``ingest._number`` before that module existed.
+from .runtime import _number, runtime_from_env  # noqa: F401  (re-export)
+
 
 @dataclass(frozen=True)
 class IngestLimits:
@@ -141,35 +147,47 @@ class IngestLimits:
         }
 
 
-def _number(env: Mapping[str, str], name: str, default: str, kind):
-    raw = (env.get(name) or "").strip() or default
-    try:
-        return kind(raw)
-    except ValueError:
-        raise ValueError(
-            f"{name}={raw!r} is not a {'whole number' if kind is int else 'number'}"
-        ) from None
+#: The defaults, read off the dataclass rather than written out again as
+#: strings. One place says what a default is, and it is the field above.
+_DEFAULTS = IngestLimits()
+
+
+def default_sync_waiters(request_threads: int) -> int:
+    """Half the request threads, so a burst of synchronous uploads can never
+    hold more than half of them and status traffic always has somewhere to
+    land."""
+    return max(1, request_threads // 2)
 
 
 def limits_from_env(env: Mapping[str, str] | None = None) -> IngestLimits:
     """Read and validate the limits from an environment mapping."""
     env = os.environ if env is None else env
+    # The thread count comes from the one module that owns it, so a bad value
+    # is refused once, by name, rather than meaning different things here and
+    # in the server.
+    threads = runtime_from_env(env).request_threads
     return IngestLimits(
-        workers=_number(env, "INGEST_WORKERS", "2", int),
-        queue_capacity=_number(env, "INGEST_QUEUE_CAPACITY", "8", int),
-        job_timeout_seconds=_number(env, "INGEST_JOB_TIMEOUT", "1800", float),
-        sync_wait_seconds=_number(env, "INGEST_SYNC_WAIT", "840", float),
-        # Half the request threads by default, so a burst of synchronous
-        # uploads can never hold more than half of them and status traffic
-        # always has somewhere to land.
+        workers=_number(env, "INGEST_WORKERS", _DEFAULTS.workers, int),
+        queue_capacity=_number(env, "INGEST_QUEUE_CAPACITY", _DEFAULTS.queue_capacity, int),
+        job_timeout_seconds=_number(env, "INGEST_JOB_TIMEOUT", _DEFAULTS.job_timeout_seconds, float),
+        sync_wait_seconds=_number(env, "INGEST_SYNC_WAIT", _DEFAULTS.sync_wait_seconds, float),
         sync_waiters=_number(
-            env, "INGEST_SYNC_WAITERS",
-            str(max(1, _number(env, "WAITRESS_THREADS", "8", int) // 2)), int,
+            env, "INGEST_SYNC_WAITERS", default_sync_waiters(threads), int
         ),
-        job_retention_seconds=_number(env, "INGEST_JOB_RETENTION", "3600", float),
-        provider_max_inflight=_number(env, "PROVIDER_MAX_INFLIGHT", "8", int),
-        deep_concurrency=_number(env, "DEEP_ANALYSIS_CONCURRENCY", "8", int),
-        embedding_max_inflight=_number(env, "EMBEDDING_MAX_INFLIGHT", "4", int),
-        pipeline_cache_max=_number(env, "PIPELINE_CACHE_MAX", "8", int),
-        pipeline_cache_ttl_seconds=_number(env, "PIPELINE_CACHE_TTL", "1800", float),
+        job_retention_seconds=_number(
+            env, "INGEST_JOB_RETENTION", _DEFAULTS.job_retention_seconds, float
+        ),
+        provider_max_inflight=_number(
+            env, "PROVIDER_MAX_INFLIGHT", _DEFAULTS.provider_max_inflight, int
+        ),
+        deep_concurrency=_number(
+            env, "DEEP_ANALYSIS_CONCURRENCY", _DEFAULTS.deep_concurrency, int
+        ),
+        embedding_max_inflight=_number(
+            env, "EMBEDDING_MAX_INFLIGHT", _DEFAULTS.embedding_max_inflight, int
+        ),
+        pipeline_cache_max=_number(env, "PIPELINE_CACHE_MAX", _DEFAULTS.pipeline_cache_max, int),
+        pipeline_cache_ttl_seconds=_number(
+            env, "PIPELINE_CACHE_TTL", _DEFAULTS.pipeline_cache_ttl_seconds, float
+        ),
     ).validate()

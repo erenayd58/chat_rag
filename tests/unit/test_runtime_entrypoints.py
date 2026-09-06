@@ -98,14 +98,30 @@ def test_production_options_are_configurable(clean_server_env, monkeypatch):
     assert (options["host"], options["port"], options["threads"]) == ("127.0.0.1", 9001, 2)
 
 
-@pytest.mark.parametrize("bad", ["", "   ", "0", "-4", "eight"])
-def test_a_nonsense_thread_count_falls_back_rather_than_crashing(
-    clean_server_env, monkeypatch, bad
-):
-    """A typo in an env file must not leave a deployment with zero threads."""
-    monkeypatch.setenv("WAITRESS_THREADS", bad)
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_an_empty_thread_count_means_unset(clean_server_env, monkeypatch, blank):
+    """A variable set to nothing is a variable that was not set."""
+    monkeypatch.setenv("WAITRESS_THREADS", blank)
 
     assert wsgi.server_options()["threads"] == 8
+
+
+@pytest.mark.parametrize("bad", ["0", "-4", "eight"])
+def test_a_nonsense_thread_count_is_refused_by_name(clean_server_env, monkeypatch, bad):
+    """It used to fall back to eight here, silently.
+
+    That looked safe and was not: ``config.ingest`` and ``config.query`` read
+    the same variable *without* the fallback, so ``WAITRESS_THREADS=-4`` gave a
+    server with eight threads and upload/query rations sized against minus
+    four -- and ``WAITRESS_THREADS=eight`` made ``import app`` raise anyway, so
+    the fallback never protected a deployment from a typo either. One reader
+    owns it now (``config.runtime``) and refuses a value it cannot use, by
+    name, which is what every other limit in this application already did.
+    """
+    monkeypatch.setenv("WAITRESS_THREADS", bad)
+
+    with pytest.raises(ValueError, match="WAITRESS_THREADS"):
+        wsgi.server_options()
 
 
 def test_development_defaults_to_loopback_with_debug(clean_server_env):

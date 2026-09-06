@@ -22,11 +22,23 @@ from config import paths
 #: the directory. Worst case is LOG_MAX_BYTES * (LOG_BACKUPS + 1) *
 #: LOG_RUNS_KEPT, which at the defaults is a little under half a gigabyte.
 def _positive(name: str, default: int) -> int:
-    try:
-        value = int(os.getenv(name, str(default)))
-    except ValueError:
+    """A positive whole number, or the default with the fallback recorded."""
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
         return default
-    return value if value > 0 else default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value > 0:
+        return value
+    _FALLBACKS_PENDING.append(f"{name}={raw!r} is not a positive whole number; using {default}")
+    return default
+
+
+#: ``_positive`` runs before ``FALLBACKS`` is defined below, so it collects
+#: into this list and the two are joined once both exist.
+_FALLBACKS_PENDING: list[str] = []
 
 
 LOG_MAX_BYTES = _positive("LOG_MAX_BYTES", 10 * 1024 * 1024)
@@ -59,9 +71,58 @@ LOG_LEVELS = {
     "INFO": logging.INFO, "DEBUG": logging.DEBUG,
 }
 
-LOG_FILE_LEVEL = os.getenv("LOG_FILE_LEVEL", "INFO").strip().upper()
-if LOG_FILE_LEVEL not in LOG_LEVELS:
-    LOG_FILE_LEVEL = "INFO"
+#: Anything this module fell back on rather than honouring, so a typo is
+#: visible at start-up instead of silent. Read by
+#: ``Settings.effective_configuration`` and printed by the banner.
+FALLBACKS: list[str] = list(_FALLBACKS_PENDING)
+
+
+def _level(name: str, default: str = "INFO") -> str:
+    """One log level, or the safe default with the fallback recorded.
+
+    Deliberately fail-*safe* rather than fail-fast, unlike every numeric limit
+    in ``config/``: the risky direction here is DEBUG, which writes prompts,
+    retrieved chunks and answer context to a file that gets tailed, shipped
+    and pasted into tickets. A typo must not be the thing that turns that on,
+    and refusing to start would make a logging typo take the service down. It
+    is reported instead, which is the part that was missing.
+    """
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    chosen = raw.upper()
+    if chosen not in LOG_LEVELS:
+        FALLBACKS.append(f"{name}={raw!r} is not a log level; using {default}")
+        return default
+    return chosen
+
+
+#: The file handler's level. See the note above.
+LOG_FILE_LEVEL = _level("LOG_FILE_LEVEL")
+#: The console handler's level. Was read into ``Settings`` and applied
+#: nowhere -- the console was pinned at INFO whatever it said -- so a
+#: developer setting LOG_LEVEL=DEBUG got nothing. It is applied here now, at
+#: the handler it names, with INFO as the default so nothing changes for a
+#: deployment that never set it. Console output is not a persisted copy of the
+#: corpus, so DEBUG here is a cheaper decision than DEBUG on the file.
+LOG_LEVEL = _level("LOG_LEVEL")
+
+
+def logging_configuration() -> dict:
+    """How logging is actually set up, for the start-up banner and /api/ops.
+
+    This module owns these values; nothing else re-reads the environment for
+    them, so the diagnostics cannot disagree with the handlers.
+    """
+    return {
+        "console_level": LOG_LEVEL,
+        "file_level": LOG_FILE_LEVEL,
+        "max_bytes": LOG_MAX_BYTES,
+        "backups": LOG_BACKUPS,
+        "runs_kept": LOG_RUNS_KEPT,
+        "directory": paths.logs(),
+        "fallbacks": list(FALLBACKS),
+    }
 
 
 def _prune_old_runs(log_dir: Path, keep: int) -> None:
@@ -128,9 +189,10 @@ class RAGLogger:
         )
         file_handler.setFormatter(file_formatter)
         
-        # Console handler (info and above)
+        # Console handler. LOG_LEVEL names its level; INFO by default, which
+        # is what it was fixed at before the setting was wired up.
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
+        console_handler.setLevel(LOG_LEVELS[LOG_LEVEL])
         console_formatter = logging.Formatter(
             '%(levelname)s - %(message)s'
         )
@@ -142,9 +204,12 @@ class RAGLogger:
         
         self.logger.info(
             f"Logging initialized. Log file: {log_file} "
-            f"(level {LOG_FILE_LEVEL}, rotate at {LOG_MAX_BYTES} bytes, "
+            f"(level {LOG_FILE_LEVEL}, console {LOG_LEVEL}, "
+            f"rotate at {LOG_MAX_BYTES} bytes, "
             f"{LOG_BACKUPS} backups, {LOG_RUNS_KEPT} runs kept)"
         )
+        for fallback in FALLBACKS:
+            self.logger.warning(fallback)
         if file_handler.level <= logging.DEBUG:
             # Said out loud, because it is the one setting whose consequence
             # is invisible until someone reads the file.

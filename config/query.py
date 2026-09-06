@@ -39,7 +39,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .ingest import _number
+from .ingest import default_sync_waiters
+from .runtime import _number, runtime_from_env
 
 
 @dataclass(frozen=True)
@@ -89,16 +90,30 @@ class QueryLimits:
         }
 
 
+#: The defaults, read off the dataclass rather than restated as strings.
+#: ``max_active`` is derived from the thread count and so is not among them.
+_DEFAULTS = QueryLimits()
+
+
 def query_limits_from_env(env: Mapping[str, str] | None = None) -> QueryLimits:
     """Read and validate the query limits from an environment mapping."""
     env = os.environ if env is None else env
-    threads = _number(env, "WAITRESS_THREADS", "8", int)
-    sync_waiters = _number(env, "INGEST_SYNC_WAITERS", str(max(1, threads // 2)), int)
+    # Both derived defaults start from the request-thread count, and that
+    # number has one owner (config.runtime), so the server, the upload ration
+    # and the query ration are always sized against the same pool.
+    threads = runtime_from_env(env).request_threads
+    sync_waiters = _number(env, "INGEST_SYNC_WAITERS", default_sync_waiters(threads), int)
     return QueryLimits(
-        max_active=_number(env, "QUERY_MAX_ACTIVE", str(max(1, threads - sync_waiters - 1)), int),
-        answer_max_inflight=_number(env, "ANSWER_MAX_INFLIGHT", "4", int),
-        timeout_seconds=_number(env, "QUERY_TIMEOUT", "180", float),
-        answer_wait_seconds=_number(env, "ANSWER_SLOT_WAIT", "30", float),
+        max_active=_number(
+            env, "QUERY_MAX_ACTIVE", max(1, threads - sync_waiters - 1), int
+        ),
+        answer_max_inflight=_number(
+            env, "ANSWER_MAX_INFLIGHT", _DEFAULTS.answer_max_inflight, int
+        ),
+        timeout_seconds=_number(env, "QUERY_TIMEOUT", _DEFAULTS.timeout_seconds, float),
+        answer_wait_seconds=_number(
+            env, "ANSWER_SLOT_WAIT", _DEFAULTS.answer_wait_seconds, float
+        ),
         request_threads=threads,
         sync_waiters=sync_waiters,
     ).validate()

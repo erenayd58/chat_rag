@@ -740,7 +740,26 @@ See [Ollama Guide](docs/OLLAMA_GUIDE.md) for more details.
 
 ## Configuration
 
-All configuration is centralized in `config/settings.py` and reads from `.env` file. See `env.example` for all available options.
+Precedence, highest first: **the real process environment**, then **`.env`**,
+then **the application default** written on the setting's own dataclass field.
+`.env` is applied once by `config/__init__.py`, before any config module reads
+anything; it is the only dotenv read in the application. One deliberate
+exception: a state path (`VECTOR_DB_PATH`, `STRUCTURED_PARSER_CACHE`) from
+`.env` is ignored once `CHAT_RAG_DATA_DIR` is set, so a leftover local file
+cannot move a deployment's data.
+
+Five owners, one each: `config/paths.py` (where state goes),
+`config/runtime.py` (host, port, request threads, channel timeout),
+`config/ingest.py`, `config/query.py` and `config/settings.py` (models,
+endpoints, retrieval, parsing). `utils/logger.py` owns the logging settings and
+is the one group that falls back rather than refusing to start — see the note
+on why. An invalid value stops the process at start-up with the variable's
+name.
+
+`env.example` shows every default as a commented-out line; the uncommented
+lines are the demo profile. **[docs/configuration.md](docs/configuration.md)**
+is the full map: precedence, the owners, cross-setting rules, Docker
+differences, secrets, diagnostics and how to add a setting.
 
 ### Key Configuration Options
 

@@ -80,6 +80,9 @@ chroma_db/*
 documents/*
 archive/*
 docs/*
+# ...except the practical notes a clone needs. docs/ is otherwise scratch and
+# generated output; a document the README links to has to travel with it.
+!docs/configuration.md
 # Regenerable caches: canonical units from the structured PDF parser,
 # plus the embedding caches used by the comparison profiles.
 .cache/

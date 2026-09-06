@@ -1,17 +1,30 @@
-# /Users/murseltasgin/projects/chat_rag/config/settings.py
-"""
-Central configuration management
+"""Everything about *what* this console does: models, endpoints, retrieval.
+
+The numbers that bound *how hard* it works live beside this file, one owner
+each -- ``config.runtime`` (the server), ``config.ingest``, ``config.query``
+-- and are read and validated here so a bad value stops the process at
+start-up rather than at the first request. ``config.paths`` owns where state
+goes.
+
+``.env`` is applied by ``config/__init__.py``, before this module runs.
 """
 import os
 from typing import Dict, Any, Optional
 
 from . import paths
+from .runtime import cross_check, runtime_from_env
 
-ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
-#: Applied through config.paths rather than dotenv directly: a declared data
-#: root owns the state paths, and a .env left over from local development must
-#: not move them (see paths.load_env_file). Everything else loads as before.
-_APPLIED_ENV_FILE = paths.load_env_file(ENV_FILE)
+#: Attribute names whose value is a credential. Never returned by
+#: :meth:`Settings.to_dict` and never printed by the diagnostics, so a
+#: debugging dump cannot become a way to leak a key. Most of this application
+#: configures the *name* of the variable holding a key rather than the key
+#: itself (``ANSWER_API_KEY_ENV``), so there is only one true secret attribute;
+#: ``effective_configuration`` reports whether each key is set rather than
+#: which variable it comes from, because ``/api/ops/metrics`` is
+#: unauthenticated and carries nothing that names a credential.
+SECRET_ATTRIBUTES = frozenset({"azure_api_key"})
+#: What is written in place of one.
+REDACTED = "***"
 
 
 class Settings:
@@ -65,6 +78,11 @@ class Settings:
         )
         self.deep_analysis_timeout = float(_env("DEEP_ANALYSIS_TIMEOUT", "BOUNDARY_JUDGE_TIMEOUT", "120"))
 
+        # The server process itself (config/runtime.py). Read first, because
+        # the ingest and query rations are both sized against its thread pool.
+        self.runtime_limits = runtime_from_env()
+        self.request_threads = self.runtime_limits.request_threads
+
         # Bounded ingest (config/ingest.py documents every knob). Read and
         # validated here so a bad value stops the process at start-up, when
         # someone is looking, rather than refusing the first upload.
@@ -93,6 +111,15 @@ class Settings:
         self.answer_max_inflight = self.query_limits.answer_max_inflight
         self.query_timeout = self.query_limits.timeout_seconds
         self.answer_slot_wait = self.query_limits.answer_wait_seconds
+
+        # The rules that span two groups -- a synchronous upload that outlives
+        # the connection, a thread ration that leaves nothing free -- checked
+        # in one place so no rule is stated twice. Impossible combinations
+        # raise; merely unusual ones are reported at start-up, because this
+        # application has always let an operator size it deliberately.
+        self.configuration_warnings = cross_check(
+            self.runtime_limits, self.ingest_limits, self.query_limits
+        )
 
         # Answer model (chat generation). The final chain answers with an
         # OpenAI-compatible gateway model (minimax/minimax-m2.7 through
@@ -215,8 +242,60 @@ class Settings:
         self.log_parsing_stats = os.getenv("LOG_PARSING_STATS", "true").lower() == "true"
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert settings to dictionary"""
-        return {k: v for k, v in self.__dict__.items()}
+        """Every setting, with credentials redacted.
+
+        The redaction is here rather than at each call site: this is the
+        method a future diagnostic reaches for, and it must be safe to print
+        by construction rather than by everyone remembering.
+        """
+        return {
+            key: (REDACTED if key in SECRET_ATTRIBUTES and value else value)
+            for key, value in self.__dict__.items()
+        }
+
+    def effective_configuration(self) -> Dict[str, Any]:
+        """What this process is actually running with, for diagnostics.
+
+        Not an environment dump and not every setting: the groups an operator
+        debugging a live instance asks about -- where state is, how much work
+        may run at once, which models are configured, how logging is set up --
+        and no credential among them. Used by the start-up banner and by
+        ``/api/ops``, so both answer from one place.
+        """
+        from utils.logger import logging_configuration
+
+        return {
+            "data_root": paths.data_root(),
+            "vector_db": self.vector_db_path,
+            "parser_cache": paths.canonical_cache(),
+            "viewer_analyses": paths.viewer_live_analysis(),
+            "runtime": self.runtime_limits.to_dict(),
+            "ingest": self.ingest_limits.to_dict(),
+            "query": self.query_limits.to_dict(),
+            "models": {
+                "answer_provider": self.answer_provider,
+                "answer_model": self.answer_model or self.ollama_model,
+                "answer_fallback_provider": self.answer_fallback_provider,
+                "embedding_provider": self.embedding_provider,
+                "embedding_model": self.embedding_model_name,
+                "embedding_concurrency": self.embedding_concurrency,
+                "deep_analysis_model": self.deep_analysis_model,
+                "retrieval_profile": self.retrieval_profile,
+                # Which *variable* each key is read from is deliberately not
+                # here. It is not a secret, but it is a setup-time question --
+                # answered by env.example, docs/configuration.md and the
+                # start-up log -- and /api/ops/metrics is unauthenticated, so
+                # its body carries nothing that names a credential at all
+                # (tests/integration/test_ops_endpoints.py holds that line).
+                # Whether each one is *configured* is what an operator
+                # debugging a live instance actually needs.
+                "answer_key_configured": bool(os.getenv(self.answer_api_key_env)),
+                "embedding_key_configured": bool(os.getenv(self.embedding_api_key_env)),
+                "deep_analysis_key_configured": bool(os.getenv(self.deep_analysis_api_key_env)),
+            },
+            "logging": logging_configuration(),
+            "warnings": list(self.configuration_warnings) + paths.diagnostics(),
+        }
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get a setting value"""

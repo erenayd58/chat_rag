@@ -281,11 +281,13 @@ def test_the_indexing_registry_still_resolves_every_alias_it_documents():
 def test_the_viewer_reader_and_page_agree_with_the_console_registry():
     """The library's Viewer reader and page builder and this console all read
     one registry (``amsc.methods``) now, so this can no longer drift by
-    accident; it is kept as the guard that says so."""
-    from amsc import viewer_v2, viewer_v3
+    accident; it is kept as the guard that says so. Read from
+    ``viewer_corpus``, the shared reader, rather than from the legacy v2
+    page that merely re-exports it."""
+    from amsc import viewer_corpus, viewer_v3
 
     for key in WIRE_KEYS:
-        assert viewer_v2.ARM_KINDS[key] == M.METHODS[key].engine, key
+        assert viewer_corpus.ARM_KINDS[key] == M.METHODS[key].engine, key
     assert set(viewer_v3.METHOD_ORDER) == set(M.ORDER)
     assert viewer_v3.METHOD_LABELS == WIRE_LABELS
     assert set(viewer_v3.METHOD_SUMMARIES) == set(WIRE_KEYS)

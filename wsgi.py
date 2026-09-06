@@ -68,24 +68,15 @@ committed, which is what makes that settlement truthful.
 
 from __future__ import annotations
 
-import os
 import signal
 import sys
 
 import app as _app
+from config.runtime import runtime_from_env
 
 #: The WSGI callable, for `waitress-serve wsgi:application`, gunicorn, uwsgi,
 #: or a test that wants the application without starting a server.
 application = _app.app
-
-
-def _int_env(name: str, default: int) -> int:
-    raw = (os.getenv(name) or "").strip()
-    try:
-        value = int(raw) if raw else default
-    except ValueError:
-        value = default
-    return value if value > 0 else default
 
 
 def _install_shutdown_handlers() -> None:
@@ -113,28 +104,16 @@ def _install_shutdown_handlers() -> None:
 
 
 def server_options() -> dict:
-    """Host, port and thread pool for the production server."""
-    return {
-        # 0.0.0.0 here, unlike the development server: a container's port
-        # mapping only reaches a process listening on every interface, and this
-        # server has no debugger to expose.
-        "host": (os.getenv("FLASK_HOST") or "0.0.0.0").strip(),
-        "port": _int_env("FLASK_PORT", 5005),
-        # One thread serves one request. Eight is enough for a console with a
-        # handful of users, and small enough that eight concurrent ingests
-        # cannot exhaust the machine. It is the number Phase 2 should size its
-        # own limits against: request concurrency is this, plus the one Viewer
-        # packaging thread, in one address space.
-        "threads": _int_env("WAITRESS_THREADS", 8),
-        # Long enough for an upload that parses a large PDF on the request
-        # thread, short enough that a dead connection is not held forever.
-        "channel_timeout": _int_env("WAITRESS_CHANNEL_TIMEOUT", 900),
-        # The application is behind nothing that would set them; trusting a
-        # client's X-Forwarded-* headers would let a browser choose its own
-        # apparent address. A reverse-proxy deployment turns this on
-        # deliberately, with the proxy named.
-        "clear_untrusted_proxy_headers": True,
-    }
+    """Host, port and thread pool for the production server.
+
+    Every value comes from ``config.runtime``, which is also where the ingest
+    and query rations read the thread count. This module used to read the same
+    variables itself with a *silently forgiving* parser, so
+    ``WAITRESS_THREADS=-4`` produced a server with eight threads and limits
+    sized against minus four. There is one reader now, and a value it cannot
+    use is refused by name at start-up.
+    """
+    return runtime_from_env().server_options()
 
 
 def main(argv: list[str] | None = None) -> int:

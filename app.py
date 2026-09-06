@@ -1064,6 +1064,11 @@ def ops_metrics():
             'viewer_boundary_model': _viewer_model_stats(),
             'local_models': _local_model_stats(),
         },
+        # The effective non-secret configuration, from the same method the
+        # start-up banner prints, so "what is this instance running with" has
+        # one answer whether you read the log or call the endpoint. Never a
+        # credential and never an environment dump.
+        'configuration': settings.effective_configuration(),
     })
 
 
@@ -2627,25 +2632,43 @@ def startup_banner() -> None:
     print("\n" + "="*80)
     print("🚀 Starting RAG Chat Web Application")
     print("="*80)
-    print(f"\nAnswer model: {settings.answer_provider} / {settings.answer_model or settings.ollama_model}"
+    # One source for the whole block: Settings.effective_configuration(),
+    # which /api/ops answers from too, so the banner and the endpoint cannot
+    # drift and neither can print a credential -- there is none in it by
+    # construction (config/settings.py: SECRET_ATTRIBUTES).
+    effective = settings.effective_configuration()
+    models, runtime = effective['models'], effective['runtime']
+    ingest, query, logs = effective['ingest'], effective['query'], effective['logging']
+
+    print(f"\nAnswer model: {models['answer_provider']} / {models['answer_model']}"
           + (f"  (fallback: {settings.answer_fallback_provider} / {settings.answer_fallback_model or settings.ollama_model})"
              if settings.answer_fallback_provider not in ('', 'none') else ""))
-    print(f"Embedding: {settings.embedding_provider} / {settings.embedding_model_name}")
-    print(f"Retrieval profile: {settings.retrieval_profile}")
-    print(f"Deep Analysis model: {settings.deep_analysis_model or '(not configured)'}")
-    limits = settings.ingest_limits
-    print(f"Ingest: {limits.workers} worker(s), queue {limits.queue_capacity}, "
-          f"job timeout {limits.job_timeout_seconds:.0f}s; "
-          f"provider calls in flight <= {limits.provider_max_inflight} "
-          f"(per Deep job <= {limits.deep_concurrency})")
+    print(f"Embedding: {models['embedding_provider']} / {models['embedding_model']}")
+    print(f"Retrieval profile: {models['retrieval_profile']}")
+    print(f"Deep Analysis model: {models['deep_analysis_model'] or '(not configured)'}")
+    print(f"Runtime: {runtime['request_threads']} request thread(s), "
+          f"channel timeout {runtime['channel_timeout_seconds']}s")
+    print(f"Ingest: {ingest['workers']} worker(s), queue {ingest['queue_capacity']}, "
+          f"job timeout {ingest['job_timeout_seconds']:.0f}s, "
+          f"{ingest['sync_waiters']} sync waiter(s); "
+          f"provider calls in flight <= {ingest['provider_max_inflight']} "
+          f"(per Deep job <= {ingest['deep_concurrency']}), "
+          f"embedding <= {ingest['embedding_max_inflight']}")
+    print(f"Query: {query['max_active']} at once, answer calls <= "
+          f"{query['answer_max_inflight']}, timeout {query['timeout_seconds']:.0f}s, "
+          f"{query['free_threads']} thread(s) left free")
+    print(f"Caches: {ingest['pipeline_cache_max']} pipeline(s), "
+          f"TTL {ingest['pipeline_cache_ttl_seconds']:.0f}s")
+    print(f"Logging: console {logs['console_level']}, "
+          f"file {logs['file_level']} -> {logs['directory']}")
     # Where this process keeps its state, and anything refused on the way to
     # deciding that. One data directory now settles every path below it, so
     # naming them here is what makes a wrong one visible at start-up rather
     # than after something has been written to it.
-    print(f"Data directory: {paths.data_root() or '(none: paths are relative to ' + os.getcwd() + ')'}")
-    print(f"Vector DB: {settings.vector_db_path}")
-    print(f"Parser cache: {paths.canonical_cache()}")
-    for line in paths.diagnostics():
+    print(f"Data directory: {effective['data_root'] or '(none: paths are relative to ' + os.getcwd() + ')'}")
+    print(f"Vector DB: {effective['vector_db']}")
+    print(f"Parser cache: {effective['parser_cache']}")
+    for line in effective['warnings'] + logs['fallbacks']:
         print(f"  ! {line}")
 
     # Check if documents are ingested

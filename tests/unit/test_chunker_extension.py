@@ -237,11 +237,11 @@ def test_the_upload_form_hard_codes_no_method_key():
 
 
 def test_the_viewer_builders_and_the_console_share_one_identity():
-    from amsc import viewer_v2, viewer_v3
+    from amsc import viewer_corpus, viewer_v3
 
     assert dict(viewer_v3.METHOD_LABELS) == {key: M.METHODS[key].label for key in registry.order()}
     assert dict(viewer_v3.METHOD_SUMMARIES) == {key: M.METHODS[key].summary for key in registry.order()}
-    assert dict(viewer_v2.ARM_KINDS) == {key: M.METHODS[key].engine for key in registry.order()}
+    assert dict(viewer_corpus.ARM_KINDS) == {key: M.METHODS[key].engine for key in registry.order()}
     assert set(M.ORDER) == set(viewer_v3.METHOD_ORDER), "same universe, the console's own order"
 
 
