@@ -132,7 +132,14 @@ def test_sessions_share_one_budget(budget):
     second.release()
     for thread in threads:
         thread.join(30)
-    assert first.peak + second.peak <= 2 and budget.peak == 2
+    # The bound is on the process, so it is ``budget.peak`` that carries it:
+    # two calls in flight at once, whichever models they were made on. Adding
+    # the two models' own peaks does not measure that -- they can happen at
+    # different moments (both of `first`'s calls may hold the two slots while
+    # `second` holds none), which is legal under a shared budget and used to
+    # fail this test under load.
+    assert budget.peak == 2
+    assert first.peak <= 2 and second.peak <= 2
     assert budget.snapshot()["inflight"] == 0
 
 
