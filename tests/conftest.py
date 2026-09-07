@@ -120,6 +120,21 @@ def _cleanup() -> None:
 atexit.register(_cleanup)
 
 
+def pytest_configure(config):
+    """Markers this suite defines, so ``-m migration`` needs no other file.
+
+    ``migration`` selects the contract suite in ``tests/migration``: the
+    behaviours a framework, persistence or frontend replacement must keep.
+    It is registered here rather than in a ``pytest.ini`` so the repository
+    keeps one place that configures the test session.
+    """
+    config.addinivalue_line(
+        "markers",
+        "migration: a contract the platform migration must preserve "
+        "(tests/migration; run with -m migration)",
+    )
+
+
 def pytest_report_header(config):
     return f"chat_rag test state: {SESSION_ROOT} (cwd for the session; developer state untouched)"
 

@@ -49,6 +49,29 @@ Two things about the `chunk` suite are worth knowing before the first failure:
 * it uses deterministic tokenizer and embedding doubles, so it downloads no
   model. The real `cl100k_base` counter is covered separately in unit tests.
 
+### The migration contract suite
+
+A fourth thing to run, and the cheapest: `tests/migration` holds the
+behaviours a platform migration must not change, written against what is
+observable rather than against the implementation that satisfies it today.
+
+```bash
+python -m pytest tests/migration -q       # the suite
+python -m pytest -m migration -q          # the same set, by marker
+```
+
+It is seconds, not minutes, on purpose -- it is meant to be run on every step
+of a rewrite, not once at the end. Three files, one contract each:
+
+| file | holds |
+|---|---|
+| `test_document_store_contract.py` | what a document store must do, run against every shipped store: the result record, the metadata round trip (including `search_text` / `table_view`), per-document isolation, pagination, durability -- and the twelve methods the routes call unguarded, which is more than `BaseVectorDB` declares |
+| `test_http_surface.py` | the console API is exactly what the README publishes, every route belongs to a declared group, and the refusal taxonomy (400/404/409/500/503/504) still makes all six distinctions |
+| `test_domain_relations.py` | the edges between knowledge base, document, content and variant: what each deletion takes and what it must leave -- the foreign keys a schema has to declare |
+
+What it deliberately leaves free: Flask, the module layout, the file-backed
+persistence, Chroma, the Viewer's implementation, and the internal call graph.
+
 ### The guards worth knowing by name
 
 These fail loudly and mean something specific:
