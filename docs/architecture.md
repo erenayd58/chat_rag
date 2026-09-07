@@ -28,7 +28,8 @@ load is in [operations.md](operations.md).
 
 ```
 POST /api/documents/upload
-  │  validate, stage the file, hash it            app.py
+  │  read the multipart body                      interfaces/http/ingest.py
+  │  validate, stage the file, hash it            application/ingest.py
   ▼
 ingest job (queued → running)                     components/ingest/jobs.py
   │
@@ -58,7 +59,9 @@ are additionally capped process-wide, by separate budgets.
 
 ```
 POST /api/query
-  │  admission: a slot now, or 503 now            components/query/limits.py
+  │  read the body                                interfaces/http/query.py
+  │  admission: a slot now, or 503 now            application/query.py
+  │                                               components/query/limits.py
   ▼
 retrieve            dense (vectors) + BM25 (lexical)    components/retriever/
   │                 fused by RRF on the hybrid_rrf profile
@@ -74,6 +77,51 @@ question: chat reads the chunks that were written at upload.
 
 ---
 
+## The application boundary
+
+One direction, and it is the whole rule:
+
+```
+interfaces/http/          Flask.  Reads the request, calls one use case,
+      │                   turns the answer or the refusal into a status.
+      ▼
+application/              The product's behaviour.  Plain functions over a
+      │                   Services container; no framework, no request,
+      │                   no status codes.
+      ▼
+components/  config/  core/  pipeline/  utils/  amsc
+                          Stores, models, limits, telemetry, the chunking
+                          library.
+```
+
+Nothing in `application/` imports Flask — `tests/application` fails if it
+ever does — and nothing below `interfaces/http/` builds a response. Two
+consequences worth stating:
+
+* **the container is the seam.** `application/services.py` composes the whole
+  application (`build_services()`), and every use case takes it as its first
+  argument. The CLI calls `default_services()` and gets the same object the
+  Flask app was given, which is why `python -m cli` measures what the console
+  would actually return — and why it now imports no web framework at all.
+* **a refusal is a meaning, not a code.** `application/errors.py` has six:
+  invalid request, not found, conflict, unavailable, not-ready, processing
+  failed. Overload, deadline and interruption are not among them because
+  `core/exceptions.py` already owns those, raised by the subsystem that owns
+  the limit. `interfaces/http/responses.py` is the only file that maps any of
+  it to a status.
+
+### Adding an endpoint
+
+1. put the decision in the `application/` module for its behaviour group, and
+   raise from `application/errors.py` when it refuses;
+2. add the route to the matching blueprint in `interfaces/http/`: read the
+   inputs, call the use case, return `ok(...)`;
+3. add the row to the README's *console API* table — `tests/migration/
+   test_http_surface.py` compares that table against the live routing table
+   and fails on drift in either direction.
+
+---
+
 ## Repository map — `chat_rag`
 
 Only the parts worth knowing. Each row says what it owns and when you would
@@ -81,7 +129,10 @@ open it.
 
 | path | owns | touch it when |
 |---|---|---|
-| `app.py` | the Flask app: every route, and the process-wide singletons (pipeline cache, ingest manager, budgets, admission) built at import | adding an endpoint, changing what a route returns |
+| `application/` | **the product's behaviour, with no web framework under it**: one module per behaviour group (`knowledge_bases`, `documents`, `ingest`, `chunks`, `query`, `workspace`, `catalogue`, `goldsets`, `ops`), plus `errors.py` (what a refusal means) and `services.py` (the container everything is handed) | changing what the product *does* |
+| `interfaces/http/` | the Flask adapter: one blueprint per behaviour group, each reading the request, calling one use case and letting `responses.py` turn the answer or the refusal into a status | adding an endpoint, changing what a route returns |
+| `runtime/bootstrap.py` | what a process does before it serves: the banner, restart settlement, the staging sweep, the development server's options | changing start-up or restart behaviour |
+| `app.py` | the Flask application itself: the app object, the session key, CORS, and which container the blueprints are given | changing framework-level wiring |
 | `wsgi.py` | the production entrypoint (`python -m wsgi`, waitress, one process) | changing how the server is served or shut down |
 | `pipeline/rag_pipeline.py` | the pipeline object: builds the embedder / store / retriever / answer model from settings, and runs a query | changing retrieval or the answer chain end to end |
 | `components/ingest/jobs.py` | the job system: queue, workers, states, retention, cancellation | changing upload concurrency or job lifecycle |
@@ -101,7 +152,7 @@ open it.
 | `utils/document_tracker.py` | the ingest ledger, written atomically under a per-file lock | changing what a registered document records |
 | `cli/` | `python -m cli` — eval, search, qa, inspect, report, gold | offline evaluation of a knowledge base |
 | `tools/` | `import_smoke.py`, `serve_smoke.py`, `verify_reproducibility.py` | proving a build works — see [testing.md](testing.md) |
-| `tests/` | `unit/` (fast, no network), `integration/` (the real Flask app), `migration/` (the contracts a platform change must keep), `conftest.py` (moves the process out of the checkout, blanks keys) | always |
+| `tests/` | `unit/` (fast, no network), `application/` (the use cases with no Flask at all), `integration/` (the real Flask app), `migration/` (the contracts a platform change must keep), `conftest.py` (moves the process out of the checkout, blanks keys) | always |
 | `evaluation/experiment-log.md` | the record of the retrieval experiments behind the shipped context budget and top-k | asking why a number is what it is |
 | `templates/`, `static/` | the console UI | changing a screen |
 | `start-demo.ps1` / `stop-demo.ps1` | the demo launcher: builds the Viewer shell if missing, starts both servers, waits for health | running the demo |

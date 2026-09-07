@@ -22,6 +22,8 @@ from types import SimpleNamespace
 import pytest
 
 import app as flask_app
+from application import workspace as app_workspace
+import tempfile
 from components.knowledgebase.manager import KnowledgeBaseManager
 
 
@@ -62,7 +64,7 @@ def temp_dir(tmp_path, monkeypatch):
     """A private staging directory, so only this test's uploads are counted."""
     staging = tmp_path / "staging"
     staging.mkdir()
-    monkeypatch.setattr(flask_app.tempfile, "gettempdir", lambda: str(staging))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(staging))
     return staging
 
 
@@ -79,11 +81,11 @@ def leftovers(staging) -> list[str]:
 def client(tmp_path, monkeypatch, temp_dir):
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app, "kb_manager", manager)
+    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
     # Staging for the Viewer writes under the working directory; the route
     # already treats a failure there as non-fatal, and nothing here asserts on
     # it. Stubbed so a test never reaches the packaging worker.
-    monkeypatch.setattr(flask_app, "stage_viewer_analysis", lambda *a, **k: {"status": "queued"})
+    monkeypatch.setattr(app_workspace, "stage_analysis", lambda *a, **k: {"status": "queued"})
     flask_app.app.config.update(TESTING=True)
     kb = manager.create("kb", chunker={"type": "structure_first"})
     with flask_app.app.test_client() as test_client:
@@ -105,7 +107,7 @@ def test_a_successful_upload_leaves_no_temp_file(client, temp_dir, monkeypatch):
     """The path that never cleaned up at all, and the one that runs every time."""
     test_client, kb_id = client
     pipeline = StubPipeline()
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: pipeline)
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: pipeline)
 
     response = upload(test_client, kb_id=kb_id, deep_analysis="false")
 
@@ -117,7 +119,7 @@ def test_a_successful_upload_leaves_no_temp_file(client, temp_dir, monkeypatch):
 
 def test_two_uploads_do_not_accumulate(client, temp_dir, monkeypatch):
     test_client, kb_id = client
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: StubPipeline())
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: StubPipeline())
 
     for _ in range(3):
         assert upload(test_client, kb_id=kb_id).status_code == 200
@@ -145,7 +147,7 @@ def test_an_unknown_knowledge_base_leaves_no_temp_file(client, temp_dir):
 def test_a_refused_deep_analysis_leaves_no_temp_file(client, temp_dir, monkeypatch):
     test_client, kb_id = client
     monkeypatch.setattr(
-        flask_app, "get_pipeline", lambda *a, **k: StubPipeline(deep_capable=False)
+        flask_app.services, "get_pipeline", lambda *a, **k: StubPipeline(deep_capable=False)
     )
 
     response = upload(test_client, kb_id=kb_id, deep_analysis="true")
@@ -161,7 +163,7 @@ def test_a_refused_deep_analysis_leaves_no_temp_file(client, temp_dir, monkeypat
 def test_a_failed_ingest_leaves_no_temp_file(client, temp_dir, monkeypatch):
     test_client, kb_id = client
     monkeypatch.setattr(
-        flask_app,
+        flask_app.services,
         "get_pipeline",
         lambda *a, **k: StubPipeline(ingest_error=RuntimeError("parser exploded")),
     )
@@ -178,7 +180,7 @@ def test_a_store_that_refuses_the_document_leaves_no_temp_file(client, temp_dir,
 
     test_client, kb_id = client
     monkeypatch.setattr(
-        flask_app,
+        flask_app.services,
         "get_pipeline",
         lambda *a, **k: StubPipeline(
             ingest_error=IndexIncompatibleException("another embedding model")
@@ -201,7 +203,7 @@ def test_a_refused_upload_leaves_no_temp_file(client, temp_dir, monkeypatch):
     from components.ingest import IngestManager
 
     test_client, kb_id = client
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: StubPipeline())
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: StubPipeline())
     gate = __import__("threading").Event()
 
     def hold(job):
@@ -209,7 +211,7 @@ def test_a_refused_upload_leaves_no_temp_file(client, temp_dir, monkeypatch):
         return {"doc_id": "held"}
 
     manager = IngestManager(IngestLimits(workers=1, queue_capacity=0), execute=hold)
-    monkeypatch.setattr(flask_app, "ingest_jobs", manager)
+    monkeypatch.setattr(flask_app.services, "ingest_jobs", manager)
     try:
         first = upload(test_client, kb_id=kb_id, **{"async": "1"})
         assert first.status_code == 202
@@ -230,7 +232,7 @@ def test_an_attached_duplicate_leaves_no_second_temp_file(client, temp_dir, monk
     from components.ingest import IngestManager
 
     test_client, kb_id = client
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: StubPipeline())
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: StubPipeline())
     gate = __import__("threading").Event()
 
     def hold(job):
@@ -238,7 +240,7 @@ def test_an_attached_duplicate_leaves_no_second_temp_file(client, temp_dir, monk
         return {"doc_id": "held"}
 
     manager = IngestManager(IngestLimits(workers=1, queue_capacity=2), execute=hold)
-    monkeypatch.setattr(flask_app, "ingest_jobs", manager)
+    monkeypatch.setattr(flask_app.services, "ingest_jobs", manager)
     try:
         first = upload(test_client, kb_id=kb_id, **{"async": "1"}).get_json()
         second = upload(test_client, kb_id=kb_id, **{"async": "1"}).get_json()

@@ -16,6 +16,7 @@ import pytest
 from types import SimpleNamespace
 
 import app as flask_app
+from application import workspace as app_workspace
 from components.goldset import GoldSetManager
 from components.knowledgebase.manager import KnowledgeBaseManager
 from components.retriever import BM25OnlyRetriever, NullEmbedding
@@ -38,17 +39,17 @@ class StubPipeline:
 def client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        flask_app, "kb_manager", KnowledgeBaseManager(str(tmp_path / "kbs.json"))
+        flask_app.services, "kb_manager", KnowledgeBaseManager(str(tmp_path / "kbs.json"))
     )
     monkeypatch.setattr(
-        flask_app, "gold_manager", GoldSetManager(str(tmp_path / "gold.json"))
+        flask_app.services, "gold_manager", GoldSetManager(str(tmp_path / "gold.json"))
     )
     # The upload tests below drive the route, not the Viewer packager. That
     # packager runs on a background thread which outlives the request and asks
     # the application for a pipeline's vector store -- something the stub
     # pipelines here deliberately do not have. Stubbed so this file exercises
     # one contract at a time.
-    monkeypatch.setattr(flask_app, "stage_viewer_analysis", lambda *a, **k: {"status": "queued"})
+    monkeypatch.setattr(app_workspace, "stage_analysis", lambda *a, **k: {"status": "queued"})
     flask_app.app.config.update(TESTING=True)
     with flask_app.app.test_client() as test_client:
         yield test_client
@@ -56,7 +57,7 @@ def client(tmp_path, monkeypatch):
 
 def use_retriever(monkeypatch, retriever):
     monkeypatch.setattr(
-        flask_app, "get_pipeline", lambda *a, **k: StubPipeline(retriever)
+        flask_app.services, "get_pipeline", lambda *a, **k: StubPipeline(retriever)
     )
 
 
@@ -176,7 +177,7 @@ def test_a_knowledge_base_can_be_created_and_deleted(client):
     # Where this knowledge base's store lives, asked of the same resolver the
     # deletion route asks -- not rebuilt from a literal that happens to match
     # today's default.
-    store = Path(flask_app.kb_manager.storage_path(kb_id))
+    store = Path(flask_app.services.kb_manager.storage_path(kb_id))
     store.mkdir(parents=True)
     (store / "chroma.sqlite3").write_text("x", encoding="utf-8")
 
@@ -213,7 +214,7 @@ def test_a_store_still_in_use_reports_a_conflict_and_keeps_the_record(
     import shutil
 
     created = client.post("/api/kb", json={"name": "locked"}).get_json()["kb"]
-    store = Path(flask_app.kb_manager.storage_path(created["kb_id"]))
+    store = Path(flask_app.services.kb_manager.storage_path(created["kb_id"]))
     store.mkdir(parents=True)
 
     monkeypatch.setattr(
@@ -238,7 +239,7 @@ def test_a_store_shared_with_another_knowledge_base_is_kept(client):
     client.post("/api/kb", json={"name": "two", "vector_db_path": "./chroma_db/shared"})
     # An explicit per-knowledge-base path -- still a legitimate override, and
     # the resolver honours it rather than deriving one.
-    store = Path(flask_app.kb_manager.storage_path(first["kb_id"]))
+    store = Path(flask_app.services.kb_manager.storage_path(first["kb_id"]))
     store.mkdir(parents=True)
 
     body = client.delete(f"/api/kb/{first['kb_id']}").get_json()
@@ -251,14 +252,14 @@ def test_deleting_drops_the_cached_pipeline(client, monkeypatch):
     """A live Chroma client holds the store's sqlite open."""
     created = client.post("/api/kb", json={"name": "kb"}).get_json()["kb"]
     kb_id = created["kb_id"]
-    monkeypatch.setattr(flask_app.pipeline_cache, "_build",
+    monkeypatch.setattr(flask_app.services.pipeline_cache, "_build",
                         lambda session_id, kb: SimpleNamespace(vector_db=None))
-    flask_app.pipeline_cache.get("global", kb_id)
-    assert kb_id in flask_app.pipeline_cache.snapshot()["knowledge_bases"]
+    flask_app.services.pipeline_cache.get("global", kb_id)
+    assert kb_id in flask_app.services.pipeline_cache.snapshot()["knowledge_bases"]
 
     client.delete(f"/api/kb/{kb_id}")
 
-    assert kb_id not in flask_app.pipeline_cache.snapshot()["knowledge_bases"]
+    assert kb_id not in flask_app.services.pipeline_cache.snapshot()["knowledge_bases"]
 
 
 def test_the_vector_store_releases_its_files_when_closed(tmp_path):
@@ -327,7 +328,7 @@ class IngestedChunk:
 def upload(client, monkeypatch, pipeline):
     import io
 
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: pipeline)
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: pipeline)
     kb = json.loads(client.post("/api/kb", json={
         "name": "ingest-kb", "chunker": {"type": "structure_first"},
     }).data)

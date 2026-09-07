@@ -33,6 +33,9 @@ from types import SimpleNamespace
 import pytest
 
 import app as flask_app
+from application import ingest as app_ingest
+from application import workspace as app_workspace
+import tempfile
 from components.ingest import IngestManager
 from components.knowledgebase.manager import KnowledgeBaseManager
 from config.ingest import IngestLimits
@@ -85,22 +88,22 @@ def server(tmp_path, monkeypatch):
     from waitress import create_server
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(flask_app.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
     kb_manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app, "kb_manager", kb_manager)
-    monkeypatch.setattr(flask_app, "stage_viewer_analysis", lambda *a, **k: {"status": "queued"})
+    monkeypatch.setattr(flask_app.services, "kb_manager", kb_manager)
+    monkeypatch.setattr(app_workspace, "stage_analysis", lambda *a, **k: {"status": "queued"})
     monkeypatch.setattr(flask_app.settings, "ingest_sync_wait", SYNC_WAIT)
 
     pipeline = BlockingPipeline()
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: pipeline)
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: pipeline)
 
     # One worker, room to queue: the second upload waits for the first, which
     # is what keeps both requests blocked long enough to ask the question.
     manager = IngestManager(
         IngestLimits(workers=1, queue_capacity=4, job_timeout_seconds=120),
-        execute=lambda job: flask_app._execute_ingest(job),
+        execute=lambda job: app_ingest.execute_job(flask_app.services, job),
     )
-    monkeypatch.setattr(flask_app, "ingest_jobs", manager)
+    monkeypatch.setattr(flask_app.services, "ingest_jobs", manager)
 
     port = free_port()
     instance = create_server(flask_app.app, host="127.0.0.1", port=port, threads=THREADS)
@@ -155,7 +158,7 @@ def test_without_rationing_two_synchronous_uploads_take_the_whole_server(server,
     two uploads occupy both and nothing else is served -- not health, not the
     job status a browser would be polling.
     """
-    monkeypatch.setattr(flask_app, "_sync_waiters", threading.BoundedSemaphore(THREADS))
+    monkeypatch.setattr(flask_app.services, "sync_waiters", threading.BoundedSemaphore(THREADS))
     first, _ = start_upload(server, b"one")
     assert server.pipeline.running.acquire(timeout=20), "the first upload is being ingested"
     second, _ = start_upload(server, b"two")
@@ -179,8 +182,8 @@ def test_with_the_products_rationing_health_and_status_are_always_served(server)
     cannot is still accepted and still runs -- it is answered 202."""
     assert flask_app.settings.ingest_limits.sync_waiters >= 1
     with_one_waiter = threading.BoundedSemaphore(1)
-    original = flask_app._sync_waiters
-    flask_app._sync_waiters = with_one_waiter
+    original = flask_app.services.sync_waiters
+    flask_app.services.sync_waiters = with_one_waiter
     try:
         blocking, _ = start_upload(server, b"one")
         assert server.pipeline.running.acquire(timeout=20)
@@ -220,7 +223,7 @@ def test_with_the_products_rationing_health_and_status_are_always_served(server)
         assert server.manager.stats["succeeded"] == 2
         assert server.manager.stats["rejected"] == 0
     finally:
-        flask_app._sync_waiters = original
+        flask_app.services.sync_waiters = original
         server.pipeline.release.set()
 
 

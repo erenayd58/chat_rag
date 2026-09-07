@@ -401,8 +401,8 @@ def test_the_workspace_reports_both_levels_for_each_upload(client, shared, monke
         def get_all_documents(self, kb_id=None):
             return rows
 
-    monkeypatch.setattr(flask_app, "DocumentTracker", _Tracker)
-    monkeypatch.setattr(flask_app.kb_manager, "list",
+    monkeypatch.setattr(flask_app.services, "documents", _Tracker)
+    monkeypatch.setattr(flask_app.services.kb_manager, "list",
                         lambda: [{"kb_id": "kb1", "name": "ortak-kb",
                                   "chunker": {"type": "structure_first"}}])
 

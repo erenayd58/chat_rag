@@ -64,7 +64,7 @@ def budget(monkeypatch):
 @pytest.fixture
 def admission(monkeypatch):
     fresh = Q.QueryAdmission(2)
-    monkeypatch.setattr(flask_app, "query_admission", fresh)
+    monkeypatch.setattr(flask_app.services, "query_admission", fresh)
     return fresh
 
 
@@ -74,7 +74,7 @@ def app(tmp_path, monkeypatch, registry):
 
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app, "kb_manager", manager)
+    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
     flask_app.app.config.update(TESTING=True)
     kb = manager.create("query-kb", chunker={"type": "structure_first"})
     return SimpleNamespace(kb_id=kb["kb_id"])
@@ -82,8 +82,8 @@ def app(tmp_path, monkeypatch, registry):
 
 def use_pipelines(monkeypatch, factory):
     """Build one stub per session through the cache, as production does."""
-    flask_app.pipeline_cache.clear()
-    monkeypatch.setattr(flask_app.pipeline_cache, "_build", lambda session, kb: factory())
+    flask_app.services.pipeline_cache.clear()
+    monkeypatch.setattr(flask_app.services.pipeline_cache, "_build", lambda session, kb: factory())
 
 
 def ask(client, kb_id, question="soru"):
@@ -253,11 +253,11 @@ def test_the_pipeline_is_leased_for_the_length_of_the_query(app, monkeypatch, bu
     thread = threading.Thread(target=blocked)
     thread.start()
     assert model.full.wait(10)
-    assert flask_app.pipeline_cache.snapshot()["leased"] == 1
+    assert flask_app.services.pipeline_cache.snapshot()["leased"] == 1
     model.release()
     thread.join(20)
     assert outcome == [200]
-    assert flask_app.pipeline_cache.snapshot()["leased"] == 0
+    assert flask_app.services.pipeline_cache.snapshot()["leased"] == 0
 
 
 def test_the_metrics_endpoint_describes_the_query_limits(app):

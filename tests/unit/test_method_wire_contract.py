@@ -31,6 +31,7 @@ from types import SimpleNamespace
 import pytest
 
 import app as flask_app
+from application import workspace as app_workspace
 from components.chunker import create_chunker
 from components.knowledgebase.manager import KnowledgeBaseManager, normalize_chunker_config
 from components.viewer import methods as M
@@ -179,13 +180,13 @@ def upload(tmp_path, monkeypatch, client):
     for what the route hands the Viewer packager."""
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app, "kb_manager", manager)
+    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
     kb = manager.create("wire-kb", chunker={"type": "structure_first"})
     pipeline = _Pipeline()
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: pipeline)
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: pipeline)
     staged = []
     monkeypatch.setattr(
-        flask_app, "stage_viewer_analysis",
+        app_workspace, "stage_analysis",
         lambda doc_id, **kw: staged.append(dict(kw, doc_id=doc_id)) or {"status": "pending"},
     )
 

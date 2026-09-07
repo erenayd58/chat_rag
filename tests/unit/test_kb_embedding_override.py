@@ -13,12 +13,13 @@ from __future__ import annotations
 import pytest
 
 import app as flask_app
+from application.services import build_settings_for_kb
 
 
 def test_a_local_model_name_is_ignored_under_the_gateway_provider(monkeypatch):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "openrouter")
     monkeypatch.setenv("EMBEDDING_MODEL", "qwen/qwen3-embedding-8b")
-    settings = flask_app.build_settings_for_kb(
+    settings = build_settings_for_kb(
         {"embedding_model_name": "paraphrase-multilingual-MiniLM-L12-v2", "chunker": {"type": "structure_first"}},
         "kb-1",
     )
@@ -29,7 +30,7 @@ def test_a_local_model_name_is_ignored_under_the_gateway_provider(monkeypatch):
 def test_a_local_model_name_still_applies_to_the_local_provider(monkeypatch):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "sentence_transformers")
     monkeypatch.setenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-    settings = flask_app.build_settings_for_kb(
+    settings = build_settings_for_kb(
         {"embedding_model_name": "paraphrase-multilingual-MiniLM-L12-v2"}, "kb-2"
     )
     assert settings.embedding_model_name == "paraphrase-multilingual-MiniLM-L12-v2"
@@ -38,7 +39,7 @@ def test_a_local_model_name_still_applies_to_the_local_provider(monkeypatch):
 def test_a_gateway_model_name_recorded_for_the_gateway_applies(monkeypatch):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "openrouter")
     monkeypatch.setenv("EMBEDDING_MODEL", "qwen/qwen3-embedding-8b")
-    settings = flask_app.build_settings_for_kb(
+    settings = build_settings_for_kb(
         {"embedding_model_name": "qwen/qwen3-embedding-4b", "embedding_provider": "openrouter"}, "kb-3"
     )
     assert settings.embedding_model_name == "qwen/qwen3-embedding-4b"

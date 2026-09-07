@@ -50,6 +50,7 @@ MODULES = frozenset(
 
 #: Everything that ships and runs. Anything not here is a test or a fixture.
 PRODUCT_TREES = ("app.py", "wsgi.py", "main_new.py", "setup_nltk.py",
+                 "application", "interfaces", "runtime",
                  "components", "config", "core", "cli", "pipeline", "utils",
                  "evaluation", "tools", "examples")
 

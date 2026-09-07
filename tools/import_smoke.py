@@ -42,6 +42,10 @@ PRODUCT_MODULES = (
     "components.viewer.methods",
     "components.viewer.analysis",
     "pipeline.rag_pipeline",
+    "application.services",
+    "application.ingest",
+    "application.query",
+    "interfaces.http",
     "app",
 )
 

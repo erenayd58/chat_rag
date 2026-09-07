@@ -84,11 +84,11 @@ def world(tmp_path, monkeypatch):
     ledger_file = str(tmp_path / "ledger.json")
     store = RecordingStore()
 
-    monkeypatch.setattr(flask_app, "kb_manager", kbs)
-    monkeypatch.setattr(flask_app, "DocumentTracker", lambda *a, **k: DocumentTracker(ledger_file))
-    monkeypatch.setattr(flask_app, "get_pipeline",
+    monkeypatch.setattr(flask_app.services, "kb_manager", kbs)
+    monkeypatch.setattr(flask_app.services, "documents", lambda *a, **k: DocumentTracker(ledger_file))
+    monkeypatch.setattr(flask_app.services, "get_pipeline",
                         lambda *a, **k: SimpleNamespace(vector_db=store))
-    monkeypatch.setattr(flask_app, "pipeline", SimpleNamespace(vector_db=store))
+    monkeypatch.setattr(flask_app.services, "default_pipeline", SimpleNamespace(vector_db=store))
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
     # No build: this file is about which records survive a deletion, not
     # about producing a variant. The packager has its own suite.

@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 import app as flask_app
+from application import workspace as app_workspace
 
 
 @pytest.fixture
@@ -31,8 +32,8 @@ class _Tracker:
 
 def _install(monkeypatch, *, knowledge_bases, documents, viewer_states=None, tmp_path=None):
     _Tracker.rows = documents
-    monkeypatch.setattr(flask_app, "DocumentTracker", _Tracker)
-    monkeypatch.setattr(flask_app.kb_manager, "list", lambda: knowledge_bases)
+    monkeypatch.setattr(flask_app.services, "documents", _Tracker)
+    monkeypatch.setattr(flask_app.services.kb_manager, "list", lambda: knowledge_bases)
     from components.viewer import analysis
     # An analysis root of the test's own, so a snapshot never reports whatever
     # this checkout happens to have packaged.
@@ -123,7 +124,7 @@ def test_a_tracker_failure_is_an_error_response_not_a_traceback(client, monkeypa
         def get_all_documents(self, kb_id=None):
             raise RuntimeError("tracker unavailable")
 
-    monkeypatch.setattr(flask_app, "DocumentTracker", _Broken)
+    monkeypatch.setattr(flask_app.services, "documents", _Broken)
     response = client.get("/api/demo/workspace")
     assert response.status_code == 500
     assert response.get_json()["success"] is False
@@ -173,7 +174,8 @@ def test_the_refresh_can_queue_the_missing_analyses(client, monkeypatch, tmp_pat
     """?prepare=1 queues; it never packages inline, because the page's refresh
     must return at status speed however much work is outstanding."""
     queued = []
-    monkeypatch.setattr(flask_app, "prepare_missing_viewer_analyses", lambda: queued.append("called") or [])
+    monkeypatch.setattr(app_workspace, "prepare_missing",
+                        lambda services: queued.append("called") or [])
     _install(monkeypatch, knowledge_bases=[], documents=[], tmp_path=tmp_path)
 
     client.get("/api/demo/workspace")

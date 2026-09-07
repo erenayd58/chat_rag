@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 import app as flask_app
+import tempfile
 from components.ingest import IngestManager
 from components.ingest import jobs as J
 from components.ingest import limits as L
@@ -46,7 +47,7 @@ EMBEDDING_CALLS_PER_JOB = 2
 def staging(tmp_path, monkeypatch):
     directory = tmp_path / "staging"
     directory.mkdir()
-    monkeypatch.setattr(flask_app.tempfile, "gettempdir", lambda: str(directory))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(directory))
     return directory
 
 
@@ -54,8 +55,8 @@ def staging(tmp_path, monkeypatch):
 def client(tmp_path, monkeypatch, staging):
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app, "kb_manager", manager)
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: _pipeline_stub)
+    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: _pipeline_stub)
     flask_app.app.config.update(TESTING=True)
     kbs = [manager.create(f"load-kb-{i}", chunker={"type": "structure_first"})["kb_id"] for i in range(SUBMITTED)]
     yield flask_app.app, kbs
@@ -125,7 +126,7 @@ def test_load_characterisation(client, monkeypatch, staging):
     manager = IngestManager(
         IngestLimits(workers=WORKERS, queue_capacity=QUEUE, job_timeout_seconds=120), execute=work,
     )
-    monkeypatch.setattr(flask_app, "ingest_jobs", manager)
+    monkeypatch.setattr(flask_app.services, "ingest_jobs", manager)
 
     barrier = threading.Barrier(SUBMITTED)
     outcomes: list[tuple[int, dict]] = []

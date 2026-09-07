@@ -66,7 +66,7 @@ def server(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
     kb_manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app, "kb_manager", kb_manager)
+    monkeypatch.setattr(flask_app.services, "kb_manager", kb_manager)
     registry = T.MetricsRegistry(window=20)
     monkeypatch.setattr(T, "_registry", registry)
 
@@ -74,7 +74,7 @@ def server(tmp_path, monkeypatch):
     budget = L.ProviderBudget(THREADS)
     monkeypatch.setattr(Q, "_answer_budget", budget)
     pipeline = BlockingPipeline(model, budget)
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: pipeline)
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: pipeline)
 
     port = free_port()
     instance = create_server(flask_app.app, host="127.0.0.1", port=port, threads=THREADS)
@@ -117,7 +117,7 @@ def start_query(server) -> tuple[threading.Thread, list]:
 def test_without_admission_a_burst_of_questions_takes_the_whole_server(server, monkeypatch):
     """The failure this closes, on the real server: as many queries admitted
     as there are request threads, and nothing else is served."""
-    monkeypatch.setattr(flask_app, "query_admission", Q.QueryAdmission(THREADS))
+    monkeypatch.setattr(flask_app.services, "query_admission", Q.QueryAdmission(THREADS))
     threads = [start_query(server) for _ in range(THREADS)]
     assert server.model.full.wait(20), "three queries never got inside the model"
 
@@ -136,7 +136,7 @@ def test_with_the_products_admission_health_and_status_are_always_served(server,
     """The fix: fewer query slots than request threads. The question that
     finds no slot is refused at once, and everything else keeps answering."""
     admission = Q.QueryAdmission(THREADS - 1)
-    monkeypatch.setattr(flask_app, "query_admission", admission)
+    monkeypatch.setattr(flask_app.services, "query_admission", admission)
     server.model.expect = THREADS - 1
 
     running = [start_query(server) for _ in range(THREADS - 1)]

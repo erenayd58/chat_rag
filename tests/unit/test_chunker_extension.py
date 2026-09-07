@@ -30,6 +30,7 @@ from types import SimpleNamespace
 import pytest
 
 import app as flask_app
+from application import workspace as app_workspace
 from amsc.chunking import registry
 from amsc.chunking.example import FIXED_WINDOW
 from components.chunker import registry as indexing
@@ -144,11 +145,11 @@ def test_an_upload_can_ask_for_it(tmp_path, monkeypatch, client, fifth):
 
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app, "kb_manager", manager)
+    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
     kb = manager.create("fifth-kb", chunker={"type": "structure_first"})
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: _Pipeline())
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: _Pipeline())
     staged = []
-    monkeypatch.setattr(flask_app, "stage_viewer_analysis",
+    monkeypatch.setattr(app_workspace, "stage_analysis",
                         lambda doc_id, **kw: staged.append(dict(kw, doc_id=doc_id)) or {"status": "pending"})
     data = MultiDict([("file", (io.BytesIO(b"kucuk bir belge"), "belge.txt")), ("kb_id", kb["kb_id"]),
                       ("methods", "fixed-window")])

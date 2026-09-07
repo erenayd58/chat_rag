@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 import app as flask_app
+from application import workspace as app_workspace
 from components.knowledgebase.manager import KnowledgeBaseManager
 from config import paths
 
@@ -96,7 +97,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("FAKE_DEEP_KEY", "sk-placeholder-secret")
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app, "kb_manager", manager)
+    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
     # These tests are about what the upload route returns and records. Viewer
     # packaging is a separate contract with its own tests, and it runs on a
     # background thread that outlives the request -- so left real, it reaches
@@ -104,7 +105,7 @@ def client(tmp_path, monkeypatch):
     # no reason to own, and logs a failure for every upload here. Staging is
     # stubbed rather than fed a fake store: the boundary being exercised ends
     # at the response.
-    monkeypatch.setattr(flask_app, "stage_viewer_analysis", lambda *a, **k: {"status": "queued"})
+    monkeypatch.setattr(app_workspace, "stage_analysis", lambda *a, **k: {"status": "queued"})
     flask_app.app.config.update(TESTING=True)
     kb = manager.create("deep-kb", chunker={"type": "structure_first"})
     with flask_app.app.test_client() as test_client:
@@ -124,7 +125,7 @@ def upload(test_client, kb_id, deep):
 
 
 def use_pipeline(monkeypatch, pipeline):
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: pipeline)
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: pipeline)
     return pipeline
 
 

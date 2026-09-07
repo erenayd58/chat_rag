@@ -209,28 +209,46 @@ REFUSALS = {
 
 
 def test_the_product_still_makes_every_distinction_in_its_refusal_taxonomy():
-    """Each of these codes is a decision some route reaches deliberately.
+    """Each of these codes is a decision some adapter reaches deliberately.
 
-    ``409`` (a store another knowledge base still uses), ``503`` (overload,
-    or an unavailable answer model) and ``504`` (a passed deadline) are
-    *caused* by other suites, which is where they belong -- reaching them
-    here would mean faking the condition rather than provoking it. What is
-    checked here is that they have not silently left the codebase, which is
-    what a framework port collapsing its error handling looks like from the
-    outside.
+    ``409`` (a store another knowledge base still uses), ``503`` (overload, or
+    an unavailable answer model) and ``504`` (a passed deadline) are *caused*
+    by other suites, which is where they belong -- reaching them here would
+    mean faking the condition rather than provoking it. What is checked here
+    is that they have not silently left the codebase, which is what a
+    framework port collapsing its error handling looks like from the outside.
+
+    The codes live in the HTTP adapter and nowhere else: two tables
+    (``responses.STATUS``, which maps an application refusal to a status, and
+    ``ingest.OUTCOMES``, which maps a settled job to one) plus the few
+    literals the upload path returns directly. A port replaces this package
+    and has to reproduce the same six distinctions in whatever it writes
+    instead.
     """
     import ast
 
-    source = ast.parse((REPO / "app.py").read_text(encoding="utf-8"))
+    adapter = REPO / "interfaces" / "http"
+    assert adapter.is_dir(), "the HTTP adapter package is gone"
+
     returned = set()
-    for node in ast.walk(source):
-        if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
-            for element in node.value.elts:
-                if isinstance(element, ast.Constant) and isinstance(element.value, int):
-                    returned.add(element.value)
+    for path in sorted(adapter.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            # A status returned beside a body ...
+            if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
+                returned |= {e.value for e in node.value.elts
+                             if isinstance(e, ast.Constant) and isinstance(e.value, int)}
+            # ... or one declared in a translation table.
+            elif isinstance(node, ast.Dict):
+                for value in node.values:
+                    if isinstance(value, ast.Constant) and isinstance(value.value, int):
+                        returned.add(value.value)
+                    elif isinstance(value, ast.Tuple) and value.elts:
+                        first = value.elts[0]
+                        if isinstance(first, ast.Constant) and isinstance(first.value, int):
+                            returned.add(first.value)
 
     lost = sorted(code for code in REFUSALS if code not in returned)
     assert lost == [], (
-        "no route answers with these any more, so the distinction they made "
+        "no adapter answers with these any more, so the distinction they made "
         "is gone: " + repr({code: REFUSALS[code] for code in lost})
     )

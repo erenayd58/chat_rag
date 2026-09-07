@@ -17,6 +17,11 @@ from types import SimpleNamespace
 import pytest
 
 import app as flask_app
+from application import documents as app_documents
+from application import ingest as app_ingest
+from application import workspace as app_workspace
+from config import paths as app_paths
+import tempfile
 from components.ingest import IngestManager
 from components.ingest import jobs as J
 from components.ingest.limits import JobGuard, checkpoint
@@ -80,7 +85,7 @@ class StubPipeline:
 def staging(tmp_path, monkeypatch):
     directory = tmp_path / "staging"
     directory.mkdir()
-    monkeypatch.setattr(flask_app.tempfile, "gettempdir", lambda: str(directory))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(directory))
     return directory
 
 
@@ -93,8 +98,8 @@ def client(tmp_path, monkeypatch, staging):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("FAKE_DEEP_KEY", "sk-placeholder")
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app, "kb_manager", manager)
-    monkeypatch.setattr(flask_app, "stage_viewer_analysis", lambda *a, **k: {"status": "queued"})
+    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
+    monkeypatch.setattr(app_workspace, "stage_analysis", lambda *a, **k: {"status": "queued"})
     flask_app.app.config.update(TESTING=True)
     kb = manager.create("jobs-kb", chunker={"type": "structure_first"})
     with flask_app.app.test_client() as test_client:
@@ -111,10 +116,10 @@ def jobs(monkeypatch):
         fields.update(limits)
         manager = IngestManager(
             IngestLimits(**fields),
-            execute=lambda job: flask_app._execute_ingest(job),
+            execute=lambda job: app_ingest.execute_job(flask_app.services, job),
             journal=journal,
         )
-        monkeypatch.setattr(flask_app, "ingest_jobs", manager)
+        monkeypatch.setattr(flask_app.services, "ingest_jobs", manager)
         managers.append(manager)
         return manager
 
@@ -124,7 +129,7 @@ def jobs(monkeypatch):
 
 
 def use_pipeline(monkeypatch, pipeline):
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: pipeline)
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: pipeline)
     return pipeline
 
 
@@ -377,7 +382,7 @@ def test_a_job_id_still_answers_after_a_restart(client, jobs, monkeypatch, stagi
 
     test_client, kb_id = client
     journal = JobJournal(str(tmp_path / "journal"))
-    monkeypatch.setattr(flask_app.paths, "ingest_journal", lambda: str(tmp_path / "journal"))
+    monkeypatch.setattr(app_paths, "ingest_journal", lambda: str(tmp_path / "journal"))
     gate = threading.Event()
     pipeline = use_pipeline(monkeypatch, StubPipeline(gate=gate))
     first = jobs(journal=journal)
@@ -389,7 +394,7 @@ def test_a_job_id_still_answers_after_a_restart(client, jobs, monkeypatch, stagi
     # The process restarts: a new manager over the same journal directory,
     # exactly what start-up builds.
     second = jobs(journal=journal)
-    interrupted = second.recover(resolve_document=flask_app.document_of_ingest_job)
+    interrupted = second.recover(resolve_document=lambda job_id: app_documents.of_ingest_job(flask_app.services, job_id))
     assert [record["job_id"] for record in interrupted] == [job_id]
 
     response = test_client.get(f"/api/ingest/jobs/{job_id}")
@@ -410,7 +415,7 @@ def test_a_job_that_finished_before_the_restart_reports_success(client, jobs, mo
 
     test_client, kb_id = client
     journal = JobJournal(str(tmp_path / "journal"))
-    monkeypatch.setattr(flask_app.paths, "ingest_journal", lambda: str(tmp_path / "journal"))
+    monkeypatch.setattr(app_paths, "ingest_journal", lambda: str(tmp_path / "journal"))
     use_pipeline(monkeypatch, StubPipeline())
     first = jobs(journal=journal)
 
@@ -425,7 +430,7 @@ def test_a_job_that_finished_before_the_restart_reports_success(client, jobs, mo
                     "result": None, "finished_at": None})
 
     second = jobs(journal=journal)
-    settled = second.recover(resolve_document=flask_app.document_of_ingest_job)
+    settled = second.recover(resolve_document=lambda job_id: app_documents.of_ingest_job(flask_app.services, job_id))
     assert len(settled) == 1
     job = test_client.get(f"/api/ingest/jobs/{job_id}").get_json()["job"]
     assert job["status"] == J.SUCCEEDED
@@ -475,7 +480,7 @@ def test_validation_failures_never_create_a_job(client, jobs, monkeypatch, stagi
     assert upload(test_client, "").status_code == 400
     assert upload(test_client, "no-such-kb").status_code == 404
     use_pipeline(monkeypatch, StubPipeline())
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda *a, **k: SimpleNamespace(
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: SimpleNamespace(
         chunker=SimpleNamespace(get_name=lambda: "SemanticChunker")))
     refused = upload(test_client, kb_id, deep_analysis="true")
     assert refused.status_code == 400 and refused.get_json()["deep_analysis_unavailable"] is True

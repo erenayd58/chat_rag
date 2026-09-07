@@ -25,6 +25,9 @@ from types import SimpleNamespace
 import pytest
 
 import app as flask_app
+from application import ingest as app_ingest
+from application import workspace as app_workspace
+import tempfile
 from components.ingest import IngestManager, PipelineCache
 from components.ingest import jobs as J
 from components.ingest import limits as L
@@ -148,10 +151,10 @@ def workspace(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     staging = tmp_path / "staging"
     staging.mkdir()
-    monkeypatch.setattr(flask_app.tempfile, "gettempdir", lambda: str(staging))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(staging))
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app, "kb_manager", manager)
-    monkeypatch.setattr(flask_app, "stage_viewer_analysis", lambda *a, **k: {"status": "queued"})
+    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
+    monkeypatch.setattr(app_workspace, "stage_analysis", lambda *a, **k: {"status": "queued"})
     flask_app.app.config.update(TESTING=True)
     kb = manager.create("load-kb", chunker={"type": "structure_first"})
     return flask_app.app, kb["kb_id"], staging
@@ -176,14 +179,14 @@ def test_load_characterisation(workspace, monkeypatch):
             clock, deep_gate, EmbeddingDouble(embed_gate), budgets),
         max_entries=CACHE_MAX, ttl_seconds=0,
     )
-    monkeypatch.setattr(flask_app, "pipeline_cache", cache)
-    monkeypatch.setattr(flask_app, "get_pipeline", lambda s, k=None: cache.get(s, k))
+    monkeypatch.setattr(flask_app.services, "pipeline_cache", cache)
+    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda s, k=None: cache.get(s, k))
 
     manager = IngestManager(
         IngestLimits(workers=WORKERS, queue_capacity=QUEUE, job_timeout_seconds=300),
-        execute=lambda job: flask_app._execute_ingest(job),
+        execute=lambda job: app_ingest.execute_job(flask_app.services, job),
     )
-    monkeypatch.setattr(flask_app, "ingest_jobs", manager)
+    monkeypatch.setattr(flask_app.services, "ingest_jobs", manager)
 
     cache_before = cache.snapshot()["size"]
     rss_before = _rss_mb()

@@ -26,6 +26,7 @@ Run both from their own repository root.
 # chat_rag (this repo) — the venv's interpreter, from the repo root
 python -m pytest -q                       # everything
 python -m pytest tests/unit -q            # fast: no Flask app, no store
+python -m pytest tests/application -q     # the product's behaviour, with no Flask at all
 python -m pytest tests/integration -q     # the real app through its test client
 python -m pytest tests/unit/test_query_limits.py -q          # one file
 python -m pytest -q -k "ingest and restart"                  # by name
@@ -49,6 +50,22 @@ Two things about the `chunk` suite are worth knowing before the first failure:
 * it uses deterministic tokenizer and embedding doubles, so it downloads no
   model. The real `cl100k_base` counter is covered separately in unit tests.
 
+### The application suite
+
+`tests/application` drives the product's use cases directly -- a container of
+test doubles, an ordinary function call, an ordinary dict or an
+`application.errors` exception back. No test client, no request context, no
+Flask object anywhere in it, which is the point: it is the evidence that the
+behaviour under the adapter is reusable, and `test_the_boundary_holds` fails
+if any module under `application/` ever imports a web framework.
+
+It does not repeat the API tests. Those prove the Flask adapter still maps
+correctly; this one proves there is something worth adapting.
+
+```bash
+python -m pytest tests/application -q
+```
+
 ### The migration contract suite
 
 A fourth thing to run, and the cheapest: `tests/migration` holds the
@@ -66,7 +83,7 @@ of a rewrite, not once at the end. Three files, one contract each:
 | file | holds |
 |---|---|
 | `test_document_store_contract.py` | what a document store must do, run against every shipped store: the result record, the metadata round trip (including `search_text` / `table_view`), per-document isolation, pagination, durability -- and the twelve methods the routes call unguarded, which is more than `BaseVectorDB` declares |
-| `test_http_surface.py` | the console API is exactly what the README publishes, every route belongs to a declared group, and the refusal taxonomy (400/404/409/500/503/504) still makes all six distinctions |
+| `test_http_surface.py` | the console API is exactly what the README publishes, every route belongs to a declared group, and the refusal taxonomy (400/404/409/500/503/504) still makes all six distinctions -- read from the HTTP adapter's own translation tables |
 | `test_domain_relations.py` | the edges between knowledge base, document, content and variant: what each deletion takes and what it must leave -- the foreign keys a schema has to declare |
 
 What it deliberately leaves free: Flask, the module layout, the file-backed

@@ -12,14 +12,26 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
-# Production wiring. Importing the app module gives the CLI the very same
-# settings resolution, pipeline cache and managers the HTTP routes use.
-from app import build_settings_for_kb, get_pipeline, gold_manager, kb_manager  # noqa: F401
+# Production wiring. The CLI composes the very same application the web
+# adapter does -- one container, the same settings resolution, the same
+# pipeline cache and the same managers -- and imports no web framework to get
+# it.
+from application.services import build_settings_for_kb, default_services  # noqa: F401
 from components.provenance import git_sha  # noqa: F401  (re-exported)
 from components.retriever import retrieval_capabilities
 from utils import DocumentTracker
 
 CLI_SESSION = "cli"
+
+services = default_services()
+kb_manager = services.kb_manager
+gold_manager = services.gold_manager
+
+
+def get_pipeline(session_id: str, kb_id: Optional[str] = None):
+    """The application's own pipeline seam, so an evaluation measures what the
+    console would actually return."""
+    return services.get_pipeline(session_id, kb_id)
 
 
 class CliError(Exception):

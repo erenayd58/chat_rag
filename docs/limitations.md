@@ -103,7 +103,7 @@ rather than fixed because removing them is a startup redesign:
 
 | what | effect |
 |---|---|
-| `app.py` | importing it builds `Settings`, the pipeline, the KB and gold managers, the budgets and the ingest manager — so `import app` opens the vector store | 
+| `application/services.py` | `default_services()` builds `Settings`, the pipeline, the KB and gold managers, the budgets and the ingest manager, and both entrypoints call it on import — so `import app`, and `import cli.runtime`, open the vector store. `build_services()` is the composition that does *not* have to be a global; nothing but those two call it at import | 
 | `utils/logger.py` | importing it creates the log directory and opens a log file |
 | `config/__init__.py` | importing it applies `.env` to the process environment (deliberate, and the one dotenv read in the application) |
 

@@ -19,6 +19,10 @@ from types import SimpleNamespace
 import pytest
 
 import app as flask_app
+from application import ingest as app_ingest
+from application import ops as app_ops
+from application import workspace as app_workspace
+import tempfile
 from components.ingest import IngestManager
 from components.ingest import jobs as J
 from components.ingest import limits as L
@@ -101,10 +105,10 @@ def client(tmp_path, monkeypatch, registry):
     monkeypatch.chdir(tmp_path)
     staging = tmp_path / "staging"
     staging.mkdir()
-    monkeypatch.setattr(flask_app.tempfile, "gettempdir", lambda: str(staging))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(staging))
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app, "kb_manager", manager)
-    monkeypatch.setattr(flask_app, "stage_viewer_analysis", lambda *a, **k: {"status": "queued"})
+    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
+    monkeypatch.setattr(app_workspace, "stage_analysis", lambda *a, **k: {"status": "queued"})
     flask_app.app.config.update(TESTING=True)
     kb = manager.create("ops-kb", chunker={"type": "structure_first"})
     with flask_app.app.test_client() as test_client:
@@ -119,8 +123,8 @@ def jobs(monkeypatch):
         fields = dict(workers=1, queue_capacity=2, job_timeout_seconds=60)
         fields.update(limits)
         manager = IngestManager(IngestLimits(**fields),
-                                execute=lambda job: flask_app._execute_ingest(job))
-        monkeypatch.setattr(flask_app, "ingest_jobs", manager)
+                                execute=lambda job: app_ingest.execute_job(flask_app.services, job))
+        monkeypatch.setattr(flask_app.services, "ingest_jobs", manager)
         managers.append(manager)
         return manager
 
@@ -136,8 +140,8 @@ def use_pipeline(monkeypatch, pipeline):
     cache is part of what these tests are about -- a job leases the entry the
     cache holds. Building the stub *through* the cache keeps that real.
     """
-    flask_app.pipeline_cache.clear()
-    monkeypatch.setattr(flask_app.pipeline_cache, "_build", lambda session, kb: pipeline)
+    flask_app.services.pipeline_cache.clear()
+    monkeypatch.setattr(flask_app.services.pipeline_cache, "_build", lambda session, kb: pipeline)
     return pipeline
 
 
@@ -330,7 +334,7 @@ def test_health_is_degraded_when_the_knowledge_base_records_cannot_be_read(
     def broken():
         raise OSError("the records are unreadable")
 
-    monkeypatch.setattr(flask_app.kb_manager, "list", broken)
+    monkeypatch.setattr(flask_app.services.kb_manager, "list", broken)
     body = test_client.get("/api/health").get_json()
     assert body["state"] == "degraded"
     assert "unreadable" in " ".join(body["reasons"])
@@ -365,26 +369,26 @@ def test_an_ingest_leases_its_pipeline_so_it_cannot_be_evicted(
     manager = jobs()
     gate = threading.Event()
     pipeline = use_pipeline(monkeypatch, TimedPipeline(clock, gate=gate))
-    monkeypatch.setattr(flask_app.pipeline_cache, "max_entries", 1)
+    monkeypatch.setattr(flask_app.services.pipeline_cache, "max_entries", 1)
 
     upload(test_client, kb_id, **{"async": "1"})
     assert pipeline.started.wait(10)
-    assert flask_app.pipeline_cache.snapshot()["leased"] == 1
+    assert flask_app.services.pipeline_cache.snapshot()["leased"] == 1
 
     # Traffic from other sessions cannot take the running job's pipeline away.
     for index in range(4):
-        flask_app.pipeline_cache.get(f"browser{index}", kb_id)
-    assert flask_app.pipeline_cache.snapshot()["leased"] == 1
+        flask_app.services.pipeline_cache.get(f"browser{index}", kb_id)
+    assert flask_app.services.pipeline_cache.snapshot()["leased"] == 1
 
     gate.set()
     assert manager.drain(20)
-    assert flask_app.pipeline_cache.snapshot()["leased"] == 0
+    assert flask_app.services.pipeline_cache.snapshot()["leased"] == 0
 
 
 def test_the_cache_state_is_visible_to_an_operator(client, jobs):
     test_client, kb_id = client
     jobs()
-    flask_app.pipeline_cache.get("someone", kb_id)
+    flask_app.services.pipeline_cache.get("someone", kb_id)
     caches = test_client.get("/api/ops/metrics").get_json()["caches"]
     assert caches["pipelines"]["size"] >= 1
     assert caches["pipelines"]["max"] >= 1
@@ -449,7 +453,7 @@ def test_a_broken_store_does_not_publish_the_data_root(client, jobs, monkeypatch
     def broken():
         raise OSError("[Errno 13] Permission denied: " + repr(root))
 
-    monkeypatch.setattr(flask_app.kb_manager, "list", broken)
+    monkeypatch.setattr(flask_app.services.kb_manager, "list", broken)
     body = test_client.get("/api/health").get_json()
     reasons = " ".join(body["reasons"])
     assert body["state"] == "degraded"
@@ -478,7 +482,7 @@ def test_alive_ready_and_state_are_three_different_answers(
     healthy = test_client.get("/api/health").get_json()
     assert (healthy["status"], healthy["state"], healthy["ready"]) == ("healthy", "ok", True)
 
-    for index in range(flask_app.DEGRADED_AFTER_JOBS):
+    for index in range(app_ops.DEGRADED_AFTER_JOBS):
         upload(test_client, kb_id, content=f"belge {index}".encode())
     assert manager.drain(20)
 
@@ -497,7 +501,7 @@ def test_a_service_that_recovers_stops_calling_itself_degraded(
     manager = jobs(workers=1, queue_capacity=8)
     use_pipeline(monkeypatch, TimedPipeline(
         clock, seconds={T.PARSE: 1.0}, error=OSError("the store is gone")))
-    for index in range(flask_app.DEGRADED_AFTER_JOBS):
+    for index in range(app_ops.DEGRADED_AFTER_JOBS):
         upload(test_client, kb_id, content=f"kotu {index}".encode())
     assert manager.drain(20)
     assert test_client.get("/api/health").get_json()["state"] == "degraded"

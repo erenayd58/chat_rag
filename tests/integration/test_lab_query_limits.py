@@ -117,11 +117,11 @@ def registry(monkeypatch):
 def lab(tmp_path, monkeypatch, registry):
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app, "kb_manager", manager)
+    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
     flask_app.app.config.update(TESTING=True)
 
     admission = Q.QueryAdmission(2)
-    monkeypatch.setattr(flask_app, "query_admission", admission)
+    monkeypatch.setattr(flask_app.services, "query_admission", admission)
     answers = L.ProviderBudget(2)
     monkeypatch.setattr(Q, "_answer_budget", answers)
     embeddings = L.ProviderBudget(2)
@@ -130,9 +130,9 @@ def lab(tmp_path, monkeypatch, registry):
 
     # Built through the cache, not around it: the lease the endpoint takes
     # is then a real lease on a real entry.
-    flask_app.pipeline_cache.clear()
+    flask_app.services.pipeline_cache.clear()
     monkeypatch.setattr(
-        flask_app.pipeline_cache, "_build",
+        flask_app.services.pipeline_cache, "_build",
         lambda session, kb: LabPipeline(transport, embeddings, watch=watched.get("watch")),
     )
     kb = manager.create("lab-kb", chunker={"type": "structure_first"})
@@ -181,11 +181,11 @@ def test_the_pipeline_is_leased_for_the_length_of_a_lab_search(lab):
     """A burst of other sessions must not evict this pipeline and close its
     store while the search is reading it."""
     seen = []
-    lab.watched["watch"] = lambda: seen.append(flask_app.pipeline_cache.snapshot()["leased"])
+    lab.watched["watch"] = lambda: seen.append(flask_app.services.pipeline_cache.snapshot()["leased"])
     with flask_app.app.test_client() as client:
         assert post(client, lab, "lab.search_bm25").status_code == 200
     assert seen == [1], "leased while the retriever was running"
-    assert flask_app.pipeline_cache.snapshot()["leased"] == 0
+    assert flask_app.services.pipeline_cache.snapshot()["leased"] == 0
 
 
 # ------------------------------------------------------------- refused
@@ -215,7 +215,7 @@ def test_lab_searches_and_questions_share_one_bound(lab, monkeypatch):
     and the reverse -- which is what makes the starvation guarantee hold
     across the whole retrieval surface rather than on /api/query alone."""
     single = Q.QueryAdmission(1)
-    monkeypatch.setattr(flask_app, "query_admission", single)
+    monkeypatch.setattr(flask_app.services, "query_admission", single)
 
     assert single.try_enter(), "stand in for a Lab search in flight"
     with flask_app.app.test_client() as client:
@@ -306,7 +306,7 @@ def test_no_answer_model_is_ever_reached_from_the_lab(lab, monkeypatch):
     """The justification for giving these endpoints no answer budget."""
     model = GatedAnswerModel()
     model.release()
-    monkeypatch.setattr(flask_app.pipeline_cache, "_build", lambda session, kb: SimpleNamespace(
+    monkeypatch.setattr(flask_app.services.pipeline_cache, "_build", lambda session, kb: SimpleNamespace(
         settings=SimpleNamespace(embedding_model_name="test/embedding"),
         hybrid_retriever=Retriever(), vector_db=Store(),
         embedding_model=Embedding(lab.transport, lab.embeddings),
