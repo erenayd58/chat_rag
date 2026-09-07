@@ -16,18 +16,7 @@ class BaseLLM(ABC):
         max_tokens: int = 200,
         **kwargs
     ) -> str:
-        """
-        Generate text from messages
-        
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens to generate
-            **kwargs: Additional provider-specific parameters
-        
-        Returns:
-            Generated text
-        """
+        """Generate text from messages"""
         pass
     
     @abstractmethod

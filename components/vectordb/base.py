@@ -16,14 +16,7 @@ class BaseVectorDB(ABC):
         embeddings: List[List[float]],
         **kwargs
     ) -> None:
-        """
-        Add chunks with embeddings to the database
-        
-        Args:
-            chunks: List of document chunks
-            embeddings: List of embedding vectors
-            **kwargs: Additional provider-specific parameters
-        """
+        """Add chunks with embeddings to the database"""
         pass
     
     @abstractmethod
@@ -34,38 +27,17 @@ class BaseVectorDB(ABC):
         filter_dict: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> List[Dict[str, Any]]:
-        """
-        Query the vector database
-        
-        Args:
-            query_embedding: Query embedding vector
-            top_k: Number of results to return
-            filter_dict: Optional metadata filter
-            **kwargs: Additional parameters
-        
-        Returns:
-            List of results with chunks and scores
-        """
+        """Query the vector database"""
         pass
     
     @abstractmethod
     def get_all_chunks(self) -> List[DocumentChunk]:
-        """
-        Retrieve all chunks from the database
-        
-        Returns:
-            List of all document chunks
-        """
+        """Retrieve all chunks from the database"""
         pass
     
     @abstractmethod
     def delete_by_doc_id(self, doc_id: str) -> None:
-        """
-        Delete all chunks for a document
-        
-        Args:
-            doc_id: Document ID to delete
-        """
+        """Delete all chunks for a document"""
         pass
     
     @abstractmethod

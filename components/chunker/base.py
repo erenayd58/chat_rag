@@ -18,19 +18,7 @@ class BaseChunker(ABC):
         document_summary: str = None,
         **kwargs
     ) -> List[DocumentChunk]:
-        """
-        Chunk text into document chunks
-        
-        Args:
-            text: Text to chunk
-            doc_id: Document ID
-            doc_title: Document title
-            document_summary: Optional document summary
-            **kwargs: Additional chunking parameters
-        
-        Returns:
-            List of document chunks
-        """
+        """Chunk text into document chunks"""
         pass
     
     @abstractmethod

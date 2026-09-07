@@ -37,12 +37,7 @@ class DocumentTracker:
     """Tracks ingested documents to avoid re-processing"""
     
     def __init__(self, tracking_file: Optional[str] = None):
-        """
-        Initialize document tracker
-        
-        Args:
-            tracking_file: Path to the tracking file
-        """
+        """Initialize document tracker"""
         # Defaults to the historical file unless a data directory is set.
         self.tracking_file = tracking_file or paths.ingested_documents()
         self.ingested_docs: Dict[str, Dict] = {}
@@ -155,15 +150,7 @@ class DocumentTracker:
             return applied is not False
 
     def _compute_file_hash(self, file_path: str) -> str:
-        """
-        Compute hash of file content
-        
-        Args:
-            file_path: Path to file
-        
-        Returns:
-            SHA256 hash of file content
-        """
+        """Compute hash of file content"""
         sha256_hash = hashlib.sha256()
         try:
             with open(file_path, "rb") as f:
@@ -176,15 +163,7 @@ class DocumentTracker:
             return ""
     
     def is_document_ingested(self, file_path: str) -> bool:
-        """
-        Check if document has already been ingested
-        
-        Args:
-            file_path: Path to the document
-        
-        Returns:
-            True if document is already ingested and unchanged
-        """
+        """Check if document has already been ingested"""
         abs_path = os.path.abspath(file_path)
         
         if abs_path not in self.ingested_docs:
@@ -211,28 +190,7 @@ class DocumentTracker:
         status: str = 'indexed',
         chunking_mode: Optional[str] = None
     ) -> bool:
-        """
-        Mark a document as ingested
-
-        Args:
-            file_path: Path to the document
-            doc_id: Document ID
-            chunk_count: Number of chunks created
-            metadata: Additional metadata
-            kb_id: Knowledge base ID this document belongs to
-            pipeline_snapshot: Immutable record of the configuration that
-                produced this corpus (see components.provenance). It is written
-                in the same call that records the document, so an ingest that
-                failed -- and therefore never reached this method -- cannot
-                leave a snapshot behind.
-            status: Lifecycle state of the record. Ingestion is synchronous
-                today, so a record only ever exists as 'indexed';
-                'processing' and 'failed' are reserved for asynchronous
-                ingestion.
-            chunking_mode: The per-document ingest choice ('standard' or
-                'deep_analysis'). None on records written by callers that
-                predate the field.
-        """
+        """Mark a document as ingested"""
         abs_path = os.path.abspath(file_path)
         file_hash = self._compute_file_hash(file_path)
 
@@ -265,12 +223,7 @@ class DocumentTracker:
         return self._mutate(add)
     
     def remove_document(self, file_path: str):
-        """
-        Remove a document from tracking
-        
-        Args:
-            file_path: Path to the document
-        """
+        """Remove a document from tracking"""
         abs_path = os.path.abspath(file_path)
 
         def drop(records: Dict[str, Dict]) -> bool:
@@ -280,15 +233,7 @@ class DocumentTracker:
         self._mutate(drop)
     
     def get_statistics(self, kb_id: Optional[str] = None) -> Dict:
-        """
-        Get statistics about ingested documents
-        
-        Args:
-            kb_id: Optional knowledge base ID to filter statistics
-        
-        Returns:
-            Dictionary with statistics
-        """
+        """Get statistics about ingested documents"""
         # Filter by KB if kb_id is provided
         filtered_docs = self.ingested_docs
         if kb_id is not None:
@@ -313,15 +258,7 @@ class DocumentTracker:
         }
     
     def get_all_documents(self, kb_id: Optional[str] = None) -> List[Dict]:
-        """
-        Get list of all ingested documents with their metadata
-        
-        Args:
-            kb_id: Optional knowledge base ID to filter documents
-
-        Returns:
-            List of document dictionaries
-        """
+        """Get list of all ingested documents with their metadata"""
         documents = []
         for file_path, doc_data in self.ingested_docs.items():
             doc_kb_id = doc_data.get('kb_id')
@@ -352,15 +289,7 @@ class DocumentTracker:
         return documents
 
     def get_document_by_doc_id(self, doc_id: str) -> Optional[Dict]:
-        """
-        Get document information by doc_id
-
-        Args:
-            doc_id: Document ID to search for
-
-        Returns:
-            Document dictionary or None if not found
-        """
+        """Get document information by doc_id"""
         for file_path, doc_data in self.ingested_docs.items():
             if doc_data.get('doc_id') == doc_id:
                 return {

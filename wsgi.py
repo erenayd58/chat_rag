@@ -7,63 +7,32 @@ reloader, the interactive debugger, loopback only. This module is what a
 container or a service manager runs. It exposes ``application`` for any WSGI
 host and, run directly, serves it on waitress.
 
-Why one process rather than several worker processes
-----------------------------------------------------
+**One process, not several workers.** Three pieces of this application keep
+real state in module globals that processes cannot share: the Viewer packager
+is one background thread over an in-memory queue with a per-document lock (two
+processes would each resume every unfinished document at start-up), the
+pipeline cache holds a built ``RAGPipeline`` per session and knowledge base,
+and the vector store is an embedded database opened by the process using it.
+So the choice is *one process* rather than many, and waitress is what does
+that well on both platforms this runs on -- gunicorn does not run on Windows
+at all. That is also what lets the provider limit
+(``components/ingest/limits.py``) be a plain semaphore that means what it
+says. ``docs/limitations.md`` says what scaling out would take instead.
 
-This application keeps real state in module globals, and that state is not
-shareable between processes:
-
-* ``components.viewer.analysis`` packages documents on **one background
-  thread** fed by an in-memory ``queue.Queue``, with an in-process ``_inflight``
-  set and per-document locks. Two processes would each run their own worker
-  over the same directory on disk, and each would run ``resume_incomplete()``
-  at start-up -- so a restart with four workers would repackage every
-  unfinished document four times, concurrently.
-* ``app.pipelines`` caches a built ``RAGPipeline`` per (session, knowledge
-  base). Each process would build and hold its own copy of every model and
-  index it touches, and a browser's requests would land on a different cache
-  each time.
-* the vector store is an embedded Chroma/sqlite database opened by the
-  process that uses it, not a database server several processes may share.
-
-So the choice here is not "waitress instead of gunicorn"; it is *one process*
-instead of many, and waitress is the server that does that well on both of the
-platforms this project runs on. Gunicorn cannot run on Windows at all, which is
-where this is developed; waitress is pure Python, runs identically on Windows
-and Linux, needs no build tools in a slim image, and is a threaded single
-process by design rather than by configuration.
-
-Concurrency is therefore ``WAITRESS_THREADS`` (default 8) request threads,
-``INGEST_WORKERS`` (default 2) ingest workers and the one Viewer packaging
-thread, all in one address space. That is what lets the provider limit
-(``PROVIDER_MAX_INFLIGHT``, ``components/ingest/limits.py``) be a plain
-``threading.Semaphore`` that means exactly what it says -- which it would not
-if the runtime were N processes.
-
-Ingestion is scheduled by ``components/ingest/jobs.py``: an upload request
-validates, stages the file and queues a job, and the parse, chunking, model
-calls and store writes happen on an ingest worker under those limits. A
-request thread waits on a job only for a synchronous upload (no ``async=1``),
-for at most ``INGEST_SYNC_WAIT`` seconds -- below ``WAITRESS_CHANNEL_TIMEOUT``
-on purpose -- and only ``INGEST_SYNC_WAITERS`` threads may do so at once, so
-uploads can never occupy every request thread and leave ``/api/health`` and
-job polling unanswerable. An upload that finds no waiting slot is still
-accepted and still runs; it is answered 202 with its job.
-
-A question is answered on the request thread that received it, so the same
-kind of bound applies to chat (``components/query/limits.py``): at most
-``QUERY_MAX_ACTIVE`` threads may be inside a query at once -- by default
-``WAITRESS_THREADS - INGEST_SYNC_WAITERS - 1``, so questions and synchronous
-uploads together can never take every thread -- one more is refused at once
-with 503 and a ``Retry-After`` rather than queued, answer-model calls share
-``ANSWER_MAX_INFLIGHT`` process-wide, and the whole query runs under
-``QUERY_TIMEOUT``.
+Concurrency is therefore ``WAITRESS_THREADS`` request threads,
+``INGEST_WORKERS`` ingest workers and the one packaging thread, in one address
+space. An upload is a job (``components/ingest/jobs.py``); a request thread
+waits on one only for a synchronous upload, for at most ``INGEST_SYNC_WAIT``
+seconds and only ``INGEST_SYNC_WAITERS`` at a time, so uploads can never take
+every thread. A question is answered on the thread that received it, under
+``QUERY_MAX_ACTIVE`` admission and the ``QUERY_TIMEOUT`` deadline
+(``components/query/limits.py``).
 
 A restart is not a clean slate for clients: a job id handed out before it is
 still answerable afterwards, because jobs journal their transitions and
-start-up settles anything in flight against the ingest ledger
-(``components/ingest/journal.py``). Nothing is resumed and nothing was
-committed, which is what makes that settlement truthful.
+start-up settles anything in flight against the ingest ledger. Nothing is
+resumed and nothing was committed, which is what makes that settlement
+truthful.
 """
 
 from __future__ import annotations

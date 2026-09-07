@@ -64,12 +64,7 @@ class SentenceTransformerEmbedding(BaseEmbedding):
     """Sentence Transformer embedding implementation"""
     
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
-        """
-        Initialize Sentence Transformer model
-        
-        Args:
-            model_name: Name of the model to use
-        """
+        """Initialize Sentence Transformer model"""
         self.model_name = model_name
         
         try:

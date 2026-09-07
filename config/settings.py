@@ -52,19 +52,14 @@ class Settings:
         self.ollama_model = os.getenv("OLLAMA_MODEL", "llama2")
         self.ollama_timeout = int(os.getenv("OLLAMA_TIMEOUT", "120"))
         
-        # Deep Analysis settings (the premium ingest mode, amsc.deep_pipeline).
-        # Backend-only: a generative model proposes chunk boundaries and a
-        # verifier confirms them during ingest, never at query time. The
-        # endpoint is any OpenAI-compatible chat-completions URL (OpenRouter,
-        # a company gateway, a local server); no model or vendor is hardcoded.
-        # Only the *name* of the environment variable holding the API key is
-        # configured -- the key itself is read at request time by the
-        # provider and is never stored, logged or serialized. An unset model
-        # or key does not refuse the upload: the deterministic quality
-        # contract runs alone and the document is labelled accordingly.
-        #
-        # The earlier BOUNDARY_JUDGE_* names are still read as a fallback so
-        # an existing deployment keeps working; DEEP_ANALYSIS_* wins.
+        # Deep Analysis (the premium ingest mode, amsc.deep_pipeline).
+        # Backend-only, at ingest, never at query time. Only the *name* of the
+        # variable holding the API key is configured -- the key itself is read
+        # at request time by the provider and never stored, logged or
+        # serialized. An unset model or key does not refuse the upload: the
+        # deterministic quality contract runs alone and the document is
+        # labelled accordingly. The earlier BOUNDARY_JUDGE_* names are still
+        # read as a fallback; DEEP_ANALYSIS_* wins.
         def _env(name: str, legacy: str, default: str = "") -> str:
             value = os.getenv(name)
             if value is None or not value.strip():
@@ -159,13 +154,12 @@ class Settings:
         _dims = os.getenv("EMBEDDING_DIMENSIONS", "").strip()
         self.embedding_dimensions = int(_dims) if _dims else None
 
-        # Context assembly for the answer model (hybrid_rrf profile).
-        # The generation context budget: how many tokens of retrieved chunk text
-        # the answer model is given. Measured to be the binding constraint on how
-        # much retrieved evidence reaches the model -- E2 (top_k) and E3 (rerank)
-        # both ran into it -- while the answer models in use carry 200k-262k token
-        # windows, so 3200 was spending 1.5% of the window and dropping evidence
-        # retrieval had already found.
+        # Context assembly for the answer model (hybrid_rrf profile): how many
+        # tokens of retrieved chunk text it is given. Measured to be the
+        # binding constraint on how much evidence reaches the model
+        # (evaluation/experiment-log.md), against 200k-262k token windows --
+        # 3200 spent 1.5% of the window and dropped evidence retrieval had
+        # already found.
         self.context_max_tokens = int(os.getenv("CONTEXT_MAX_TOKENS", "8000"))
         self.context_max_sources = int(os.getenv("CONTEXT_MAX_SOURCES", "8"))
         self.context_expand_neighbors = (

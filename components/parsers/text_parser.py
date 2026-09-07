@@ -11,12 +11,7 @@ class TextParser(BaseParser):
     """Parser for plain text files"""
     
     def __init__(self, encoding: str = 'utf-8'):
-        """
-        Initialize text parser
-        
-        Args:
-            encoding: Text encoding (default: utf-8)
-        """
+        """Initialize text parser"""
         self.encoding = encoding
     
     def parse(self, file_path: str, **kwargs) -> str:

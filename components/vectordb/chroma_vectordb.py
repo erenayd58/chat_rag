@@ -24,13 +24,7 @@ class ChromaVectorDB(BaseVectorDB):
         hnsw_ef_search: int = 100,
         space: str = "cosine"
     ):
-        """
-        Initialize ChromaDB client
-        
-        Args:
-            path: Path to store the database
-            collection_name: Name of the collection
-        """
+        """Initialize ChromaDB client"""
         self.path = path
         self.collection_name = collection_name
         self.hnsw_m = hnsw_m

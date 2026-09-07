@@ -19,15 +19,7 @@ class AzureOpenAILLM(BaseLLM):
         deployment: str = "gpt-4o",
         api_version: str = "2024-02-15-preview"
     ):
-        """
-        Initialize Azure OpenAI client
-        
-        Args:
-            endpoint: Azure endpoint URL
-            api_key: API key
-            deployment: Model deployment name
-            api_version: API version
-        """
+        """Initialize Azure OpenAI client"""
         self.endpoint = endpoint
         self.deployment = deployment
         self.api_version = api_version

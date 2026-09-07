@@ -20,14 +20,7 @@ class OllamaLLM(BaseLLM):
         base_url: str = "http://localhost:11434",
         timeout: int = 120
     ):
-        """
-        Initialize Ollama client
-        
-        Args:
-            model: Model name (e.g., 'llama2', 'mistral', 'codellama')
-            base_url: Ollama server URL
-            timeout: Request timeout in seconds
-        """
+        """Initialize Ollama client"""
         self.model = model
         self.base_url = base_url
         self.timeout = timeout
@@ -136,12 +129,7 @@ class OllamaLLM(BaseLLM):
         return self.model
     
     def list_available_models(self) -> List[str]:
-        """
-        List available models on the Ollama server
-        
-        Returns:
-            List of model names
-        """
+        """List available models on the Ollama server"""
         try:
             data = self.client.list()
             models = data.get("models", [])

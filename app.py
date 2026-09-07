@@ -49,10 +49,8 @@ from components.retriever import (
 )
 from utils import DocumentTracker, get_logger
 
-# Initialize logger
 logger = get_logger("FlaskApp")
 
-# Initialize Flask app
 app = Flask(__name__)
 
 
@@ -87,7 +85,6 @@ CORS(app)
 
 logger.info("Initializing Flask application...")
 
-# Initialize RAG Pipeline
 settings = Settings()
 pipeline = RAGPipeline(settings=settings)
 kb_manager = KnowledgeBaseManager()
@@ -1103,7 +1100,6 @@ def get_chunks():
         user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
 
         if search_text:
-            # Keyword search
             result = user_pipeline.vector_db.search_chunks_by_text(
                 search_text=search_text,
                 offset=offset,
@@ -1136,7 +1132,6 @@ def get_chunks():
                 'search_query': search_text
             }
         else:
-            # Paginated retrieval
             result = user_pipeline.vector_db.get_chunks_paginated(
                 offset=offset,
                 limit=limit
@@ -1182,7 +1177,6 @@ def search_chunks_vector():
         # Generate embedding for query using KB-specific pipeline
         user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
         
-        # Get KB metadata
         kb = kb_manager.get(kb_id) if kb_id else None
         kb_name = kb.get('name') if kb else 'Unknown KB'
         embedding_model = user_pipeline.settings.embedding_model_name
@@ -1311,7 +1305,6 @@ def search_chunks_bm25():
         # Use KB-specific pipeline
         user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
         
-        # Get KB metadata
         kb = kb_manager.get(kb_id) if kb_id else None
         kb_name = kb.get('name') if kb else 'Unknown KB'
         embedding_model = user_pipeline.settings.embedding_model_name
@@ -1453,7 +1446,6 @@ def get_documents():
         }), 500
 
 
-# ---- Knowledge Base APIs ----
 @app.route('/api/kb', methods=['GET'])
 def list_kb():
     try:
@@ -1583,7 +1575,6 @@ def retrieval_capabilities_api():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-# ---- Gold set APIs ----
 @app.route('/api/goldset', methods=['GET'])
 def list_goldset():
     try:
@@ -2266,7 +2257,6 @@ def _rollback_indexed_chunks(user_pipeline, doc_id: str, chunks) -> None:
         logger.error(f"Rolling back {doc_id} failed: {error}", exc_info=True)
 
 
-# --- Ingest job status ---
 @app.route('/api/ingest/jobs', methods=['GET'])
 def list_ingest_jobs():
     """Jobs the process knows about, newest last, with the capacity picture.
@@ -2317,7 +2307,6 @@ def cancel_ingest_job(job_id):
     return jsonify({'success': True, 'job': ingest_jobs.describe(job)})
 
 
-# --- Retrieval Experimentation APIs ---
 @app.route('/api/experiment/search_chunks', methods=['POST'])
 @bounded_retrieval('lab.experiment_search')
 def experiment_search_chunks():

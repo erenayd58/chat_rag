@@ -16,17 +16,7 @@ class BaseEmbedding(ABC):
         convert_to_tensor: bool = False,
         **kwargs
     ) -> Union[np.ndarray, List[np.ndarray]]:
-        """
-        Encode text(s) to embedding(s)
-        
-        Args:
-            texts: Single text or list of texts
-            convert_to_tensor: Whether to return as tensor
-            **kwargs: Additional provider-specific parameters
-        
-        Returns:
-            Embedding(s) as numpy array or list
-        """
+        """Encode text(s) to embedding(s)"""
         pass
     
     @abstractmethod

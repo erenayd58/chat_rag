@@ -37,43 +37,18 @@ class ParserFactory:
                 print(f"Warning: Could not register {parser_class.__name__}: {e}")
 
     def register_parser(self, parser: BaseParser):
-        """
-        Register a custom parser
-        
-        Args:
-            parser: Parser instance to register
-        """
+        """Register a custom parser"""
         self._parsers.append(parser)
     
     def get_parser(self, file_path: str) -> Optional[BaseParser]:
-        """
-        Get appropriate parser for a file
-        
-        Args:
-            file_path: Path to the file
-        
-        Returns:
-            Parser instance or None if no parser found
-        """
+        """Get appropriate parser for a file"""
         for parser in self._parsers:
             if parser.supports(file_path):
                 return parser
         return None
     
     def parse_file(self, file_path: str, **kwargs) -> str:
-        """
-        Parse a file using the appropriate parser
-        
-        Args:
-            file_path: Path to the file
-            **kwargs: Additional parser parameters
-        
-        Returns:
-            Extracted text content
-        
-        Raises:
-            RAGException: If no parser found or parsing fails
-        """
+        """Parse a file using the appropriate parser"""
         if not os.path.exists(file_path):
             raise RAGException(f"File not found: {file_path}")
         
@@ -117,16 +92,7 @@ class ParserFactory:
         return parser.parse_units(file_path, **kwargs)
 
     def get_metadata(self, file_path: str, **kwargs) -> dict:
-        """
-        Get metadata from a file
-        
-        Args:
-            file_path: Path to the file
-            **kwargs: Additional parser parameters
-        
-        Returns:
-            Metadata dictionary
-        """
+        """Get metadata from a file"""
         parser = self.get_parser(file_path)
         if parser is None:
             return {'file_name': os.path.basename(file_path)}
@@ -134,21 +100,11 @@ class ParserFactory:
         return parser.get_metadata(file_path, **kwargs)
     
     def list_parsers(self) -> List[str]:
-        """
-        List all registered parsers
-        
-        Returns:
-            List of parser names
-        """
+        """List all registered parsers"""
         return [parser.get_name() for parser in self._parsers]
     
     def list_supported_extensions(self) -> List[str]:
-        """
-        List all supported file extensions
-        
-        Returns:
-            List of file extensions
-        """
+        """List all supported file extensions"""
         extensions = set()
         
         # Check each parser with common extensions
