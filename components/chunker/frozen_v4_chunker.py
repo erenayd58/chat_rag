@@ -7,16 +7,16 @@ import json
 from pathlib import Path
 from typing import Any
 
-from amsc.cache import FileEmbeddingCache
-from amsc.config import V4Config
-from amsc.embeddings import (
+from amsc.embedding.cache import FileEmbeddingCache
+from amsc.chunking.adaptive.config import V4Config
+from amsc.embedding.boundary import (
     CachedSemanticBoundaryEmbedder,
     SemanticBoundaryEmbedder,
     SentenceTransformerBoundaryEmbedder,
 )
-from amsc.models import ChunkingResult, RawDocumentUnit
-from amsc.tokenization import TiktokenTokenCounter, TokenCounter
-from amsc.v4_chunker import V4Chunker
+from amsc.document.models import ChunkingResult, RawDocumentUnit
+from amsc.document.tokenization import TiktokenTokenCounter, TokenCounter
+from amsc.chunking.adaptive.v4 import V4Chunker
 
 from core.exceptions import ChunkerException, ConfigurationException
 from core.models import DocumentChunk

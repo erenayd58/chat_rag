@@ -114,8 +114,8 @@ def test_only_the_hybrid_variant_loads_a_model(workspace, monkeypatch):
     a model at all. Loading one is refused rather than performed, so this test
     downloads nothing.
     """
-    from amsc import embeddings
-    from amsc.models import RawDocumentUnit
+    from amsc.embedding import boundary as embeddings
+    from amsc.document.models import RawDocumentUnit
 
     class ModelWanted(RuntimeError):
         pass
@@ -174,7 +174,7 @@ def test_the_hybrid_boundary_model_is_loaded_at_most_once(monkeypatch):
     weights again for a model that is stateless and identical every time. It
     is shared now; this counts the loads rather than trusting the change.
     """
-    from amsc import embeddings as amsc_embeddings
+    from amsc.embedding import boundary as amsc_embeddings
 
     loads = {"count": 0}
 
@@ -203,7 +203,7 @@ def test_the_hybrid_boundary_model_is_loaded_at_most_once(monkeypatch):
 
 def test_the_boundary_model_is_not_loaded_until_hybrid_is_asked_for(monkeypatch):
     """A deployment that never packages a Hybrid variant never pays for it."""
-    from amsc import embeddings as amsc_embeddings
+    from amsc.embedding import boundary as amsc_embeddings
 
     def refuse(*args, **kwargs):  # pragma: no cover - the point is it is not called
         raise AssertionError("the boundary model was loaded without Hybrid being asked for")
@@ -219,7 +219,7 @@ def test_the_boundary_model_is_not_loaded_until_hybrid_is_asked_for(monkeypatch)
 
 
 def test_the_boundary_model_can_be_released_to_reclaim_memory(monkeypatch):
-    from amsc import embeddings as amsc_embeddings
+    from amsc.embedding import boundary as amsc_embeddings
 
     monkeypatch.setattr(
         amsc_embeddings.SentenceTransformerBoundaryEmbedder, "from_pretrained",

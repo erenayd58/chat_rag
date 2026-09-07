@@ -1,12 +1,12 @@
 """The final RAG chain, end to end with test doubles for every provider.
 
-Deep Analysis (amsc.deep_pipeline with a fake proposer/verifier) and Standard
+Deep Analysis (amsc.deep.pipeline with a fake proposer/verifier) and Standard
 documents are ingested into one knowledge base, embedded by the
 OpenAI-compatible embedding seam (fake transport), stored in Chroma with an
 embedding manifest, retrieved by dense + BM25 + RRF, assembled into a
 labelled context and answered by a fake primary model with a fake fallback.
 
-What is pinned: Standard is untouched; Deep goes through amsc.deep_pipeline
+What is pinned: Standard is untouched; Deep goes through amsc.deep.pipeline
 and is never called again at query time; documents and queries share one
 embedding fingerprint; a stale or mismatched index is detected and never
 searched; fusion is deterministic; context is de-duplicated and bounded;
@@ -24,7 +24,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from amsc import deep_pipeline
+from amsc.deep import pipeline as deep_pipeline
 
 from components.embedding import OpenAICompatibleEmbedding
 from components.embedding.index_manifest import (
@@ -406,4 +406,4 @@ def test_nothing_key_shaped_leaks(chain):
     assert chain_desc["embedding"]["api_key_env"] == "FINAL_CHAIN_KEY"
     assert chain_desc["answer"]["primary"]["model"] == "test/minimax"
     assert chain_desc["answer"]["fallback"]["provider"] == "ollama"
-    assert chain_desc["agentic_chunking"]["entry_point"] == "amsc.deep_pipeline.chunk_document"
+    assert chain_desc["agentic_chunking"]["entry_point"] == "amsc.deep.pipeline.chunk_document"

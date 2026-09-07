@@ -1,7 +1,7 @@
-"""Deep Analysis: the product's premium ingest mode, on ``amsc.deep_pipeline``.
+"""Deep Analysis: the product's premium ingest mode, on ``amsc.deep.pipeline``.
 
 There is exactly one Deep Analysis implementation and it lives upstream:
-``amsc.deep_pipeline.chunk_document`` runs the frozen structure-first walk,
+``amsc.deep.pipeline.chunk_document`` runs the frozen structure-first walk,
 the LLM proposer, the deterministic quality selector, the double-order
 verifier and the quality measurement, and returns rows plus a report. This
 module only does what an application has to do around that call:
@@ -25,8 +25,8 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from amsc.deep_analysis import DeepConfig
-from amsc.deep_pipeline import (
+from amsc.deep.selector import DeepConfig
+from amsc.deep.pipeline import (
     DEFAULT_ENDPOINT,
     STATUS_DEGRADED,
     STATUS_DETERMINISTIC,
@@ -135,7 +135,7 @@ def build_transports(settings: DeepAnalysisSettings) -> tuple[Any, Any | None]:
     still go through :func:`limited_providers` -- the budget wrapping is the
     thing under test, not the HTTP client.
     """
-    from amsc.deep_pipeline import build_providers
+    from amsc.deep.pipeline import build_providers
 
     return build_providers(settings)
 

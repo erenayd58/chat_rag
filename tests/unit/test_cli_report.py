@@ -11,7 +11,7 @@ import csv
 import json
 
 import pytest
-from amsc.structural_qa import Finding, Report
+from amsc.quality.lint import Finding, Report
 
 from cli import report as rp
 from cli import runtime

@@ -1913,7 +1913,7 @@ def upload_document():
         selected = viewer_methods.normalise(
             request.form.getlist('methods') or request.form.get('methods')
         )
-        # Deep Analysis (the amsc.deep_pipeline quality pipeline with an
+        # Deep Analysis (the amsc.deep.pipeline quality pipeline with an
         # LLM proposer and verifier) is a per-document, ingest-only
         # decision — never a query-time toggle and never written into the
         # KB's chunker config. A missing or failing model provider does

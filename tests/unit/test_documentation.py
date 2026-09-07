@@ -122,8 +122,9 @@ def test_the_cross_repository_links_point_at_files_that_exist():
         CHUNK / "docs" / "adding-a-chunker.md",
         CHUNK / "docs" / "viewer-architecture.md",
         CHUNK / "docs" / "library-surface.md",
-        CHUNK / "src" / "amsc" / "example_chunker.py",
-        CHUNK / "src" / "amsc" / "methods.py",
+        CHUNK / "docs" / "package-layout.md",
+        CHUNK / "src" / "amsc" / "chunking" / "example.py",
+        CHUNK / "src" / "amsc" / "chunking" / "registry.py",
         CHUNK / "src" / "amsc" / "surface.py",
     ]
     missing = [p.name for p in expected if not p.exists()]

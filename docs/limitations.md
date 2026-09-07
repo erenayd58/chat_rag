@@ -111,16 +111,16 @@ rather than fixed because removing them is a startup redesign:
 of the checkout before any application module is imported. A CLI run
 (`python -m cli`) still writes a `logs/` directory wherever it is invoked.
 
-**`amsc` is one flat namespace with research and legacy inside it.** Product,
-service, research and legacy are *declared* in `amsc/surface.py` and enforced
-against the real import graph rather than separated into packages. The reason
-is in [chunk/docs/library-surface.md](../../chunk/docs/library-surface.md):
-about thirty modules are documented `python -m amsc.<module>` entry points and
-several write their own dotted name into artifacts that tests pin, so moving
-them would need a re-export shim per module — the duplicate-surface problem,
-not a fix for it.
+**`amsc` still needs a declaration as well as a tree.** Research now lives in
+`amsc/research/` and the packages say what each domain is
+([chunk/docs/package-layout.md](../../chunk/docs/package-layout.md)), but a
+tree cannot say whether *this console* may depend on a module, that a lazily
+imported research module is still off the product path, or that only two
+symbols of a module are API. Those stay declared in `amsc/surface.py` and
+enforced against the real import graph
+([chunk/docs/library-surface.md](../../chunk/docs/library-surface.md)).
 
-**Legacy that stays, and why.** `amsc.legacy_chat_rag` is a pinned
+**Legacy that stays, and why.** `amsc.research.legacy_chat_rag` is a pinned
 reproduction of a public chunker, kept as a benchmark candidate. It has a real
 caller — the frozen retrieval benchmark — and is not something to build on.
 

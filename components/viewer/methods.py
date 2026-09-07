@@ -1,6 +1,6 @@
 """The chunking methods a document can be analysed with, as the product offers them.
 
-The registry is the library's: ``amsc.methods`` is where a method is added,
+The registry is the library's: ``amsc.chunking.registry`` is where a method is added,
 and it owns the method's identity -- wire key, engine kind, product name,
 summary, capabilities -- because the library's own surfaces (the Viewer
 builders, the packager, the benchmark) read it too. This module is the
@@ -31,7 +31,7 @@ from collections.abc import Mapping, Sequence as _Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Iterator, Sequence
 
-from amsc import methods as registry
+from amsc.chunking import registry
 
 #: The Viewer arm ids of the four shipped methods. Read from the registry so
 #: a rename there is a rename here; kept as names because every route and

@@ -81,7 +81,7 @@ def test_the_wire_keys_their_order_labels_and_engines_are_pinned():
 def test_only_deep_uses_a_model_and_only_hybrid_needs_an_embedder():
     """Of the shipped four -- and whatever else is registered, the console
     reports the library's own answer rather than one of its own."""
-    from amsc import methods as registry
+    from amsc.chunking import registry
 
     assert [key for key in WIRE_KEYS if M.METHODS[key].uses_model] == ["agentic"]
     assert [key for key in WIRE_KEYS if M.METHODS[key].needs_embedder] == ["hybrid"]
@@ -277,7 +277,7 @@ def test_analysis_methods_never_change_the_knowledge_bases_chunker(upload, hybri
 def _analysis_ids() -> list[str]:
     """Every registered analysis method's key and engine kind -- read from the
     registry, so a method added later is checked too."""
-    from amsc import methods as registry
+    from amsc.chunking import registry
 
     return sorted({name for method in registry.methods()
                    for name in (method.key, method.kind)})
@@ -309,11 +309,12 @@ def test_the_indexing_registry_still_resolves_every_alias_it_documents():
 
 def test_the_viewer_reader_and_page_agree_with_the_console_registry():
     """The library's Viewer reader and page builder and this console all read
-    one registry (``amsc.methods``) now, so this can no longer drift by
+    one registry (``amsc.chunking.registry``) now, so this can no longer drift by
     accident; it is kept as the guard that says so. Read from
     ``viewer_corpus``, the shared reader, rather than from the legacy v2
     page that merely re-exports it."""
-    from amsc import viewer_corpus, viewer_v3
+    from amsc.viewer import corpus as viewer_corpus
+    from amsc.viewer import build as viewer_v3
 
     for key in M.ORDER:
         assert viewer_corpus.ARM_KINDS[key] == M.METHODS[key].engine, key

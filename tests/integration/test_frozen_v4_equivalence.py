@@ -7,7 +7,7 @@ from typing import Sequence
 
 import numpy as np
 
-from amsc.models import EmbeddingBatch, SemanticEmbeddingProvenance
+from amsc.document.models import EmbeddingBatch, SemanticEmbeddingProvenance
 
 from components.chunker import FrozenV4Chunker
 from components.chunker.frozen_v4_chunker import (

@@ -10,7 +10,7 @@
     .\stop-demo.ps1.
 
       chat_rag product   ->  venv\Scripts\python.exe app.py           (Flask, FLASK_PORT)
-      chunk Viewer v3    ->  py -3.11 -m amsc.viewer_server ...       (stdlib server, --port)
+      chunk Viewer v3    ->  py -3.11 -m amsc.viewer.server ...       (stdlib server, --port)
 
     The chunk repository is found next to this one (..\chunk) unless -ChunkPath
     or the CHUNK_REPO environment variable says otherwise. Logs go to
@@ -90,7 +90,7 @@ function Resolve-ChunkRepo {
     if ($env:CHUNK_REPO) { $candidates += $env:CHUNK_REPO }
     $candidates += (Join-Path (Split-Path $Root -Parent) 'chunk')
     foreach ($candidate in $candidates) {
-        if (Test-Path (Join-Path $candidate 'src\amsc\viewer_server.py')) {
+        if (Test-Path (Join-Path $candidate 'src\amsc\viewer\server.py')) {
             return (Resolve-Path $candidate).Path
         }
     }
@@ -260,11 +260,11 @@ Info 'viewer python' $viewerPythonLabel
 # page is already there, it is served as it is.
 if (-not (Test-Path $viewerHtml)) {
     Info 'viewer page' "building the product shell (no page at $viewerHtml)"
-    $buildArgs = @() + $viewerPython.Pre + @('-m', 'amsc.viewer_v3', '--output', $viewerHtml)
+    $buildArgs = @() + $viewerPython.Pre + @('-m', 'amsc.viewer.build', '--output', $viewerHtml)
     $build = Start-Process -FilePath $viewerPython.Exe -ArgumentList $buildArgs -WorkingDirectory $chunkRepo `
         -NoNewWindow -Wait -PassThru
     if ($build.ExitCode -ne 0 -or -not (Test-Path $viewerHtml)) {
-        Fail 'viewer page' "the shell build failed (exit $($build.ExitCode)). Run it by hand in $chunkRepo`: $viewerPythonLabel -m amsc.viewer_v3 --output artifacts\viewer-v3\index.html"
+        Fail 'viewer page' "the shell build failed (exit $($build.ExitCode)). Run it by hand in $chunkRepo`: $viewerPythonLabel -m amsc.viewer.build --output artifacts\viewer-v3\index.html"
         exit 1
     }
     Ok 'viewer page' "$viewerHtml  (product shell, built just now)"
@@ -325,7 +325,7 @@ try {
         # --console-url points the viewer's workspace panel back at this
         # launcher's chat_rag, so a knowledge base created there shows up in
         # the viewer without either side being configured by hand.
-        $viewerArgs = @() + $viewerPython.Pre + @('-m', 'amsc.viewer_server', '--viewer', $viewerHtml, '--config', $viewerConfig, '--root', $chunkRepo, '--host', '127.0.0.1', '--port', "$ViewerPort", '--console-url', $ProductUrl)
+        $viewerArgs = @() + $viewerPython.Pre + @('-m', 'amsc.viewer.server', '--viewer', $viewerHtml, '--config', $viewerConfig, '--root', $chunkRepo, '--host', '127.0.0.1', '--port', "$ViewerPort", '--console-url', $ProductUrl)
         if ($Lexical -or -not $env:OPENROUTER_API_KEY) { $viewerArgs += '--lexical' }
         if (-not $env:OPENROUTER_API_KEY) { $viewerArgs += '--no-answer' }
         $viewerProc = Start-Process -FilePath $viewerPython.Exe -ArgumentList $viewerArgs -WorkingDirectory $chunkRepo `

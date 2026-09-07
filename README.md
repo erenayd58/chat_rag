@@ -77,8 +77,8 @@ Then, in the browser and the terminal:
    [docs/operations.md](docs/operations.md) reads them for you.
 9. **run the tests** — `python -m pytest -q` here, `py -3.11 -m pytest` in
    `../chunk`. [docs/testing.md](docs/testing.md).
-10. **add a trivial chunker** — copy `chunk/src/amsc/example_chunker.py`, add
-    one `ChunkMethod` to `amsc/methods.py`, add a test. It appears in the
+10. **add a trivial chunker** — copy `chunk/src/amsc/chunking/example.py`, add
+    one `ChunkMethod` to `amsc/chunking/registry.py`, add a test. It appears in the
     upload form, the Viewer and the benchmark with no console change.
     [../chunk/docs/adding-a-chunker.md](../chunk/docs/adding-a-chunker.md).
 
@@ -145,7 +145,7 @@ Both serve <http://127.0.0.1:5005>. Which one is running is not a detail —
 |---|---|
 | `ValueError` naming an env variable, before the server binds | a configuration value was refused. That is deliberate: bad values stop the process while someone is looking. [docs/configuration.md](docs/configuration.md) |
 | `ModuleNotFoundError: amsc` | `pip install -r requirements.txt` did not run, or the pinned commit is unreachable. `python tools/import_smoke.py` says which `amsc` answered |
-| the Viewer link is dead, or `start-demo.ps1` fails on the Viewer | the Viewer page is a build artifact, not in version control. The launcher builds it; by hand it is `py -3.11 -m amsc.viewer_v3 --output artifacts/viewer-v3/index.html` in `../chunk` |
+| the Viewer link is dead, or `start-demo.ps1` fails on the Viewer | the Viewer page is a build artifact, not in version control. The launcher builds it; by hand it is `py -3.11 -m amsc.viewer.build --output artifacts/viewer-v3/index.html` in `../chunk` |
 | a port is already in use | `start-demo.ps1` recognises a server it already started and refuses a port held by something else. `-ProductPort` / `-ViewerPort` move them |
 | the first upload seems to hang | it does not — layout parsing is minutes per document on CPU, and the job is running. Poll `GET /api/ingest/jobs/<job_id>` |
 | answers fail but search works | no provider key, or an unreachable gateway. The answer model carries the reason; retrieval never depended on it |
@@ -160,7 +160,7 @@ Three model roles, one OpenRouter key, each role configured on its own:
 
 | Stage | Model (demo) | Configuration | Runs |
 |---|---|---|---|
-| Deep Analysis / Agentic chunking — proposer + verifier | `qwen/qwen3-30b-a3b-instruct-2507` | `DEEP_ANALYSIS_MODEL`, `DEEP_ANALYSIS_ENDPOINT`, `DEEP_ANALYSIS_API_KEY_ENV`, `DEEP_ANALYSIS_VERIFY` | at upload only, through `amsc.deep_pipeline` |
+| Deep Analysis / Agentic chunking — proposer + verifier | `qwen/qwen3-30b-a3b-instruct-2507` | `DEEP_ANALYSIS_MODEL`, `DEEP_ANALYSIS_ENDPOINT`, `DEEP_ANALYSIS_API_KEY_ENV`, `DEEP_ANALYSIS_VERIFY` | at upload only, through `amsc.deep.pipeline` |
 | Embedding — document chunks and questions, one space | `qwen/qwen3-embedding-8b` | `EMBEDDING_PROVIDER=openrouter`, `EMBEDDING_MODEL`, `EMBEDDING_ENDPOINT`, `EMBEDDING_API_KEY_ENV` | at upload (chunks) and per question (query vector) |
 | Answer — reads the assembled context, cites sources | `minimax/minimax-m2.7` | `ANSWER_PROVIDER=openrouter`, `ANSWER_MODEL`, `ANSWER_ENDPOINT`, `ANSWER_API_KEY_ENV` | per question |
 | Answer fallback (local, offline) | Ollama `qwen2.5:3b` | `ANSWER_FALLBACK_PROVIDER=ollama`, `ANSWER_FALLBACK_MODEL` | only when the primary answer call fails |
@@ -194,8 +194,8 @@ Chosen at upload, never at query time.
 
 | Mode | What runs | When the model is unavailable |
 |---|---|---|
-| Standard | The frozen structure-first walk (`amsc.structural_chunker`). Fast, deterministic, no model. | — |
-| Deep Analysis | `amsc.deep_pipeline.chunk_document(mode="deep")`: the same structural walk, a backend LLM **proposer** (one bounded prompt per section that still has a choice), the deterministic **quality selector** (never worse than Standard on any smell type), the double-order **verifier** (a change is kept only when it wins in both orders) and the quality measurement. | The ingest still completes on the deterministic quality contract and the document is labelled with the pipeline status — never passed off as Standard. |
+| Standard | The frozen structure-first walk (`amsc.chunking.structural`). Fast, deterministic, no model. | — |
+| Deep Analysis | `amsc.deep.pipeline.chunk_document(mode="deep")`: the same structural walk, a backend LLM **proposer** (one bounded prompt per section that still has a choice), the deterministic **quality selector** (never worse than Standard on any smell type), the double-order **verifier** (a change is kept only when it wins in both orders) and the quality measurement. | The ingest still completes on the deterministic quality contract and the document is labelled with the pipeline status — never passed off as Standard. |
 
 Deep Analysis statuses, as recorded on the document and shown under the
 chunking badge: `ok` (quality checks passed), `deterministic` (LLM not
@@ -331,12 +331,12 @@ separate servers; one script starts both for a presentation.
 | | Address | Server |
 |---|---|---|
 | Product (chat_rag) | http://127.0.0.1:5005 | `venv\Scripts\python.exe app.py` (the development server; `FLASK_PORT`, reloader off) |
-| Viewer (chunk, Viewer v3) | http://127.0.0.1:8765 | `py -3.11 -m amsc.viewer_server --viewer artifacts/viewer-v3/index.html --console-url http://127.0.0.1:5005` in the chunk repo |
+| Viewer (chunk, Viewer v3) | http://127.0.0.1:8765 | `py -3.11 -m amsc.viewer.server --viewer artifacts/viewer-v3/index.html --console-url http://127.0.0.1:5005` in the chunk repo |
 
 The chunk repository is expected next to this one (`..\chunk`); override with
 `-ChunkPath` or `CHUNK_REPO`. The Viewer page itself is a build artifact and is
 not in version control, so on a fresh clone the launcher builds it first --
-`py -3.11 -m amsc.viewer_v3 --output artifacts\viewer-v3\index.html`, the
+`py -3.11 -m amsc.viewer.build --output artifacts\viewer-v3\index.html`, the
 product shell, which carries no corpus of its own and reads every document
 live from this console. A page that is already there is served unchanged.
 How the two repositories divide the Viewer up, and what to look at when a
@@ -402,7 +402,7 @@ Markdown and Deep Analysis variants another upload of the same file left
 behind. The shared analysis keeps all of them, so neither upload costs a
 second parse. `GET /api/demo/methods` says which methods this machine
 can actually run, and why one cannot. The methods themselves are defined once,
-in the library's registry (`amsc.methods` in the chunk repository): key,
+in the library's registry (`amsc.chunking.registry` in the chunk repository): key,
 engine kind, product name, summary and capabilities. `components/viewer/methods.py`
 is this console's view of that registry and adds only what the deployment
 decides — availability on this machine, display order, the default. Adding a

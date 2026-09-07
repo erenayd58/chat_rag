@@ -1,11 +1,11 @@
 """Structure-first chunker adapter.
 
-Wraps ``amsc.structural_chunker``: document structure decides the boundaries,
+Wraps ``amsc.chunking.structural``: document structure decides the boundaries,
 token limits only constrain them, and oversized units are split at table row /
 list item / sentence seams. No embeddings are involved, so chunking runs at
 parser speed with zero model cost. That is the Standard path; Deep Analysis
 (``chunk_text_deep``) sends the same canonical units through
-``amsc.deep_pipeline`` and indexes its rows the same way.
+``amsc.deep.pipeline`` and indexes its rows the same way.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ import json
 from datetime import datetime
 from typing import Any, Sequence
 
-from amsc.structural_chunker import chunk_units
-from amsc.tokenization import TiktokenTokenCounter
+from amsc.chunking.structural import chunk_units
+from amsc.document.tokenization import TiktokenTokenCounter
 
 from core.exceptions import ChunkerException
 from core.models import DocumentChunk
@@ -122,7 +122,7 @@ class StructuralChunker(BaseChunker):
         verifier_provider: Any = None,
         **kwargs: Any,
     ) -> tuple[list[DocumentChunk], dict[str, Any]]:
-        """Deep Analysis: ``amsc.deep_pipeline.chunk_document`` in deep mode.
+        """Deep Analysis: ``amsc.deep.pipeline.chunk_document`` in deep mode.
 
         The same canonical units as ``chunk_text`` go through the final
         pipeline -- the frozen structural walk, the LLM proposer, the
@@ -146,7 +146,7 @@ class StructuralChunker(BaseChunker):
         product's structural checks. Never prompt text, never a key.
         ``chunk_text`` above stays the untouched Standard path.
         """
-        from amsc.deep_pipeline import (
+        from amsc.deep.pipeline import (
             MODE_DEEP,
             STATUS_FALLBACK_NO_PROVIDER,
             chunk_document,

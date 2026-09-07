@@ -41,7 +41,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from amsc.table_view import CONTEXT_HEADER
+from amsc.tables.view import CONTEXT_HEADER
 
 from core.models import DocumentChunk, RetrievalResult
 
@@ -59,7 +59,7 @@ def estimate_tokens(text: str) -> int:
     global _counter
     if _counter is None:
         try:
-            from amsc.tokenization import TiktokenTokenCounter
+            from amsc.document.tokenization import TiktokenTokenCounter
 
             _counter = TiktokenTokenCounter("cl100k_base")
         except Exception:  # pragma: no cover - tiktoken is a hard dependency in practice

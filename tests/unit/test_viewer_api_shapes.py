@@ -10,7 +10,7 @@ hand-written mocks of the other; nothing pinned the producing side.
 These tests drive the real packager over a small canonical in a temporary
 root and read the routes through the Flask test client. They assert the keys
 the page and the relay read, not the full payload -- the payload is
-``amsc.viewer_corpus.load_corpus`` output and is pinned in the chunk repository.
+``amsc.viewer.corpus.load_corpus`` output and is pinned in the chunk repository.
 """
 
 from __future__ import annotations

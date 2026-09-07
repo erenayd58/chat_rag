@@ -11,8 +11,8 @@ from collections.abc import Mapping, Sequence
 import re
 from typing import Any
 
-from amsc.io import validate_document_units
-from amsc.models import RawDocumentUnit, UnitType
+from amsc.document.io import validate_document_units
+from amsc.document.models import RawDocumentUnit, UnitType
 
 
 class CanonicalUnitAdapter:

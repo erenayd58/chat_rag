@@ -1,10 +1,10 @@
-"""Deep Analysis on ``amsc.deep_pipeline``: the product's premium ingest mode.
+"""Deep Analysis on ``amsc.deep.pipeline``: the product's premium ingest mode.
 
 What these tests pin:
 
 * Standard stays Standard -- ``chunk_text`` is byte-identical to the frozen
-  ``amsc.structural_chunker.chunk_units`` walk and knows nothing of Deep;
-* Deep Analysis goes through ``amsc.deep_pipeline.chunk_document`` and only
+  ``amsc.chunking.structural.chunk_units`` walk and knows nothing of Deep;
+* Deep Analysis goes through ``amsc.deep.pipeline.chunk_document`` and only
   there: rows in the structural schema, the hard cap, full coverage;
 * every pipeline status reaches the product: ``ok`` with a well-formed
   provider, ``fallback_provider_error`` when every call fails,
@@ -27,16 +27,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from amsc import deep_proposer
-from amsc.deep_pipeline import (
+from amsc.deep import proposer as deep_proposer
+from amsc.deep.pipeline import (
     STATUS_DEGRADED,
     STATUS_DETERMINISTIC,
     STATUS_FALLBACK_NO_PROVIDER,
     STATUS_FALLBACK_PROVIDER_ERROR,
     STATUS_OK,
 )
-from amsc.structural_chunker import chunk_units
-from amsc.tokenization import TiktokenTokenCounter
+from amsc.chunking.structural import chunk_units
+from amsc.document.tokenization import TiktokenTokenCounter
 from components.chunker import deep_analysis as product
 from components.chunker.normalization_adapter import CanonicalUnitAdapter
 from components.chunker.structural_chunker import (
@@ -335,7 +335,7 @@ def test_build_configuration_maps_backend_settings(monkeypatch):
 
 def test_the_default_endpoint_comes_from_amsc_not_from_here(monkeypatch):
     monkeypatch.setenv("DEEP_TEST_KEY", "present")
-    from amsc.deep_pipeline import DEFAULT_ENDPOINT
+    from amsc.deep.pipeline import DEFAULT_ENDPOINT
 
     configuration = product.build_configuration(backend_settings(), deep_config())
     assert configuration.settings.endpoint == DEFAULT_ENDPOINT

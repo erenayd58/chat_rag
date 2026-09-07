@@ -15,7 +15,7 @@ from typing import Any, List
 
 import numpy as np
 
-from amsc.retrieval_pipeline import DeterministicBM25
+from amsc.retrieval.pipeline import DeterministicBM25
 
 from core.exceptions import RetrieverException
 from core.models import DocumentChunk, RetrievalResult

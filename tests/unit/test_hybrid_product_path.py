@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from amsc.models import EmbeddingBatch, SemanticEmbeddingProvenance
+from amsc.document.models import EmbeddingBatch, SemanticEmbeddingProvenance
 from components.viewer import analysis
 from components.viewer import methods as M
 from config import paths
@@ -81,7 +81,7 @@ def _oversized_corpus(paragraphs=16):
 @pytest.fixture
 def boundary_model(monkeypatch):
     """The product's model-loading seam, answered by the double."""
-    from amsc import embeddings
+    from amsc.embedding import boundary as embeddings
 
     double = HashingBoundaryEmbedder()
     asked = []
@@ -113,7 +113,7 @@ def workspace(tmp_path, monkeypatch):
 
 
 def test_hybrid_rows_come_from_the_named_model_over_the_product_budget(boundary_model, session_state_root):
-    from amsc.models import RawDocumentUnit
+    from amsc.document.models import RawDocumentUnit
     from components.chunker.structural_chunker import HARD_MAX_TOKENS
 
     units = [RawDocumentUnit.model_validate(u) for u in _oversized_corpus()]
@@ -127,7 +127,7 @@ def test_hybrid_rows_come_from_the_named_model_over_the_product_budget(boundary_
         assert row["token_count"] <= HARD_MAX_TOKENS
     # Coverage is judged the way the product judges Deep's: against the
     # frozen Standard walk over the same units and budget.
-    from amsc import structural_chunker
+    from amsc.chunking import structural as structural_chunker
 
     standard = structural_chunker.chunk_units(units, counter=analysis._counter(), **analysis._budget())
     assert [uid for row in rows for uid in row["unit_ids"]] == [uid for row in standard for uid in row["unit_ids"]], (
@@ -141,7 +141,7 @@ def test_hybrid_rows_come_from_the_named_model_over_the_product_budget(boundary_
 
 
 def test_hybrid_is_deterministic_for_one_canonical(boundary_model):
-    from amsc.models import RawDocumentUnit
+    from amsc.document.models import RawDocumentUnit
 
     units = [RawDocumentUnit.model_validate(u) for u in _oversized_corpus()]
     first = analysis._chunk_rows(M.HYBRID, units)
@@ -175,7 +175,7 @@ def test_a_hybrid_variant_is_packaged_and_served_like_any_other(boundary_model, 
 def test_a_model_that_cannot_be_loaded_is_a_failed_variant_not_a_missing_one(workspace, monkeypatch):
     """The probe said yes, the load said no: the document keeps its other
     arms and Hybrid is recorded as failed with the cause, never as absent."""
-    from amsc import embeddings
+    from amsc.embedding import boundary as embeddings
 
     def refuse(cls, model_name, **kwargs):
         raise OSError(f"{model_name} is not in the local cache and downloads are off")

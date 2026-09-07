@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from amsc.models import EmbeddingBatch, SemanticEmbeddingProvenance
+from amsc.document.models import EmbeddingBatch, SemanticEmbeddingProvenance
 
 from components.chunker import FrozenV4Chunker
 from components.chunker.normalization_adapter import CanonicalUnitAdapter

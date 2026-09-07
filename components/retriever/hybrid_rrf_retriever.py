@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from amsc.retrieval_pipeline import DeterministicBM25
+from amsc.retrieval.pipeline import DeterministicBM25
 
 from components.embedding.index_manifest import (
     STATE_COMPATIBLE,

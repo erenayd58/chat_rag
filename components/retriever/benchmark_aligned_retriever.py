@@ -8,7 +8,7 @@ from typing import List, Sequence
 import numpy as np
 import yaml
 
-from amsc.retrieval_pipeline import (
+from amsc.retrieval.pipeline import (
     DeterministicHybridIndex,
     E5RetrievalEmbedder,
     RetrievalDocument,

@@ -479,7 +479,7 @@ writes it, is in
 
 If the Viewer *page* is missing rather than a document's analysis: the page is
 a build artifact and is not in version control. Build the shell with
-`py -3.11 -m amsc.viewer_v3 --output artifacts/viewer-v3/index.html` in the
+`py -3.11 -m amsc.viewer.build --output artifacts/viewer-v3/index.html` in the
 `chunk` checkout, or let `start-demo.ps1` do it.
 
 ### The pipeline cache looks wrong

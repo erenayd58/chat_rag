@@ -1,7 +1,7 @@
 """The indexing chunkers a knowledge base may be created with, in one table.
 
 Deliberately not the same registry as the chunking methods a document is
-*analysed* with (``amsc.methods``, offered through
+*analysed* with (``amsc.chunking.registry``, offered through
 ``components/viewer/methods.py``). An analysis method is run over a document
 for the Viewer to compare; an indexing chunker decides what a knowledge
 base's retrieval index actually holds. ``structure_first`` is the product's

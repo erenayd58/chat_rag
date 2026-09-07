@@ -380,7 +380,7 @@ def check_chunk(report: Report, work: Path, python311: str | None,
     output = work / "viewer-v3" / "index.html"
     again = work / "viewer-v3-again" / "index.html"
     env = isolated_env(work / "viewer-state")
-    builds = [run([str(python), "-m", "amsc.viewer_v3", "--output", str(path)],
+    builds = [run([str(python), "-m", "amsc.viewer.build", "--output", str(path)],
                   cwd=work, env=env, timeout=600) for path in (output, again)]
     if any(build.returncode != 0 for build in builds):
         report.add(FAIL, "chunk.viewer", "the Viewer v3 shell build failed",

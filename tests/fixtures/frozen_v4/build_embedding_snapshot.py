@@ -14,11 +14,11 @@ from pathlib import Path
 
 import numpy as np
 
-from amsc.config import V4Config
-from amsc.embeddings import SemanticFragmentPooler
-from amsc.io import load_jsonl_units
-from amsc.tokenization import TiktokenTokenCounter
-from amsc.units import HeadingAttachmentBuilder, RenderedTokenBudgeter
+from amsc.chunking.adaptive.config import V4Config
+from amsc.embedding.boundary import SemanticFragmentPooler
+from amsc.document.io import load_jsonl_units
+from amsc.document.tokenization import TiktokenTokenCounter
+from amsc.chunking.adaptive.units import HeadingAttachmentBuilder, RenderedTokenBudgeter
 
 
 FROZEN_CANONICAL_SHA256 = (

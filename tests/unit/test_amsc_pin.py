@@ -111,9 +111,9 @@ def chunk_repo():
 def test_the_product_imports_a_known_set_of_amsc_symbols():
     """The list the pin is checked against; a new import shows up here."""
     wanted = _product_imports()
-    assert "amsc.table_view" in wanted and "CONTEXT_HEADER" in wanted["amsc.table_view"]
-    assert "amsc.deep_arm" in wanted and {"package", "package_arm"} <= wanted["amsc.deep_arm"]
-    assert "amsc.deep_pipeline" in wanted and "chunk_document" in wanted["amsc.deep_pipeline"]
+    assert "amsc.tables.view" in wanted and "CONTEXT_HEADER" in wanted["amsc.tables.view"]
+    assert "amsc.deep.arm" in wanted and {"package", "package_arm"} <= wanted["amsc.deep.arm"]
+    assert "amsc.deep.pipeline" in wanted and "chunk_document" in wanted["amsc.deep.pipeline"]
 
 
 def test_the_pinned_amsc_revision_provides_every_symbol_the_product_imports(chunk_repo):

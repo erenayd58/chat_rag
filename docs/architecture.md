@@ -35,8 +35,8 @@ ingest job (queued → running)                     components/ingest/jobs.py
   ├── parse            PDF → canonical units      components/parsers/structured_pdf_parser.py
   │                    cached by content hash     .cache/canonical-units/
   ├── chunk            units → chunk rows         components/chunker/factory.py → amsc
-  │     Standard       amsc.structural_chunker
-  │     Deep Analysis  amsc.deep_pipeline          proposer → selector → verifier
+  │     Standard       amsc.chunking.structural
+  │     Deep Analysis  amsc.deep.pipeline          proposer → selector → verifier
   ├── embed            chunk text → vectors       components/embedding/
   ├── index            vectors + lexical rows     components/vectordb/
   ├── ledger           the document is registered utils/document_tracker.py
@@ -91,7 +91,7 @@ open it.
 | `components/query/limits.py` | query admission, the answer budget, `QueryGuard` | changing what a busy server does to a question |
 | `components/observability/` | `telemetry.py` (traces, stages, error categories, the bounded window) and `events.py` (the `RAG.ops` one-line event log) | adding a metric or an operational event |
 | `components/chunker/factory.py` + `registry.py` | which **indexing** chunker a knowledge base may be created with (`structure_first`, `v4`) — deliberately *not* the analysis-method registry | adding an indexing chunker |
-| `components/viewer/methods.py` | this deployment's view of `amsc.methods`: availability on this machine, display order, the default | changing which analysis methods are offered |
+| `components/viewer/methods.py` | this deployment's view of `amsc.chunking.registry`: availability on this machine, display order, the default | changing which analysis methods are offered |
 | `components/viewer/analysis.py` | the packaging worker and each document's `missing`/`pending`/`running`/`ready`/`failed` state | debugging a Viewer package |
 | `components/retriever/` | the retrieval profiles (`bm25_only`, `hybrid_rrf`, `benchmark_aligned`) | changing how candidates are found or fused |
 | `components/llm/` | the answer transports: OpenAI-compatible, Ollama, Azure, the unavailable carrier and the fallback pair | adding a provider — see [Adding a provider](#adding-a-provider) |
@@ -108,21 +108,25 @@ open it.
 
 ## Repository map — `chunk`
 
+The library's own map is
+[chunk/docs/package-layout.md](../../chunk/docs/package-layout.md); this table
+is only the part this console depends on.
+
 | path | owns | touch it when |
 |---|---|---|
-| `src/amsc/methods.py` | **the chunking-method registry** — one `ChunkMethod` per method: wire key, engine kind, product label, summary, capabilities, partition callable | adding an analysis method ([adding-a-chunker.md](../../chunk/docs/adding-a-chunker.md)) |
-| `src/amsc/structural_chunker.py` | Standard: the frozen structure-first walk | never, lightly — it is the baseline every method is compared against |
-| `src/amsc/deep_pipeline.py` | Deep Analysis, the production entry point: `chunk_document(units, mode=…)` | changing Deep's orchestration |
-| `src/amsc/deep_proposer.py` / `deep_verifier.py` / `deep_analysis.py` | its proposer, its double-order verifier, its deterministic selector | as above |
-| `src/amsc/provider_calls.py` | how a generative provider is called, and nothing about chunking: the protocol, the OpenAI-compatible transport, cache-first parallel calls | changing provider transport |
-| `src/amsc/checkpoint_adapter.py` + `prepare_full_checkpoint.py` | PDF → canonical units, and the manifest that pins them | changing canonical extraction |
-| `src/amsc/viewer_corpus.py` | **the payload reader both Viewer pages share** — the cross-repo data contract | changing what the Viewer reads |
-| `src/amsc/viewer_v3.py` + `viewer_v3_template.py` | the Viewer product page and its build | changing the Viewer |
-| `src/amsc/viewer_server.py` | the Viewer's own server process (`python -m amsc.viewer_server`) | changing how the Viewer is served |
+| `src/amsc/chunking/registry.py` | **the chunking-method registry** — one `ChunkMethod` per method: wire key, engine kind, product label, summary, capabilities, partition callable | adding an analysis method ([adding-a-chunker.md](../../chunk/docs/adding-a-chunker.md)) |
+| `src/amsc/chunking/structural.py` | Standard: the frozen structure-first walk | never, lightly — it is the baseline every method is compared against |
+| `src/amsc/deep/pipeline.py` | Deep Analysis, the production entry point: `chunk_document(units, mode=…)` | changing Deep's orchestration |
+| `src/amsc/deep/proposer.py` / `verifier.py` / `selector.py` | its proposer, its double-order verifier, its deterministic selector | as above |
+| `src/amsc/providers.py` | how a generative provider is called, and nothing about chunking: the protocol, the OpenAI-compatible transport, cache-first parallel calls | changing provider transport |
+| `src/amsc/canonical/adapter.py` + `prepare.py` | PDF → canonical units, and the manifest that pins them | changing canonical extraction |
+| `src/amsc/viewer/corpus.py` | **the payload reader the Viewer and this console share** — the cross-repo data contract | changing what the Viewer reads |
+| `src/amsc/viewer/build.py` + `template.py` | the Viewer product page and its build | changing the Viewer |
+| `src/amsc/viewer/server.py` | the Viewer's own server process (`python -m amsc.viewer.server`) | changing how the Viewer is served |
 | `src/amsc/surface.py` | the product / service / research / legacy declaration, enforced against the real import graph | adding a module off the product path |
-| `src/amsc/io.py` | reading and writing artifact files, including `sha256_file` | changing artifact I/O |
-| `src/amsc/example_chunker.py` | the documented template for a new method — copy it | adding a method |
-| `src/amsc/chunk_method.py` | the `ChunkMethod` / `PartitionResult` types, in a leaf module so a method module can import them and the registry can import the method | adding a method |
+| `src/amsc/document/io.py` | reading and writing artifact files, including `sha256_file` | changing artifact I/O |
+| `src/amsc/chunking/example.py` | the documented template for a new method — copy it | adding a method |
+| `src/amsc/chunking/method.py` | the `ChunkMethod` / `PartitionResult` types, in a leaf module so a method module can import them and the registry can import the method | adding a method |
 | `evaluation/` | frozen benchmark results, pinned by hash | never; it is a record |
 | `configs/` | benchmark and checkpoint configurations, inputs to frozen runs | running a benchmark |
 
@@ -130,9 +134,10 @@ open it.
 
 ## Product, research, legacy
 
-`amsc` is one flat namespace holding product code, experiments and legacy
-side by side. Which is which is **declared** in `src/amsc/surface.py` and
-**enforced** against the real import graph, in both repos:
+`amsc` is organised by domain, and everything under `src/amsc/research/` is
+off the product path. Which module is which is **declared** in
+`src/amsc/surface.py`, by dotted path, and **enforced** against the real import
+graph, in both repos:
 
 * `chat_rag` product code may import only `surface.CONSOLE_API` — the modules
   the console genuinely calls. `tests/unit/test_amsc_surface.py` fails on

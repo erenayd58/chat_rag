@@ -52,7 +52,7 @@ class Settings:
         self.ollama_model = os.getenv("OLLAMA_MODEL", "llama2")
         self.ollama_timeout = int(os.getenv("OLLAMA_TIMEOUT", "120"))
         
-        # Deep Analysis (the premium ingest mode, amsc.deep_pipeline).
+        # Deep Analysis (the premium ingest mode, amsc.deep.pipeline).
         # Backend-only, at ingest, never at query time. Only the *name* of the
         # variable holding the API key is configured -- the key itself is read
         # at request time by the provider and never stored, logged or

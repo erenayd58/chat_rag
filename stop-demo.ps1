@@ -5,7 +5,7 @@
 .DESCRIPTION
     Reads .demo\state.json, and for every server the launcher itself started
     checks that the recorded process id still belongs to that server (its
-    command line names app.py or amsc.viewer_server) before stopping it. A
+    command line names app.py or amsc.viewer.server) before stopping it. A
     server that was already running when the launcher ran is left alone
     unless -All is given, and no unrelated process is ever touched.
 
@@ -46,7 +46,7 @@ function Fail { param($Name, $Detail) Write-Line -Mark ([char]0x2717) -Name $Nam
 function Info { param($Name, $Detail) Write-Line -Mark ([char]0x2022) -Name $Name -Detail $Detail -Color DarkGray }
 function Warn { param($Name, $Detail) Write-Line -Mark '!' -Name $Name -Detail $Detail -Color Yellow }
 
-$Signatures = @{ product = 'app.py'; viewer = 'amsc.viewer_server' }
+$Signatures = @{ product = 'app.py'; viewer = 'amsc.viewer.server' }
 
 function Get-CommandLine {
     param([int]$ProcessId)

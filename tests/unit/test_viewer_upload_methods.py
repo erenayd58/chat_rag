@@ -28,7 +28,7 @@ import numpy as np
 import pytest
 
 import app as flask_app
-from amsc.models import EmbeddingBatch, SemanticEmbeddingProvenance
+from amsc.document.models import EmbeddingBatch, SemanticEmbeddingProvenance
 from components.viewer import analysis
 from components.viewer import methods as M
 
@@ -90,7 +90,7 @@ class HashingBoundaryEmbedder:
 def workspace(tmp_path, monkeypatch):
     """An analysis root of this test's own, a worker drained either side, and
     Hybrid answered without a model."""
-    from amsc import embeddings
+    from amsc.embedding import boundary as embeddings
 
     analysis._queue.join()
     with analysis._lock:

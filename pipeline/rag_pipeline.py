@@ -336,7 +336,7 @@ class RAGPipeline:
     ) -> List[DocumentChunk]:
         """Chunk, embed and index one already-parsed document.
 
-        ``deep_analysis`` runs ``amsc.deep_pipeline`` instead of the plain
+        ``deep_analysis`` runs ``amsc.deep.pipeline`` instead of the plain
         structural walk. It requires the structure-first chunker; a missing or
         failing model provider degrades to the deterministic quality contract
         and is reported in the status, never raised. Everything after chunking
@@ -350,7 +350,7 @@ class RAGPipeline:
             print(f"Ingesting document: {doc_title}")
 
             if deep_analysis:
-                print("  - Creating chunks (Deep Analysis: amsc.deep_pipeline)...")
+                print("  - Creating chunks (Deep Analysis: amsc.deep.pipeline)...")
                 if not hasattr(self.chunker, "chunk_text_deep"):
                     raise ConfigurationException(
                         "Deep Analysis requires the structure-first chunker; "
@@ -777,7 +777,7 @@ class RAGPipeline:
                 "verify": deep.settings.verify,
                 "llm_available": deep.llm_available,
                 "missing": list(deep.missing),
-                "entry_point": "amsc.deep_pipeline.chunk_document",
+                "entry_point": "amsc.deep.pipeline.chunk_document",
             },
             "embedding": embedding,
             "answer": answer,

@@ -40,8 +40,8 @@ What is never done twice:
   provider calls, zero cost, and recorded as exactly that.
 
 Every variant is written by the same packager the benchmark uses
-(``amsc.deep_arm``), and the payload is assembled by the same reader both
-Viewer pages are built on (``amsc.viewer_corpus.load_corpus``), so a live arm
+(``amsc.deep.arm``), and the payload is assembled by the same reader both
+Viewer pages are built on (``amsc.viewer.corpus.load_corpus``), so a live arm
 and a frozen arm are the same shape and the Viewer needs no second reader for
 a live document. No retrieval is scored for a live document: it has no gold
 set, and a number without one would be invented.
@@ -391,7 +391,7 @@ def discard(doc_id: str, content_sha: str | None = None) -> bool:
 
 def _dump_units(units: Sequence[Any], target: Path) -> int:
     """Write canonical units as the JSONL ``amsc`` reads."""
-    from amsc.models import RawDocumentUnit
+    from amsc.document.models import RawDocumentUnit
 
     target.parent.mkdir(parents=True, exist_ok=True)
     count = 0
@@ -531,7 +531,7 @@ def stage(
 
     variants = dict(state.get("methods") or {})
     if deep_result is not None:
-        from amsc.deep_run import write_tree
+        from amsc.deep.run import write_tree
 
         target = run_dir(key)
         # A fresh run replaces whatever was there: this is the ingest's own
@@ -599,7 +599,7 @@ def _budget() -> dict[str, int]:
 
 
 def _counter():
-    from amsc.tokenization import TiktokenTokenCounter
+    from amsc.document.tokenization import TiktokenTokenCounter
 
     from components.chunker.structural_chunker import TOKEN_ENCODING
 
@@ -609,14 +609,14 @@ def _counter():
 def _chunk_rows(method: str, units: Sequence[Any]) -> list[dict]:
     """One method's chunk rows over the canonical that is already in hand.
 
-    Dispatch is the registry's (``amsc.methods.partition``): the method's key
+    Dispatch is the registry's (``amsc.chunking.registry.partition``): the method's key
     names its partition, the shared budget is the product's, and the boundary
     model is handed over as a loader that only a method declaring
     ``needs_embedder`` ever calls -- so packaging Standard or Markdown still
     loads no model. Deep Analysis never comes through here: it is an
     orchestration, packaged by ``_build`` from its own run tree.
     """
-    from amsc import methods as registry
+    from amsc.chunking import registry
 
     return registry.partition(
         method, units, counter=_counter(), budget=_budget(),
@@ -644,8 +644,8 @@ def _boundary_embedder():
     global _boundary_embedder_instance, _boundary_loads
     with _boundary_lock:
         if _boundary_embedder_instance is None:
-            from amsc.cache import FileEmbeddingCache
-            from amsc.embeddings import (
+            from amsc.embedding.cache import FileEmbeddingCache
+            from amsc.embedding.boundary import (
                 CachedSemanticBoundaryEmbedder, SentenceTransformerBoundaryEmbedder,
             )
 
@@ -690,8 +690,8 @@ def _deterministic_deep(key: str) -> Any:
     makes no provider call, costs nothing, and is recorded as such rather
     than passed off as a model-backed run.
     """
-    from amsc.deep_pipeline import MODE_DEEP, DeepAnalysisSettings, chunk_document
-    from amsc.io import load_jsonl_units
+    from amsc.deep.pipeline import MODE_DEEP, DeepAnalysisSettings, chunk_document
+    from amsc.document.io import load_jsonl_units
 
     from components.chunker.deep_analysis import deep_config
 
@@ -821,9 +821,9 @@ def _build(key: str) -> dict:
 
     from time import perf_counter
 
-    from amsc.deep_arm import package, package_arm
-    from amsc.io import load_jsonl_units
-    from amsc.viewer_corpus import load_corpus
+    from amsc.deep.arm import package, package_arm
+    from amsc.document.io import load_jsonl_units
+    from amsc.viewer.corpus import load_corpus
 
     units = load_jsonl_units(units_path(key))
     requested = state.get("requested") or [M.STANDARD]
@@ -842,7 +842,7 @@ def _build(key: str) -> dict:
             target = run_dir(key)
             source = (variants.get(M.DEEP) or {}).get("source") or SOURCE_DETERMINISTIC
             if not (target / "summary.json").is_file():
-                from amsc.deep_run import write_tree
+                from amsc.deep.run import write_tree
 
                 target.mkdir(parents=True, exist_ok=True)
                 write_tree(_deterministic_deep(key), target, units_path=Path(key) / _UNITS)

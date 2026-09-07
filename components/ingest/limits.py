@@ -336,7 +336,7 @@ class LimitedProvider:
     deadline claim is measurable rather than assumed.
 
     **Both the guard and the trace are carried on the object, not looked up
-    per call.** ``amsc.agentic_chunker.collect_votes`` runs every proposer and
+    per call.** ``amsc.research.agentic.chunker.collect_votes`` runs every proposer and
     verifier call on a ``ThreadPoolExecutor``, and a thread-local set on the
     ingest worker does not exist on a pool thread. The guard was already
     passed in for that reason; the trace is captured here at construction --

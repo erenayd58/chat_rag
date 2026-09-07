@@ -126,11 +126,11 @@ def cmd_search(args: argparse.Namespace) -> int:
 
 
 def cmd_qa(args: argparse.Namespace) -> int:
-    """Wrapper around amsc.structural_qa; no QA logic lives here."""
+    """Wrapper around amsc.quality.lint; no QA logic lives here."""
     try:
-        from amsc.structural_qa import lint, render
+        from amsc.quality.lint import lint, render
     except ImportError as exc:  # pragma: no cover - dependency error path
-        raise CliError(f"amsc.structural_qa is unavailable: {exc}")
+        raise CliError(f"amsc.quality.lint is unavailable: {exc}")
 
     kb = resolve_kb(args.kb)
     views = all_chunks(kb)

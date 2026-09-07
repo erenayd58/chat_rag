@@ -1,6 +1,6 @@
 """Structured PDF parser producing canonical AMSC units.
 
-This is a thin adapter over the already-pinned ``amsc.checkpoint_adapter``
+This is a thin adapter over the already-pinned ``amsc.canonical.adapter``
 layout extraction used by the research benchmark.  It deliberately implements
 no parsing logic of its own: the point is that the application and the
 benchmark consume the *same* canonical representation, so a chunker measured
@@ -91,12 +91,12 @@ class StructuredPDFParser(BaseParser):
                 plain-text ``PDFParser`` behaviour.
         """
         try:
-            from amsc.checkpoint_adapter import (
+            from amsc.canonical.adapter import (
                 CheckpointLayoutUnavailableError,
                 load_layout_backend,
             )
-            from amsc.checkpoint_layout import CheckpointLayoutProfile
-            from amsc.prepare_full_checkpoint import extract_full_canonical_units
+            from amsc.canonical.layout import CheckpointLayoutProfile
+            from amsc.canonical.prepare import extract_full_canonical_units
         except ImportError as exc:
             raise RAGException(
                 "amsc-poc is required for structured PDF parsing. "
@@ -238,7 +238,7 @@ class StructuredPDFParser(BaseParser):
 
     @staticmethod
     def _read_disk_cache(path: Path):
-        from amsc.models import RawDocumentUnit
+        from amsc.document.models import RawDocumentUnit
 
         if not path.is_file():
             return None

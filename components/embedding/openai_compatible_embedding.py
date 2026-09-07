@@ -4,7 +4,7 @@ The product's final retrieval embedding is ``qwen/qwen3-embedding-8b``
 reached through OpenRouter, but nothing here names a vendor: the model, the
 endpoint and the *name* of the environment variable holding the key are
 configuration. The transport and the per-text cache are amsc's own
-(``amsc.rag_embeddings``), so the console and the research viewer embed with
+(``amsc.retrieval.embeddings``), so the console and the research viewer embed with
 one implementation.
 
 Two rules this class exists to keep:
@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
-from amsc.rag_embeddings import (
+from amsc.retrieval.embeddings import (
     DEFAULT_EMBEDDING_ENDPOINT,
     CachedEmbeddings,
     OpenAICompatibleEmbeddingProvider,

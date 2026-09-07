@@ -1,9 +1,10 @@
 """What this console is allowed to import from the chunking library.
 
-``amsc`` is one flat namespace holding product code, research experiments and
-legacy compatibility side by side. Which is which is declared in
-:mod:`amsc.surface` and enforced there against the library's own import graph;
-this is the other half of that contract -- the console's side.
+``amsc`` is organised by domain -- ``document``, ``canonical``, ``chunking``,
+``deep``, ``quality``, ``retrieval``, ``viewer``, ``research``. Which of those
+a console may depend on is declared in :mod:`amsc.surface`, by full dotted
+module name, and enforced there against the library's own import graph; this
+is the other half of that contract -- the console's side.
 
 Two rules, deliberately different in strength:
 
@@ -12,7 +13,7 @@ Two rules, deliberately different in strength:
   import outside it is either a new dependency that should be declared, or a
   reach into a library internal that will break on the next pin bump.
 * **tests** may import any *product* module -- fixtures legitimately need
-  things the console itself does not, such as ``amsc.units`` for building a
+  things the console itself does not, such as ``amsc.chunking.adaptive.units`` for building a
   frozen embedding snapshot -- but never a research, legacy or unused one.
 
 Why not one rule for both: tightening the test side to ``CONSOLE_API`` would
@@ -28,7 +29,6 @@ at the next deploy.
 from __future__ import annotations
 
 import ast
-import pkgutil
 from pathlib import Path
 
 import pytest
@@ -38,10 +38,15 @@ from amsc import surface
 
 REPO = Path(__file__).resolve().parents[2]
 
-#: Every submodule the installed library actually has, so ``from amsc import X``
-#: can be told apart from ``from amsc import SomeClass`` -- the package exports
-#: both, and only the first is an import of a module.
-SUBMODULES = frozenset(info.name for info in pkgutil.iter_modules(amsc.__path__))
+#: Every module the installed library actually has, by dotted path, so an
+#: import can be resolved to the module it names rather than to the package it
+#: sits in: ``from amsc.chunking import registry`` is an import of
+#: ``chunking.registry``, not of all of ``chunking``.
+MODULES = frozenset(
+    ".".join(path.relative_to(Path(amsc.__file__).parent).with_suffix("").parts)
+    for path in Path(amsc.__file__).parent.rglob("*.py")
+    if path.name != "__init__.py"
+)
 
 #: Everything that ships and runs. Anything not here is a test or a fixture.
 PRODUCT_TREES = ("app.py", "wsgi.py", "main_new.py", "setup_nltk.py",
@@ -64,11 +69,25 @@ def _python_files(*relatives: str):
                     yield child
 
 
-def _amsc_imports(path: Path) -> set[str]:
-    """The ``amsc`` submodules one file imports, from its AST.
+def _resolve(prefix: str, names: list[str]) -> set[str]:
+    """``prefix`` if it names a module, else whichever of ``names`` under it do.
 
-    The bare package (``import amsc``) is not a submodule import and is always
-    allowed: it is how the provenance snapshot reads the library's version.
+    ``from amsc.deep.pipeline import chunk_document`` names one module;
+    ``from amsc.deep import pipeline, arm`` names two. Both have to resolve to
+    the same dotted paths as the library's own declaration, or the two halves
+    of the contract would be talking about different things.
+    """
+    if prefix and prefix in MODULES:
+        return {prefix}
+    return {c for c in (f"{prefix}.{n}" if prefix else n for n in names) if c in MODULES}
+
+
+def _amsc_imports(path: Path) -> set[str]:
+    """The ``amsc`` modules one file imports, from its AST, by dotted path.
+
+    The bare package (``import amsc``) is not a module import and is always
+    allowed: it is how the provenance snapshot reads the library's version, and
+    it costs nothing because ``amsc/__init__.py`` re-exports nothing.
     """
     found: set[str] = set()
     try:
@@ -76,18 +95,18 @@ def _amsc_imports(path: Path) -> set[str]:
     except SyntaxError:  # pragma: no cover - a file that does not parse
         return found
     for node in ast.walk(tree):
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        names = [alias.name for alias in node.names]
         if isinstance(node, ast.ImportFrom) and node.module:
             if node.module == "amsc":
-                # ``from amsc import methods`` names a submodule;
-                # ``from amsc import V4Chunker`` names a class the package
-                # re-exports. Only the first is an import of a module.
-                found |= {a.name for a in node.names if a.name in SUBMODULES}
+                found |= _resolve("", names)
             elif node.module.startswith("amsc."):
-                found.add(node.module.split(".", 1)[1].split(".")[0])
+                found |= _resolve(node.module[len("amsc."):], names)
         elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name.startswith("amsc."):
-                    found.add(alias.name.split(".", 1)[1].split(".")[0])
+            found |= {alias.name[len("amsc."):] for alias in node.names
+                      if alias.name.startswith("amsc.")
+                      and alias.name[len("amsc."):] in MODULES}
     return found
 
 
@@ -181,10 +200,11 @@ def test_tests_import_no_research_or_legacy_module():
 def test_the_scan_actually_found_the_imports():
     """A guard that finds nothing guards nothing."""
     assert len(PRODUCT_IMPORTS) >= 15, PRODUCT_IMPORTS
-    assert "deep_pipeline" in PRODUCT_IMPORTS
-    assert "viewer_corpus" in PRODUCT_IMPORTS
-    assert PRODUCT_IMPORTS["viewer_corpus"] == {"components/viewer/analysis.py"}
-    assert "methods" in PRODUCT_IMPORTS, "the registry import must be seen"
+    assert "deep.pipeline" in PRODUCT_IMPORTS
+    assert "viewer.corpus" in PRODUCT_IMPORTS
+    assert PRODUCT_IMPORTS["viewer.corpus"] == {"components/viewer/analysis.py"}
+    assert "chunking.registry" in PRODUCT_IMPORTS, "the registry import must be seen"
+    assert MODULES and "chunking.registry" in MODULES, "the module scan found nothing"
 
 
 @pytest.mark.parametrize("module", sorted(surface.CONSOLE_API))

@@ -79,8 +79,8 @@ def _stage_and_build(**overrides):
 
 def _deep_run(units):
     """A DeepAnalysisResult of the kind an ingest hands over, made here."""
-    from amsc.deep_pipeline import MODE_DEEP, DeepAnalysisSettings, chunk_document
-    from amsc.models import RawDocumentUnit
+    from amsc.deep.pipeline import MODE_DEEP, DeepAnalysisSettings, chunk_document
+    from amsc.document.models import RawDocumentUnit
 
     models = [RawDocumentUnit.model_validate(u) for u in units]
     result = chunk_document(models, mode=MODE_DEEP,
@@ -255,7 +255,7 @@ def test_a_deep_upload_is_reused_and_never_run_again(workspace, monkeypatch):
     units = _corpus()
     run = _deep_run(units)
 
-    import amsc.deep_pipeline as deep_pipeline
+    import amsc.deep.pipeline as deep_pipeline
 
     def refuse(*args, **kwargs):  # pragma: no cover - the failure is the point
         raise AssertionError("Deep Analysis must not run a second time for the Viewer")
@@ -410,7 +410,7 @@ def test_a_deep_failure_leaves_the_other_methods_standing(workspace, monkeypatch
     Deep's packaging is what writes it -- so with Deep gone it is chunked on
     its own instead of being advertised and missing.
     """
-    import amsc.deep_arm as deep_arm
+    import amsc.deep.arm as deep_arm
 
     def refuse(*args, **kwargs):
         raise ValueError("the deep tree was built for someone else")

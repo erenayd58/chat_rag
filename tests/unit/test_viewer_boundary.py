@@ -3,10 +3,10 @@
 Everything the browser sees about a live document comes down one path:
 
     ingest -> components.viewer.analysis (stage, queue, build)
-           -> amsc.viewer_corpus.load_corpus  (the shared payload reader)
+           -> amsc.viewer.corpus.load_corpus  (the shared payload reader)
            -> viewer-payload.json             (the published state)
            -> /api/demo/viewer-analysis/<id>/payload
-           -> amsc.viewer_server relay -> Viewer v3
+           -> amsc.viewer.server relay -> Viewer v3
 
 These tests hold that path to the parts of it that are easy to break and
 expensive to notice:
@@ -99,16 +99,16 @@ def test_the_packager_reads_the_shared_reader_not_a_viewer_page(workspace):
     depend on a template it never renders -- and on Viewer v2, which is only
     kept for the research build.
     """
-    for page in ("amsc.viewer_v2", "amsc.viewer_v3", "amsc.viewer_v2_template",
-                 "amsc.viewer_v3_template"):
+    for page in ("amsc.viewer_v2", "amsc.viewer.build", "amsc.viewer_v2_template",
+                 "amsc.viewer.template"):
         sys.modules.pop(page, None)
 
     state = _build()
 
     assert state["status"] == analysis.STATUS_READY, state
-    assert "amsc.viewer_corpus" in sys.modules, "the shared reader is what a build uses"
-    leaked = [page for page in ("amsc.viewer_v2", "amsc.viewer_v3",
-                                "amsc.viewer_v2_template", "amsc.viewer_v3_template")
+    assert "amsc.viewer.corpus" in sys.modules, "the shared reader is what a build uses"
+    leaked = [page for page in ("amsc.viewer_v2", "amsc.viewer.build",
+                                "amsc.viewer_v2_template", "amsc.viewer.template")
               if page in sys.modules]
     assert leaked == [], f"packaging pulled in a Viewer page module: {leaked}"
 
@@ -120,7 +120,7 @@ def test_the_console_states_no_method_identity_of_its_own(workspace):
     edit here, which is what keeps a new chunker from needing a Viewer-specific
     list.
     """
-    from amsc import methods as registry
+    from amsc.chunking import registry
 
     assert set(M.ORDER) == set(registry.order())
     for key in registry.order():
@@ -147,7 +147,7 @@ def test_a_failed_rebuild_keeps_the_last_published_payload(workspace, monkeypatc
     key = analysis.key_for("edge-doc")
     on_disk = analysis.payload_path(key).read_bytes()
 
-    import amsc.viewer_corpus as corpus
+    import amsc.viewer.corpus as corpus
 
     def refuse(*args, **kwargs):
         raise RuntimeError("the reader failed on this rebuild")
@@ -179,7 +179,7 @@ def test_a_repaired_rebuild_republishes_over_the_stale_payload(workspace, monkey
     assert _build()["status"] == analysis.STATUS_READY
     published = analysis.payload("edge-doc")
 
-    import amsc.viewer_corpus as corpus
+    import amsc.viewer.corpus as corpus
 
     real = corpus.load_corpus
     monkeypatch.setattr(corpus, "load_corpus",

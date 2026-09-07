@@ -7,7 +7,7 @@ structural findings and the retrieval numbers measured from them, and a
 manifest saying what produced all of it.
 
 Nothing here re-parses, re-chunks or re-scores anything. Every artefact comes
-from production state, every finding from ``amsc.structural_qa``, every metric
+from production state, every finding from ``amsc.quality.lint``, every metric
 from the same evaluator ``eval`` uses. The one thing this module adds is
 consistency checking: a report that quietly exported the wrong corpus would be
 worse than no report at all, so mismatches are named and they change the
@@ -549,7 +549,7 @@ def build(
     expect_chunks: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Produce the report directory and return what it contains."""
-    from amsc.structural_qa import lint
+    from amsc.quality.lint import lint
 
     views = runtime.all_chunks(kb)
     if not views:

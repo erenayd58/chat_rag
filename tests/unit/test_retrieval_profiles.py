@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import yaml
 
-from amsc.retrieval_pipeline import DeterministicHybridIndex, RetrievalDocument
+from amsc.retrieval.pipeline import DeterministicHybridIndex, RetrievalDocument
 
 from components.retriever import (
     BenchmarkAlignedEmbedding,

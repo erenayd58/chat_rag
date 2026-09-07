@@ -294,7 +294,7 @@ def test_the_markdown_and_standard_viewer_variants_take_no_provider_slot(budget_
 
     from ingest_doubles import deep_corpus
 
-    from amsc.models import RawDocumentUnit
+    from amsc.document.models import RawDocumentUnit
 
     units = [RawDocumentUnit.model_validate(u) for u in deep_corpus(sections=2)]
     for method in (M.MARKDOWN, M.STANDARD):

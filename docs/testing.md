@@ -116,7 +116,7 @@ The Viewer page is a build artifact and is not in version control. From the
 `chunk` checkout:
 
 ```bash
-py -3.11 -m amsc.viewer_v3 --output artifacts/viewer-v3/index.html
+py -3.11 -m amsc.viewer.build --output artifacts/viewer-v3/index.html
 ```
 
 With no `--benchmark` / `--deep` arguments this builds the **product shell**:
@@ -245,7 +245,7 @@ python tools/verify_reproducibility.py        # or --local before pushing
 and, when the change touched the Viewer or the library boundary:
 
 ```bash
-py -3.11 -m amsc.viewer_v3 --output artifacts/viewer-v3/index.html   # in chunk
+py -3.11 -m amsc.viewer.build --output artifacts/viewer-v3/index.html   # in chunk
 py -3.11 -m pytest tests/unit/test_library_surface.py                # in chunk
 python -m pytest -q tests/unit/test_amsc_surface.py tests/unit/test_amsc_pin.py
 ```

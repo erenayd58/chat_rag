@@ -1,7 +1,7 @@
 """Adding a chunking method: the extension path, driven end to end.
 
-The method is the library's shipped example (``amsc.example_chunker``),
-registered in ``amsc.methods`` for the length of a test and nothing else.
+The method is the library's shipped example (``amsc.chunking.example``),
+registered in ``amsc.chunking.registry`` for the length of a test and nothing else.
 What is proved is that this one registration is enough for the product:
 the console's catalogue and its API list it, an upload can ask for it, the
 packager runs it over a real canonical without loading any model, the
@@ -30,8 +30,8 @@ from types import SimpleNamespace
 import pytest
 
 import app as flask_app
-from amsc import methods as registry
-from amsc.example_chunker import FIXED_WINDOW
+from amsc.chunking import registry
+from amsc.chunking.example import FIXED_WINDOW
 from components.chunker import registry as indexing
 from components.knowledgebase.manager import KnowledgeBaseManager, normalize_chunker_config
 from components.viewer import analysis
@@ -188,7 +188,7 @@ def test_the_packager_runs_it_and_the_viewer_routes_serve_it(client, fifth, tmp_
     assert all({"chunk_id", "text", "unit_ids", "token_count"} <= set(row) for row in arm["rows"])
 
     # The Viewer v3 shell a fresh clone builds lists it too.
-    from amsc.viewer_v3 import build_viewer
+    from amsc.viewer.build import build_viewer
 
     output = tmp_path / "v3" / "index.html"
     build_viewer({}, output, root=tmp_path)
@@ -210,15 +210,15 @@ def test_a_method_can_be_added_to_an_existing_document_later(client, fifth):
 # --------------------------------------------- the Viewer needs no rebuild
 def test_the_viewer_is_told_about_it_without_a_page_rebuild(fifth, tmp_path):
     """The exposure rule: a registered method cannot be invisible in the
-    Viewer because somebody forgot ``python -m amsc.viewer_v3``.
+    Viewer because somebody forgot ``python -m amsc.viewer.build``.
 
     The page embeds the registry at build time, which is all a file opened
     from disk can carry. Served, it reads the registry from its own server at
     boot -- so a page built before this method existed still lists it. Both
     halves are checked here: the stale build, and the live route.
     """
-    from amsc import viewer_server
-    from amsc.viewer_v3 import build_viewer
+    from amsc.viewer import server as viewer_server
+    from amsc.viewer.build import build_viewer
 
     registry.unregister(FIXED_WINDOW.key)
     output = tmp_path / "v3" / "index.html"
@@ -275,12 +275,13 @@ def test_the_upload_form_hard_codes_no_method_key():
 
 
 def test_the_viewer_builders_and_the_console_share_one_identity():
-    from amsc import viewer_corpus, viewer_v3
+    from amsc.viewer import corpus as viewer_corpus
+    from amsc.viewer import build as viewer_build
 
-    assert dict(viewer_v3.METHOD_LABELS) == {key: M.METHODS[key].label for key in registry.order()}
-    assert dict(viewer_v3.METHOD_SUMMARIES) == {key: M.METHODS[key].summary for key in registry.order()}
+    assert dict(viewer_build.METHOD_LABELS) == {key: M.METHODS[key].label for key in registry.order()}
+    assert dict(viewer_build.METHOD_SUMMARIES) == {key: M.METHODS[key].summary for key in registry.order()}
     assert dict(viewer_corpus.ARM_KINDS) == {key: M.METHODS[key].engine for key in registry.order()}
-    assert set(M.ORDER) == set(viewer_v3.METHOD_ORDER), "same universe, the console's own order"
+    assert set(M.ORDER) == set(viewer_build.METHOD_ORDER), "same universe, the console's own order"
 
 
 def test_the_indexing_chunkers_are_one_table(client):

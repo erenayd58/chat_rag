@@ -19,7 +19,7 @@ import urllib.request
 from typing import Any, Dict, List
 from urllib.parse import urlsplit
 
-from amsc.deep_pipeline import DEFAULT_ENDPOINT
+from amsc.deep.pipeline import DEFAULT_ENDPOINT
 
 from components.ingest.limits import current_guard, deadline_timeout
 from core.exceptions import LLMException

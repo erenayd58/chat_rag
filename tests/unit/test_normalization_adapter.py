@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from amsc.models import UnitType
+from amsc.document.models import UnitType
 
 from components.chunker import CanonicalUnitAdapter
 

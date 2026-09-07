@@ -19,7 +19,7 @@ frozen retrieval for the KKB gold set.
   observed to earn its keep (`d-chunk-0022` reached the context only as a
   neighbour). Watched separately in every experiment.
 
-`irrelevant token ratio` follows `amsc.retrieval_benchmark._irrelevant_token_ratio`,
+`irrelevant token ratio` follows `amsc.research.benchmark.retrieval._irrelevant_token_ratio`,
 applied to the assembled context rather than to top-K.
 
 **Decisions**

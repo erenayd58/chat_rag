@@ -1,6 +1,6 @@
 """Several Deep Analysis documents at once share one provider budget.
 
-This is the end-to-end claim, through the real ``amsc.deep_pipeline`` and
+This is the end-to-end claim, through the real ``amsc.deep.pipeline`` and
 the real ``StructuralChunker.chunk_text_deep``: three documents, each with
 a per-job pool of four, run concurrently against a budget of two, and the
 provider -- one gated double every document shares -- never sees more than
