@@ -13,6 +13,11 @@ this repository is edited to get there.
 The last tests are the drift guards: the few places that still spell a
 method name (the frontend's mode labels, the indexing chunker's options)
 are held to the registries they mirror.
+
+Nothing here writes down how many methods there are. Every list is derived
+from the registry and the fifth method is located by key, so this file does
+not itself become the fixed method list it exists to make unnecessary -- a
+real fifth method added to ``_BUILTIN`` leaves it green.
 """
 
 from __future__ import annotations
@@ -89,7 +94,9 @@ def client(workspace):
 
 # ------------------------------------------------- the console knows it
 def test_one_registration_is_a_console_method(fifth):
-    assert tuple(M.ORDER) == ("markdown", "structure-only", "agentic", "hybrid", "fixed-window")
+    assert set(M.ORDER) == set(registry.order()), "the console's universe is the registry's"
+    assert list(M.ORDER)[:len(M.PRODUCT_ORDER)] == list(M.PRODUCT_ORDER), "product order first"
+    assert M.ORDER[-1] == "fixed-window", "a method the product order does not name is listed last"
     assert "fixed-window" in M.METHODS
     method = M.METHODS["fixed-window"]
     assert (method.label, method.engine, method.uses_model, method.needs_embedder, method.deep) == (
@@ -200,12 +207,43 @@ def test_a_method_can_be_added_to_an_existing_document_later(client, fifth):
     assert analysis.read_state("fifth-doc", "fifth-sha")["ready_methods"] == ["structure-only", "fixed-window"]
 
 
+# --------------------------------------------- the Viewer needs no rebuild
+def test_the_viewer_is_told_about_it_without_a_page_rebuild(fifth, tmp_path):
+    """The exposure rule: a registered method cannot be invisible in the
+    Viewer because somebody forgot ``python -m amsc.viewer_v3``.
+
+    The page embeds the registry at build time, which is all a file opened
+    from disk can carry. Served, it reads the registry from its own server at
+    boot -- so a page built before this method existed still lists it. Both
+    halves are checked here: the stale build, and the live route.
+    """
+    from amsc import viewer_server
+    from amsc.viewer_v3 import build_viewer
+
+    registry.unregister(FIXED_WINDOW.key)
+    output = tmp_path / "v3" / "index.html"
+    build_viewer({}, output, root=tmp_path)
+    registry.register(FIXED_WINDOW)
+
+    page = output.read_text(encoding="utf-8")
+    embedded = re.search(r'<script id="viewer-data" type="application/json">(.*?)</script>',
+                         page, re.S).group(1)
+    assert "fixed-window" not in embedded, "the page really was built without it"
+
+    served = viewer_server.method_registry_payload()
+    assert served["order"][-1] == "fixed-window"
+    assert served["labels"]["fixed-window"] == M.METHODS["fixed-window"].label
+    assert served["meta"]["fixed-window"]["kind"] == M.METHODS["fixed-window"].engine
+    assert "/api/methods" in page and "refreshMethods" in page
+
+
 # ------------------------------------------------------- and gone again
 def test_once_unregistered_the_console_forgets_it(client):
     registry.register(FIXED_WINDOW)
     registry.unregister(FIXED_WINDOW.key)
 
-    assert tuple(M.ORDER) == ("markdown", "structure-only", "agentic", "hybrid")
+    assert set(M.ORDER) == set(registry.order())
+    assert "fixed-window" not in M.ORDER
     assert "fixed-window" not in M.METHODS
     assert M.normalise(["fixed-window"]) == ["structure-only"], "an unknown name falls back to Standard"
     assert [row["key"] for row in M.catalogue()] == list(M.ORDER)

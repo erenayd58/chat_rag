@@ -406,8 +406,9 @@ engine kind, product name, summary and capabilities. `components/viewer/methods.
 is this console's view of that registry and adds only what the deployment
 decides — availability on this machine, display order, the default. Adding a
 chunking method is a library change (`chunk/docs/adding-a-chunker.md`: a
-partition function, one registry entry, a test) followed by bumping the
-`amsc-poc` pin in `requirements.txt`; no route, template or script here names
+method module, one registry entry, a test) followed by
+`python tools/promote_chunk_pin.py`, which bumps the `amsc-poc` pin in
+`requirements.txt` and checks it; no route, template or script here names
 a method. The *indexing* chunker a knowledge base is created with is a
 separate, deliberately smaller table (`components/chunker/registry.py`), and an
 analysis method is never accepted as one. A build interrupted by a restart

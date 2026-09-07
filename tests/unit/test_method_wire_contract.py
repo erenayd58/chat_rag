@@ -12,6 +12,15 @@ reports, how a request's selection is normalised, what an upload does with
 it, and the one invariant that keeps two registries apart -- an analysis
 method is never an indexing chunker. They do not pin summaries or the shape
 of the dataclass, which a registry refactor is free to change.
+
+They also do not pin *how many* methods there are. The four keys below are a
+contract because renaming one breaks the API, the form and a packaged variant
+directory at once; the registry holding exactly those four is not, because
+adding a fifth is the supported extension path
+(``chunk/docs/adding-a-chunker.md``). So every list here is either a
+statement about these four specifically, or derived from ``M.ORDER`` -- and a
+valid new method needs no edit to this file. ``test_chunker_extension.py``
+proves that by registering one.
 """
 
 from __future__ import annotations
@@ -56,8 +65,11 @@ def hybrid_unavailable(monkeypatch):
 
 
 def test_the_wire_keys_their_order_labels_and_engines_are_pinned():
-    assert M.ORDER == WIRE_KEYS
-    assert set(M.METHODS) == set(WIRE_KEYS)
+    """The four shipped keys, their engines, their labels and the order the
+    console lists them in. Not an equality against the registry: a fifth
+    method registered beside them is valid and is listed after them."""
+    assert set(WIRE_KEYS) <= set(M.METHODS)
+    assert [key for key in M.ORDER if key in WIRE_KEYS] == list(WIRE_KEYS)
     assert {key: M.METHODS[key].engine for key in WIRE_KEYS} == WIRE_ENGINES
     assert {key: M.METHODS[key].label for key in WIRE_KEYS} == WIRE_LABELS
     assert M.DEFAULT_SELECTION == ("structure-only",)
@@ -67,8 +79,16 @@ def test_the_wire_keys_their_order_labels_and_engines_are_pinned():
 
 
 def test_only_deep_uses_a_model_and_only_hybrid_needs_an_embedder():
-    assert [key for key in M.ORDER if M.METHODS[key].uses_model] == ["agentic"]
-    assert [key for key in M.ORDER if M.METHODS[key].needs_embedder] == ["hybrid"]
+    """Of the shipped four -- and whatever else is registered, the console
+    reports the library's own answer rather than one of its own."""
+    from amsc import methods as registry
+
+    assert [key for key in WIRE_KEYS if M.METHODS[key].uses_model] == ["agentic"]
+    assert [key for key in WIRE_KEYS if M.METHODS[key].needs_embedder] == ["hybrid"]
+    for key in M.ORDER:
+        entry = registry.get(key)
+        assert M.METHODS[key].uses_model == entry.uses_model, key
+        assert M.METHODS[key].needs_embedder == entry.needs_embedder, key
 
 
 def test_normalise_accepts_a_list_a_comma_string_or_nothing(hybrid_available):
@@ -92,12 +112,13 @@ def test_an_unavailable_method_is_dropped_rather_than_half_honoured(hybrid_unava
     assert M.normalise(["hybrid"]) == ["structure-only"]
     assert M.resolve("hybrid").available is False
     assert M.resolve("hybrid").reason == "model not on this machine"
-    assert [m.key for m in M.offered()] == ["markdown", "structure-only", "agentic"]
+    assert [m.key for m in M.offered()] == [k for k in M.ORDER if k != "hybrid"]
 
 
 def test_the_catalogue_reports_every_method_offered_or_not(hybrid_unavailable):
     rows = M.catalogue()
-    assert [row["key"] for row in rows] == list(WIRE_KEYS)
+    assert [row["key"] for row in rows] == list(M.ORDER)
+    assert set(WIRE_KEYS) <= {row["key"] for row in rows}
     for row in rows:
         assert set(row) == {"key", "label", "summary", "engine", "available", "reason", "uses_model", "default"}
         assert row["available"] or row["reason"], "unavailable carries its reason"
@@ -118,9 +139,10 @@ def test_get_api_demo_methods_is_the_catalogue_verbatim(client, hybrid_available
     body = client.get("/api/demo/methods").get_json()
     assert body["success"] is True
     assert body["methods"] == M.catalogue()
-    assert [row["key"] for row in body["methods"]] == list(WIRE_KEYS)
-    assert {row["key"]: row["engine"] for row in body["methods"]} == WIRE_ENGINES
-    assert {row["key"]: row["label"] for row in body["methods"]} == WIRE_LABELS
+    assert [row["key"] for row in body["methods"]] == list(M.ORDER)
+    reported = {row["key"]: row for row in body["methods"]}
+    assert {key: reported[key]["engine"] for key in WIRE_KEYS} == WIRE_ENGINES
+    assert {key: reported[key]["label"] for key in WIRE_KEYS} == WIRE_LABELS
 
 
 # ------------------------------------------------------- the upload route
@@ -252,7 +274,16 @@ def test_analysis_methods_never_change_the_knowledge_bases_chunker(upload, hybri
     assert before == {"type": "structure_first", "params": {}}
 
 
-@pytest.mark.parametrize("name", list(WIRE_KEYS) + list(WIRE_ENGINES.values()))
+def _analysis_ids() -> list[str]:
+    """Every registered analysis method's key and engine kind -- read from the
+    registry, so a method added later is checked too."""
+    from amsc import methods as registry
+
+    return sorted({name for method in registry.methods()
+                   for name in (method.key, method.kind)})
+
+
+@pytest.mark.parametrize("name", _analysis_ids())
 def test_an_analysis_method_key_or_engine_is_not_an_indexing_chunker(name):
     """The indexing registry (legacy / v4 / structure_first) must refuse every
     analysis-method id and every engine name, so a future shared registry
@@ -286,8 +317,8 @@ def test_the_viewer_reader_and_page_agree_with_the_console_registry():
     page that merely re-exports it."""
     from amsc import viewer_corpus, viewer_v3
 
-    for key in WIRE_KEYS:
+    for key in M.ORDER:
         assert viewer_corpus.ARM_KINDS[key] == M.METHODS[key].engine, key
     assert set(viewer_v3.METHOD_ORDER) == set(M.ORDER)
-    assert viewer_v3.METHOD_LABELS == WIRE_LABELS
-    assert set(viewer_v3.METHOD_SUMMARIES) == set(WIRE_KEYS)
+    assert {key: viewer_v3.METHOD_LABELS[key] for key in WIRE_KEYS} == WIRE_LABELS
+    assert set(viewer_v3.METHOD_SUMMARIES) == set(M.ORDER)

@@ -122,6 +122,7 @@ open it.
 | `src/amsc/surface.py` | the product / service / research / legacy declaration, enforced against the real import graph | adding a module off the product path |
 | `src/amsc/io.py` | reading and writing artifact files, including `sha256_file` | changing artifact I/O |
 | `src/amsc/example_chunker.py` | the documented template for a new method — copy it | adding a method |
+| `src/amsc/chunk_method.py` | the `ChunkMethod` / `PartitionResult` types, in a leaf module so a method module can import them and the registry can import the method | adding a method |
 | `evaluation/` | frozen benchmark results, pinned by hash | never; it is a record |
 | `configs/` | benchmark and checkpoint configurations, inputs to frozen runs | running a benchmark |
 

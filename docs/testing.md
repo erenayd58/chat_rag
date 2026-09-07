@@ -61,7 +61,9 @@ These fail loudly and mean something specific:
 | `chat_rag/tests/unit/test_configuration.py` | the precedence rule, one owner per default, `env.example` cannot drift from the code, and every setting that is read is also applied |
 | `chat_rag/tests/unit/test_provider_surface.py` | every shipped answer transport can be selected, is documented, and honours the query deadline |
 | `chat_rag/tests/unit/test_state_isolation.py` | a test run cannot write to the developer's real state |
-| `chunk/tests/unit/test_methods_registry.py` | the chunking-method registry is the one source of method identity |
+| `chunk/tests/unit/test_methods_registry.py` | the chunking-method registry is the one source of method identity, and a method registered in it reaches every consumer — including a Viewer page built before it existed |
+| `chat_rag/tests/unit/test_chunker_extension.py` | one registration in the library is a console method: catalogue, API, upload, packager, Viewer routes — with no edit in this repository |
+| `chat_rag/tests/unit/test_promote_chunk_pin.py` | the pin-promotion command moves only the sha, and refuses an unpushed, uncommitted or untracked revision |
 
 ---
 
@@ -74,6 +76,11 @@ python tools/import_smoke.py   # the declared dependencies satisfy every import
 python tools/serve_smoke.py    # `python -m wsgi` binds a socket, answers
                                # /api/health on waitress, and stops on signal
 ```
+
+A third tool sits beside them but answers a release question rather than a
+build one: `python tools/promote_chunk_pin.py` moves the `amsc-poc` pin to a
+`chunk` commit and checks it holds — see
+[Changes that cross both repos](#changes-that-cross-both-repos).
 
 `import_smoke` names the `amsc` that actually answered and, when pip recorded
 one, the revision it came from — so "it works on my machine" becomes checkable.
@@ -160,12 +167,21 @@ and less clearly:
 2.  py -3.11 -m pytest              the chunk suite, green
 3.  git commit && git push          the pin must name a commit that exists
                                     on a remote, or no clean install can fetch it
-4.  edit chat_rag/requirements.txt  amsc-poc @ git+…@<the new 40-char sha>
-5.  python -m pytest -q             the chat_rag suite, green — test_amsc_pin.py
-                                    now checks the new revision provides every
-                                    symbol the product imports
+4.  python tools/promote_chunk_pin.py          steps 4 and 5, as one command:
+                                    it resolves ../chunk HEAD, refuses a
+                                    revision that is unpushed or that HEAD does
+                                    not contain (an untracked new file included),
+                                    rewrites the sha in requirements.txt and
+                                    runs tests/unit/test_amsc_pin.py, putting
+                                    the file back if that fails
+5.  python -m pytest -q             the rest of the chat_rag suite
 6.  python tools/verify_reproducibility.py     the declared source installs
 ```
+
+`promote_chunk_pin.py` takes `--rev` (a revision other than `HEAD`), `--check`
+(report and write nothing), `--push` (push the chunk checkout's branch first —
+its only network call) and `--chunk-repo`. It never commits this repository;
+it prints the `git` command for what it changed.
 
 Notes that save an afternoon:
 
@@ -175,12 +191,15 @@ Notes that save an afternoon:
 * **The pin line must end at the sha.** A lost newline once merged the next
   requirement into the git URL, which made `pip install -r requirements.txt`
   fail outright while every suite stayed green. `test_amsc_pin.py` checks the
-  line's shape for exactly this reason.
+  line's shape for exactly this reason, and `promote_chunk_pin.py` rewrites
+  only the sha of that one line so the shape cannot be lost by hand again.
 * **Adding a name to `amsc.surface.CONSOLE_API` is part of step 1**, not an
   afterthought: the console may import nothing else, and the guard on both
   sides reads the declaration from the installed library.
-* If the change touches the Viewer, the release sequence has one more step —
-  the page is rebuilt from the new library. See
+* If the change touches the Viewer **template**, the page is rebuilt from the
+  new library — the page *is* the template. Adding a chunking method is not
+  such a change: a served page reads the method registry from its own server
+  (`GET /api/methods`) at boot, so a new method appears without a rebuild. See
   [chunk/docs/viewer-architecture.md](../../chunk/docs/viewer-architecture.md).
 
 ---

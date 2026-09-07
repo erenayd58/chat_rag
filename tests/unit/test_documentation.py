@@ -279,7 +279,8 @@ def test_the_documented_entry_points_exist():
                      "docs/configuration.md", "docs/testing.md",
                      "docs/limitations.md", "env.example",
                      "tools/import_smoke.py", "tools/serve_smoke.py",
-                     "tools/verify_reproducibility.py"):
+                     "tools/verify_reproducibility.py",
+                     "tools/promote_chunk_pin.py"):
         assert (REPO / relative).exists(), relative
 
 
