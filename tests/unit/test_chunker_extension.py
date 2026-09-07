@@ -287,22 +287,20 @@ def test_the_indexing_chunkers_are_one_table(client):
     from components.chunker import create_chunker
     from core.exceptions import ConfigurationException
 
-    body = client.get("/api/kb/options").get_json()
-    assert [row["name"] for row in body["chunkers"]] == list(indexing.ids()) == ["legacy", "v4", "structure_first"]
-    assert body["chunkers"] == indexing.describe()
+    assert list(indexing.ids()) == ["v4", "structure_first"]
     for chunker in indexing.INDEXING_CHUNKERS:
         for alias in chunker.aliases:
             assert normalize_chunker_config({"type": alias.upper()})["type"] == chunker.id
     with pytest.raises(ValueError, match=re.escape(indexing.expected())):
         normalize_chunker_config({"type": "turbo"})
-    settings = SimpleNamespace(chunker_type="turbo", chunk_size=300, chunk_overlap=60, min_chunk_size=50)
+    settings = SimpleNamespace(chunker_type="turbo")
     with pytest.raises(ConfigurationException, match=re.escape(indexing.expected())):
         create_chunker(settings)
     with pytest.raises(ValueError, match="Structure-first accepts no runtime chunker params"):
         normalize_chunker_config({"type": "structure_first", "params": {"x": 1}})
     with pytest.raises(ValueError, match="Frozen V4 accepts no runtime chunker params"):
         normalize_chunker_config({"type": "v4", "params": {"x": 1}})
-    assert normalize_chunker_config(None) == {"type": "legacy", "params": {}}
+    assert normalize_chunker_config(None) == {"type": "structure_first", "params": {}}
 
 
 def test_an_analysis_method_is_still_never_an_indexing_chunker(fifth):

@@ -294,11 +294,7 @@ DELIBERATE_OVERRIDES = {
         "ANSWER_FALLBACK_MODEL": "the demo's fallback model",
         "EMBEDDING_PROVIDER": "the demo embeds through the gateway; the default is a local model needing no key",
         "EMBEDDING_MODEL": "the gateway embedding model that goes with it",
-        "RETRIEVAL_PROFILE": "the demo runs the final hybrid_rrf chain; the default stays legacy for an existing deployment",
-        "RERANKER_TYPE": "the demo reranks with the cross-encoder; the default is the LLM reranker",
-        "CHUNKER_TYPE": "the demo chunks structure-first; the default stays legacy for an existing deployment",
-        "CHUNK_SIZE": "the legacy word-window the demo profile uses",
-        "CHUNK_OVERLAP": "the overlap that goes with it",
+        "RETRIEVAL_PROFILE": "the demo runs the final hybrid_rrf chain; the default is the no-provider bm25_only",
         "LLM_PROVIDER": "the demo has no Azure account; the code default is azure",
         "AZURE_ENDPOINT": "a placeholder, not a value",
         "AZURE_API_KEY": "a placeholder, not a value",
@@ -308,8 +304,6 @@ DELIBERATE_OVERRIDES = {
         "LLM_PROVIDER": "the container talks to Ollama on the host, not Azure",
         "OLLAMA_BASE_URL": "host.docker.internal reaches the host from inside a container",
         "OLLAMA_MODEL": "the small model the demo image expects",
-        "CHUNKER_TYPE": "the frozen proof-of-concept selection",
-        "RETRIEVAL_PROFILE": "bm25_only needs no provider, so the image starts with no key",
     },
 }
 

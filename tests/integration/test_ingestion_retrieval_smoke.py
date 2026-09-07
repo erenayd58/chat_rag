@@ -1,3 +1,11 @@
+"""Ingest a document and retrieve it back, for each shipped indexing chunker.
+
+The end-to-end shape the unit tests do not reach: real chunker, real store,
+real retriever, on the frozen ``benchmark_aligned`` profile -- which is the
+one that must run without a single model call, without query expansion,
+reranking or contextualisation, and write no document summary.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -8,13 +16,10 @@ import pytest
 
 from amsc.models import EmbeddingBatch, SemanticEmbeddingProvenance
 
-from components.chunker import FrozenV4Chunker, SemanticChunker
-from components.embedding import BaseEmbedding
+from components.chunker import FrozenV4Chunker, StructuralChunker
 from components.llm import BaseLLM
-from components.reranker import BaseReranker
 from components.retriever import BenchmarkAlignedEmbedding
-from components.vectordb import FaissVectorDB
-from core.models import RetrievalResult
+from components.vectordb import ChromaVectorDB
 from pipeline import RAGPipeline
 
 
@@ -24,7 +29,7 @@ class FakeLLM(BaseLLM):
 
     def generate(self, messages, temperature=0.3, max_tokens=200, **kwargs):
         self.calls += 1
-        return "Deterministic document summary."
+        return "Deterministic answer."
 
     def get_name(self):
         return "FakeLLM"
@@ -33,23 +38,10 @@ class FakeLLM(BaseLLM):
         return "fake"
 
 
-class HashEmbedding(BaseEmbedding):
-    def encode(self, texts, convert_to_tensor=False, **kwargs):
-        if isinstance(texts, list):
-            return np.vstack([self._one(text) for text in texts])
-        return self._one(texts)
-
-    @staticmethod
-    def _one(text: str) -> np.ndarray:
-        digest = hashlib.sha256(text.encode("utf-8")).digest()
-        vector = np.asarray([digest[0] + 1, digest[1] + 1, digest[2] + 1], dtype=float)
-        return vector / np.linalg.norm(vector)
-
-    def get_name(self):
-        return "HashEmbedding"
-
-    def get_dimension(self):
-        return 3
+def _vector(text: str) -> np.ndarray:
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    vector = np.asarray([digest[0] + 1, digest[1] + 1, digest[2] + 1], dtype=float)
+    return vector / np.linalg.norm(vector)
 
 
 class DeterministicBoundaryEmbedder:
@@ -59,7 +51,7 @@ class DeterministicBoundaryEmbedder:
     cache_namespace = "test-deterministic-boundary"
 
     def embed_units(self, texts):
-        vectors = np.vstack([HashEmbedding._one(text) for text in texts])
+        vectors = np.vstack([_vector(text) for text in texts])
         provenance = tuple(
             SemanticEmbeddingProvenance(
                 model_id=self.model_id,
@@ -74,39 +66,12 @@ class DeterministicBoundaryEmbedder:
         return EmbeddingBatch(vectors=vectors, provenance=provenance)
 
 
-class PassthroughReranker(BaseReranker):
-    def rerank(self, query, results, top_k=5):
-        return results[:top_k]
-
-    def get_name(self):
-        return "PassthroughReranker"
-
-
-def _settings():
-    return SimpleNamespace(
-        enable_conversation=False,
-        max_conversation_history=0,
-        reranker_type="llm",
-        vector_weight=0.7,
-        bm25_weight=0.3,
-        include_vector_results_n=0,
-        include_bm25_results_n=0,
-    )
-
-
 class FakeFrozenRetrievalEmbedder:
     model_id = "fake-e5@frozen"
 
     @staticmethod
     def _encode(texts):
-        vectors = []
-        for text in texts:
-            digest = hashlib.sha256(text.encode("utf-8")).digest()
-            vector = np.asarray(
-                [digest[0] + 1, digest[1] + 1, digest[2] + 1], dtype=np.float32
-            )
-            vectors.append(vector / np.linalg.norm(vector))
-        return np.vstack(vectors)
+        return np.vstack([_vector(text) for text in texts]).astype(np.float32)
 
     def embed_documents(self, texts):
         return self._encode(texts), None
@@ -115,78 +80,28 @@ class FakeFrozenRetrievalEmbedder:
         return self._encode(texts), None
 
 
-@pytest.mark.parametrize("chunker_type", ["legacy", "v4"])
-def test_document_ingestion_vector_index_and_retrieval_smoke(chunker_type, tmp_path):
-    if chunker_type == "legacy":
-        chunker = SemanticChunker(
-            chunk_size=300,
-            chunk_overlap=60,
-            min_chunk_size=50,
-            use_semantic_segmentation=False,
-        )
-    else:
-        chunker = FrozenV4Chunker(
-            boundary_embedder=DeterministicBoundaryEmbedder()
-        )
-
-    vector_db = FaissVectorDB(
-        path=str(tmp_path / chunker_type), rebuild_bm25_on_load=False
-    )
-    pipeline = RAGPipeline(
-        llm_model=FakeLLM(),
-        embedding_model=HashEmbedding(),
-        vector_db=vector_db,
-        chunker=chunker,
-        reranker=PassthroughReranker(),
-        settings=_settings(),
-    )
-    # BM25 is outside this smoke's scope; vector indexing/retrieval is exercised.
-    pipeline.hybrid_retriever.build_keyword_index = lambda chunks: None
-
-    chunks = pipeline.ingest_document(
-        "Revenue increased during the year.\n\nCustomer growth remained strong.",
-        doc_id=f"smoke-{chunker_type}",
-        doc_title="Smoke Test",
-        additional_metadata={"parser": "TextParser", "file_name": "smoke.txt"},
-    )
-    results = pipeline.hybrid_retriever.vector_search("revenue growth", top_k=3)
-
-    assert chunks
-    assert vector_db.count() == len(chunks)
-    assert results
-    assert all(isinstance(item, RetrievalResult) for item in results)
-    assert results[0].chunk.doc_id == f"smoke-{chunker_type}"
+def _chunker(chunker_type: str):
+    if chunker_type == "v4":
+        return FrozenV4Chunker(boundary_embedder=DeterministicBoundaryEmbedder())
+    return StructuralChunker()
 
 
-@pytest.mark.parametrize("chunker_type", ["legacy", "v4"])
+@pytest.mark.parametrize("chunker_type", ["structure_first", "v4"])
 def test_benchmark_aligned_profile_ingests_and_retrieves_without_context_or_rerank(
     chunker_type, tmp_path
 ):
-    if chunker_type == "legacy":
-        chunker = SemanticChunker(
-            chunk_size=300,
-            chunk_overlap=60,
-            min_chunk_size=1,
-            use_semantic_segmentation=False,
-        )
-    else:
-        chunker = FrozenV4Chunker(
-            boundary_embedder=DeterministicBoundaryEmbedder()
-        )
     fake_llm = FakeLLM()
-    embedding = BenchmarkAlignedEmbedding(embedder=FakeFrozenRetrievalEmbedder())
-    settings = _settings()
-    settings.retrieval_profile = "benchmark_aligned"
-    settings.default_top_k = 5
-    vector_db = FaissVectorDB(
-        path=str(tmp_path / f"benchmark-{chunker_type}"),
-        rebuild_bm25_on_load=False,
+    settings = SimpleNamespace(
+        retrieval_profile="benchmark_aligned",
+        default_top_k=5,
     )
     pipeline = RAGPipeline(
         llm_model=fake_llm,
-        embedding_model=embedding,
-        vector_db=vector_db,
-        chunker=chunker,
+        embedding_model=BenchmarkAlignedEmbedding(embedder=FakeFrozenRetrievalEmbedder()),
+        vector_db=ChromaVectorDB(
+            path=str(tmp_path / f"benchmark-{chunker_type}"), collection_name="documents"
+        ),
+        chunker=_chunker(chunker_type),
         settings=settings,
     )
 
@@ -200,6 +115,8 @@ def test_benchmark_aligned_profile_ingests_and_retrieves_without_context_or_rera
 
     assert chunks
     assert results
+    assert results[0].chunk.doc_id == f"benchmark-{chunker_type}"
+    # Not one model call reaches the provider on this path.
     assert fake_llm.calls == 0
     assert all(chunk.document_summary == "" for chunk in chunks)
     assert metadata["retrieval_profile"] == "benchmark_aligned"

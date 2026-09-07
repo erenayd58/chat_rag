@@ -38,27 +38,19 @@ class BaseRetriever(ABC):
         pass
     
     @abstractmethod
-    def hybrid_search(
-        self,
-        query: str,
-        top_k: int = 10,
-        vector_weight: float = 0.7,
-        keyword_weight: float = 0.3
-    ) -> List[RetrievalResult]:
+    def hybrid_search(self, query: str, top_k: int = 10) -> List[RetrievalResult]:
         """
-        Perform hybrid search combining vector and keyword
-        
+        Combine the dense and lexical legs into one ranking
+
         Args:
             query: Search query
             top_k: Number of results
-            vector_weight: Weight for vector search
-            keyword_weight: Weight for keyword search
-        
+
         Returns:
             List of retrieval results
         """
         pass
-    
+
     @abstractmethod
     def build_keyword_index(self, chunks: List[DocumentChunk]) -> None:
         """

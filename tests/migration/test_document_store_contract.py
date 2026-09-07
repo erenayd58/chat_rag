@@ -1,13 +1,12 @@
 """What a document store must do, whichever store it is.
 
-The product keeps its chunks in a ``BaseVectorDB``. Today that is Chroma
-(the default) or FAISS; the platform migration replaces it with pgvector.
-Nothing in this repository said what such a replacement has to *do* -- the
-two shipped stores were each exercised only through their own concrete
-class, so the contract lived in whichever call sites happened to be covered.
-A pgvector store written against ``BaseVectorDB`` would satisfy the abstract
-base class and still break four routes, because the base class declares six
-methods and the product calls twelve.
+The product keeps its chunks in a ``BaseVectorDB``. Today that is Chroma;
+the platform migration replaces it with pgvector. Nothing in this repository
+said what such a replacement has to *do* -- the store was exercised only
+through its own concrete class, so the contract lived in whichever call sites
+happened to be covered. A pgvector store written against ``BaseVectorDB``
+would satisfy the abstract base class and still break four routes, because
+the base class declares six methods and the product calls twelve.
 
 This module is that contract, stated once and run against every shipped
 store. It is what a new store has to pass to be finished.
@@ -67,14 +66,7 @@ def _chroma(path):
     return ChromaVectorDB(path=str(path), collection_name="documents")
 
 
-def _faiss(path):
-    pytest.importorskip("faiss")
-    from components.vectordb import FaissVectorDB
-
-    return FaissVectorDB(path=str(path))
-
-
-STORES = {"chroma": _chroma, "faiss": _faiss}
+STORES = {"chroma": _chroma}
 
 
 def _close(store):

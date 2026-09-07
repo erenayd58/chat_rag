@@ -62,7 +62,6 @@ POST /api/query
   ▼
 retrieve            dense (vectors) + BM25 (lexical)    components/retriever/
   │                 fused by RRF on the hybrid_rrf profile
-  ├── rerank        legacy profile only                 components/reranker/
   ├── context       pick sources, label [S1]…, budget    components/context/assembler.py
   └── answer        one completion, cites the labels     components/llm/
         ▼
@@ -91,10 +90,10 @@ open it.
 | `components/ingest/pipelines.py` | the bounded pipeline cache and its leases | changing caching or eviction |
 | `components/query/limits.py` | query admission, the answer budget, `QueryGuard` | changing what a busy server does to a question |
 | `components/observability/` | `telemetry.py` (traces, stages, error categories, the bounded window) and `events.py` (the `RAG.ops` one-line event log) | adding a metric or an operational event |
-| `components/chunker/factory.py` + `registry.py` | which **indexing** chunker a knowledge base may be created with (`legacy`, `v4`, `structure_first`) — deliberately *not* the analysis-method registry | adding an indexing chunker |
+| `components/chunker/factory.py` + `registry.py` | which **indexing** chunker a knowledge base may be created with (`structure_first`, `v4`) — deliberately *not* the analysis-method registry | adding an indexing chunker |
 | `components/viewer/methods.py` | this deployment's view of `amsc.methods`: availability on this machine, display order, the default | changing which analysis methods are offered |
 | `components/viewer/analysis.py` | the packaging worker and each document's `missing`/`pending`/`running`/`ready`/`failed` state | debugging a Viewer package |
-| `components/retriever/` | the retrieval profiles (`legacy`, `benchmark_aligned`, `bm25_only`, `hybrid_rrf`) | changing how candidates are found or fused |
+| `components/retriever/` | the retrieval profiles (`bm25_only`, `hybrid_rrf`, `benchmark_aligned`) | changing how candidates are found or fused |
 | `components/llm/` | the answer transports: OpenAI-compatible, Ollama, Azure, the unavailable carrier and the fallback pair | adding a provider — see [Adding a provider](#adding-a-provider) |
 | `components/parsers/` | file → text/units, and the parser factory that picks one | adding a file type |
 | `config/` | five owners, one each: `paths` (where state goes), `runtime` (server), `ingest`, `query`, `settings` (models, endpoints, retrieval) | any setting — read [configuration.md](configuration.md) first |
@@ -102,7 +101,8 @@ open it.
 | `utils/document_tracker.py` | the ingest ledger, written atomically under a per-file lock | changing what a registered document records |
 | `cli/` | `python -m cli` — eval, search, qa, inspect, report, gold | offline evaluation of a knowledge base |
 | `tools/` | `import_smoke.py`, `serve_smoke.py`, `verify_reproducibility.py` | proving a build works — see [testing.md](testing.md) |
-| `tests/` | `unit/` (fast, no network), `integration/` (the real Flask app), `conftest.py` (moves the process out of the checkout, blanks keys) | always |
+| `tests/` | `unit/` (fast, no network), `integration/` (the real Flask app), `migration/` (the contracts a platform change must keep), `conftest.py` (moves the process out of the checkout, blanks keys) | always |
+| `evaluation/experiment-log.md` | the record of the retrieval experiments behind the shipped context budget and top-k | asking why a number is what it is |
 | `templates/`, `static/` | the console UI | changing a screen |
 | `start-demo.ps1` / `stop-demo.ps1` | the demo launcher: builds the Viewer shell if missing, starts both servers, waits for health | running the demo |
 

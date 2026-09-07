@@ -73,10 +73,10 @@ def test_a_data_root_refuses_a_store_path_left_in_a_dotenv(tmp_path, monkeypatch
     paths.load_env_file(env_file(tmp_path, DEVELOPER_ENV))
 
     assert paths.VECTOR_DB_PATH_ENV not in os.environ
-    assert paths.fallback_vector_store("chroma") == os.path.join(
+    assert paths.fallback_vector_store() == os.path.join(
         str(tmp_path / "isolated"), "chroma"
     )
-    assert "./chroma_db" not in paths.fallback_vector_store("chroma")
+    assert "./chroma_db" not in paths.fallback_vector_store()
 
 
 def test_a_data_root_refuses_a_parser_cache_left_in_a_dotenv(tmp_path, monkeypatch, clean_env):
@@ -119,7 +119,7 @@ def test_without_a_data_root_a_dotenv_still_supplies_the_store(tmp_path, clean_e
     paths.load_env_file(env_file(tmp_path, DEVELOPER_ENV))
 
     assert os.environ[paths.VECTOR_DB_PATH_ENV] == "./chroma_db"
-    assert paths.fallback_vector_store("chroma") == "./chroma_db"
+    assert paths.fallback_vector_store() == "./chroma_db"
     assert paths.canonical_cache() == ".cache/canonical-units"
 
 
@@ -130,7 +130,7 @@ def test_an_explicit_environment_override_still_wins(tmp_path, monkeypatch, clea
 
     paths.load_env_file(env_file(tmp_path, DEVELOPER_ENV))
 
-    assert paths.fallback_vector_store("chroma") == str(tmp_path / "elsewhere")
+    assert paths.fallback_vector_store() == str(tmp_path / "elsewhere")
 
 
 def test_an_override_outside_the_data_root_is_called_out(tmp_path, monkeypatch, clean_env):
@@ -167,7 +167,7 @@ def test_a_dotenv_may_still_declare_the_data_root_itself(tmp_path, clean_env):
     )
 
     assert paths.data_root() == root
-    assert paths.fallback_vector_store("chroma") == os.path.join(root, "chroma")
+    assert paths.fallback_vector_store() == os.path.join(root, "chroma")
 
 
 def test_a_missing_dotenv_is_not_an_error(tmp_path, clean_env):
@@ -180,16 +180,16 @@ def test_a_missing_dotenv_is_not_an_error(tmp_path, clean_env):
 def test_the_store_override_never_applied_to_per_kb_stores(tmp_path, monkeypatch, clean_env):
     """VECTOR_DB_PATH names the fallback store only, and still does.
 
-    A knowledge base's own store comes from ``vector_store(provider, kb_id)``,
+    A knowledge base's own store comes from ``vector_store(kb_id)``,
     which both the pipeline builder and the deletion guard resolve. Moving the
     override into ``paths`` must not have quietly widened it to those, or
     deleting a knowledge base would orphan its vectors.
     """
     monkeypatch.setenv(paths.VECTOR_DB_PATH_ENV, str(tmp_path / "elsewhere"))
 
-    assert paths.vector_store("chroma", "kb-1").replace(os.sep, "/") == "./chroma_db/kb-1"
-    assert paths.vector_store_root("chroma") == "./chroma_db"
-    assert paths.fallback_vector_store("chroma") == str(tmp_path / "elsewhere")
+    assert paths.vector_store("kb-1").replace(os.sep, "/") == "./chroma_db/kb-1"
+    assert paths.vector_store_root() == "./chroma_db"
+    assert paths.fallback_vector_store() == str(tmp_path / "elsewhere")
 
 
 # ------------------------------------------- the parser cache reads it live

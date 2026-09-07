@@ -1,19 +1,17 @@
 """The indexing chunkers a knowledge base may be created with, in one table.
 
-This is the *other* registry, and it is deliberately not the same one as the
-chunking methods a document is analysed with (``amsc.methods``, offered
-through ``components/viewer/methods.py``). An analysis method is run over a
-document for the Viewer to compare; an indexing chunker decides what a
-knowledge base's retrieval index actually holds. The product's one indexing
-chunker is ``structure_first``; ``legacy`` and ``v4`` are the earlier
-implementations kept for knowledge bases created with them. A test in
-``tests/unit/test_method_wire_contract.py`` pins that no analysis-method key
-or engine name is ever accepted here, so a Viewer selection can never
-quietly become a retrieval change.
+Deliberately not the same registry as the chunking methods a document is
+*analysed* with (``amsc.methods``, offered through
+``components/viewer/methods.py``). An analysis method is run over a document
+for the Viewer to compare; an indexing chunker decides what a knowledge
+base's retrieval index actually holds. ``structure_first`` is the product's
+chunker; ``v4`` is the frozen AMSC V4/A4 package, kept so a knowledge base
+can be indexed with exactly what the library's benchmark measured.
 
-Three places used to spell these names: the factory that builds a chunker,
-the knowledge-base manager that validates a record, and the options endpoint
-the creation form reads. They agreed by care. Now they read this table.
+``tests/unit/test_method_wire_contract.py`` pins that no analysis-method key
+or engine name is ever accepted here, so a Viewer selection can never quietly
+become a retrieval change. The factory and the knowledge-base manager both
+read this table rather than spelling the names again.
 """
 
 from __future__ import annotations
@@ -36,12 +34,6 @@ class IndexingChunker:
 
 INDEXING_CHUNKERS: tuple[IndexingChunker, ...] = (
     IndexingChunker(
-        id="legacy",
-        aliases=frozenset({"legacy", "semanticchunker", "semantic_chunker"}),
-        description="Existing SemanticChunker behavior",
-        accepts_params=True,
-    ),
-    IndexingChunker(
         id="v4",
         aliases=frozenset({"v4", "frozenv4chunker", "frozen_v4_chunker"}),
         description="Frozen AMSC V4/A4 at Phase 5",
@@ -61,7 +53,7 @@ INDEXING_CHUNKERS: tuple[IndexingChunker, ...] = (
 )
 
 #: What an unset or empty type means.
-DEFAULT_ID = "legacy"
+DEFAULT_ID = "structure_first"
 
 
 def ids() -> tuple[str, ...]:
@@ -78,7 +70,7 @@ def resolve(raw: Any) -> Optional[IndexingChunker]:
 
 
 def expected() -> str:
-    """``'legacy', 'v4' or 'structure_first'`` -- for an error message."""
+    """``'v4' or 'structure_first'`` -- for an error message."""
     names = [f"'{name}'" for name in ids()]
     return ", ".join(names[:-1]) + " or " + names[-1]
 

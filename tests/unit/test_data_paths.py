@@ -43,8 +43,7 @@ def test_without_a_data_directory_every_path_is_the_one_it_always_was(no_data_di
     assert paths.ingested_documents() == ".ingested_documents.json"
     assert paths.gold_set() == "./.gold_set.json"
     assert paths.logs() == "logs"
-    assert paths.vector_store_root("chroma") == "./chroma_db"
-    assert paths.vector_store_root("faiss") == "./faiss_db"
+    assert paths.vector_store_root() == "./chroma_db"
     assert paths.canonical_cache() == ".cache/canonical-units"
 
 
@@ -54,7 +53,7 @@ def test_the_managers_default_to_those_same_paths(no_data_dir):
 
 
 def test_a_per_knowledge_base_store_keeps_its_historical_shape(no_data_dir):
-    assert paths.vector_store("chroma", "kb-1").replace("\\", "/") == (
+    assert paths.vector_store("kb-1").replace("\\", "/") == (
         "./chroma_db/kb-1"
     )
 
@@ -70,9 +69,8 @@ def test_a_data_directory_gathers_everything_under_it(with_data_dir):
     assert normal(paths.ingested_documents()) == "/data/state/ingested_documents.json"
     assert normal(paths.gold_set()) == "/data/state/gold_set.json"
     assert normal(paths.logs()) == "/data/logs"
-    assert normal(paths.vector_store_root("chroma")) == "/data/chroma"
-    assert normal(paths.vector_store_root("faiss")) == "/data/faiss"
-    assert normal(paths.vector_store("chroma", "kb-1")) == "/data/chroma/kb-1"
+    assert normal(paths.vector_store_root()) == "/data/chroma"
+    assert normal(paths.vector_store("kb-1")) == "/data/chroma/kb-1"
     assert normal(paths.canonical_cache()) == "/data/cache/canonical-units"
 
 

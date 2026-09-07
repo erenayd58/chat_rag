@@ -26,6 +26,13 @@ SECRET_ATTRIBUTES = frozenset({"azure_api_key"})
 #: What is written in place of one.
 REDACTED = "***"
 
+#: The retrieval profiles this console ships. ``bm25_only`` needs no provider
+#: at all and is therefore the default; ``hybrid_rrf`` is the final chain;
+#: ``benchmark_aligned`` is the frozen Phase 4/5 configuration, kept so a
+#: console result can be compared with the library's own benchmark.
+RETRIEVAL_PROFILES = frozenset({"bm25_only", "hybrid_rrf", "benchmark_aligned"})
+DEFAULT_RETRIEVAL_PROFILE = "bm25_only"
+
 
 class Settings:
     """Central configuration for the RAG system"""
@@ -174,50 +181,38 @@ class Settings:
         # Embedding Settings
         self.embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
         
-        # Vector DB Settings
-        self.vector_db_provider = os.getenv("VECTOR_DB_PROVIDER", "chroma")  # 'chroma' or 'faiss'
+        # The one vector store this console ships. A field rather than a
+        # literal because every knowledge base record carries it and the
+        # provenance snapshot reports what a corpus was written with.
+        self.vector_db_provider = "chroma"
         # The fallback store, used when no knowledge base is selected.
         # VECTOR_DB_PATH names it outright; otherwise it comes from the same
         # resolver the per-KB stores use, so a deployment that gathers state
         # under one directory gathers this too.
-        self.vector_db_path = paths.fallback_vector_store(self.vector_db_provider)
+        self.vector_db_path = paths.fallback_vector_store()
         self.vector_db_collection_name = os.getenv("VECTOR_DB_COLLECTION", "documents")
         # HNSW (Chroma) index params
         self.hnsw_m = int(os.getenv("HNSW_M", "64"))
         self.hnsw_ef_construction = int(os.getenv("HNSW_EF_CONSTRUCTION", "200"))
         self.hnsw_ef_search = int(os.getenv("HNSW_EF_SEARCH", "100"))
         
-        # Chunking Settings (word-level limits; sentence boundaries preserved)
-        self.chunker_type = os.getenv("CHUNKER_TYPE", "legacy")
-        self.chunk_size = int(os.getenv("CHUNK_SIZE", "300"))
-        self.chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "60"))
-        self.min_chunk_size = int(os.getenv("MIN_CHUNK_SIZE", "50"))
-        
-        # Retrieval Settings
-        self.retrieval_profile = os.getenv("RETRIEVAL_PROFILE", "legacy").strip().lower()
-        if self.retrieval_profile not in {"legacy", "benchmark_aligned", "bm25_only", "hybrid_rrf"}:
+        # Which indexing chunker a knowledge base is created with, when its
+        # own record does not say (components/chunker/registry.py).
+        self.chunker_type = os.getenv("CHUNKER_TYPE", "structure_first")
+
+        # Retrieval. bm25_only is the default because it is the one profile
+        # that needs no provider at all; hybrid_rrf is the final chain and
+        # benchmark_aligned is the frozen Phase 4/5 configuration.
+        self.retrieval_profile = os.getenv(
+            "RETRIEVAL_PROFILE", DEFAULT_RETRIEVAL_PROFILE
+        ).strip().lower()
+        if self.retrieval_profile not in RETRIEVAL_PROFILES:
             raise ValueError(
-                "RETRIEVAL_PROFILE must be 'legacy', 'benchmark_aligned', 'bm25_only' or 'hybrid_rrf'"
+                "RETRIEVAL_PROFILE must be one of "
+                + ", ".join(sorted(RETRIEVAL_PROFILES))
             )
         self.default_top_k = int(os.getenv("DEFAULT_TOP_K", "5"))
-        self.vector_weight = float(os.getenv("VECTOR_WEIGHT", "0.7"))
-        self.bm25_weight = float(os.getenv("BM25_WEIGHT", "0.3"))
-        # Guaranteed inclusion counts for hybrid results
-        self.include_vector_results_n = int(os.getenv("INCLUDE_VECTOR_RESULTS_N", "5"))
-        self.include_bm25_results_n = int(os.getenv("INCLUDE_BM25_RESULTS_N", "5"))
-        
-        # Conversation Settings
-        self.enable_conversation = os.getenv("ENABLE_CONVERSATION", "true").lower() == "true"
-        self.max_conversation_history = int(os.getenv("MAX_CONVERSATION_HISTORY", "10"))
-        
-        # Reranker Settings
-        self.reranker_type = os.getenv("RERANKER_TYPE", "llm")  # 'llm' or 'cross_encoder'
-        self.cross_encoder_model = os.getenv("CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-        
-        # Document Input Settings
-        self.documents_input_path = os.getenv("DOCUMENTS_INPUT_PATH", "./documents")
-        self.documents_recursive = os.getenv("DOCUMENTS_RECURSIVE", "true").lower() == "true"
-        
+
         # Logging is not read here at all: utils/logger.py owns LOG_LEVEL,
         # LOG_FILE_LEVEL and the rotation limits, and is the one group that
         # falls back rather than refusing to start (docs/configuration.md).

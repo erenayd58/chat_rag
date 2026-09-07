@@ -9,7 +9,6 @@ from .pdf_parser import PDFParser
 from .structured_pdf_parser import StructuredPDFParser
 from .docx_parser import DOCXParser
 from .markdown_parser import MarkdownParser
-from .image_parser import ImageParser
 from core.exceptions import RAGException
 
 
@@ -22,38 +21,21 @@ class ParserFactory:
         self._register_default_parsers()
     
     def _register_default_parsers(self):
-        """Register default parsers"""
-        # Try to register each parser (may fail if dependencies not installed)
-        # StructuredPDFParser is registered before PDFParser so that PDFs are
-        # parsed into canonical units (headings/lists/tables/pages) whenever the
-        # pinned pymupdf4llm layout backend is installed.  If it is missing, its
-        # constructor raises RAGException and registration falls through to the
-        # existing plain-text PDFParser, preserving current behaviour exactly.
-        parsers_to_register = [
-            (TextParser, {}),
-            (MarkdownParser, {}),
-            (StructuredPDFParser, {}),
-            (PDFParser, {'use_unstructured': False}),  # Try PyMuPDF first
-            (DOCXParser, {}),
-            (ImageParser, {}),
-        ]
-        
-        for parser_class, kwargs in parsers_to_register:
+        """Register the shipped parsers, most specific first.
+
+        ``StructuredPDFParser`` is registered before ``PDFParser`` so a PDF
+        becomes canonical units (headings, lists, tables, pages) whenever the
+        pinned pymupdf4llm layout backend is installed. Without it that
+        constructor raises and registration falls through to the flat-text
+        parser, which is a real loss of structure but not a failure to ingest.
+        """
+        for parser_class in (TextParser, MarkdownParser, StructuredPDFParser,
+                             PDFParser, DOCXParser):
             try:
-                parser = parser_class(**kwargs)
-                self._parsers.append(parser)
+                self._parsers.append(parser_class())
             except RAGException as e:
-                # If PyMuPDF fails, try unstructured for PDF
-                if parser_class == PDFParser and not kwargs.get('use_unstructured'):
-                    try:
-                        parser = PDFParser(use_unstructured=True)
-                        self._parsers.append(parser)
-                        print(f"Info: Using unstructured for PDF parsing (PyMuPDF not available)")
-                    except RAGException:
-                        print(f"Warning: Could not register {parser_class.__name__}: {e}")
-                else:
-                    print(f"Warning: Could not register {parser_class.__name__}: {e}")
-    
+                print(f"Warning: Could not register {parser_class.__name__}: {e}")
+
     def register_parser(self, parser: BaseParser):
         """
         Register a custom parser
@@ -171,8 +153,7 @@ class ParserFactory:
         
         # Check each parser with common extensions
         test_extensions = [
-            '.txt', '.pdf', '.docx', '.md', '.png', '.jpg', '.jpeg',
-            '.gif', '.bmp', '.tiff', '.html', '.xml', '.json', '.csv'
+            '.txt', '.pdf', '.docx', '.md', '.html', '.xml', '.json', '.csv'
         ]
         
         for ext in test_extensions:

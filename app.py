@@ -171,12 +171,9 @@ def build_settings_for_kb(kb_cfg: dict, kb_id: str = None) -> Settings:
     if kb_cfg.get('vector_db_path'):
         s.vector_db_path = kb_cfg['vector_db_path']
     else:
-        # Use provider-specific default if not provided
-        # Make path unique per KB to avoid conflicts
-        provider = kb_cfg.get('vector_db_provider', 'chroma')
         # Resolved in one place, shared with KnowledgeBaseManager.storage_path:
         # if the two ever disagree, deleting a knowledge base orphans its store.
-        s.vector_db_path = paths.vector_store(provider, kb_id)
+        s.vector_db_path = paths.vector_store(kb_id)
     
     # Store chunker config from KB
     if kb_cfg.get('chunker'):
@@ -747,9 +744,6 @@ def query():
                 result = user_pipeline.query(
                     question=user_question,
                     top_k=data.get('top_k', 5),
-                    use_query_expansion=data.get('use_query_expansion', True),
-                    use_reranking=data.get('use_reranking', True),
-                    retrieval_method=data.get('retrieval_method', kb_manager.get(kb_id).get('retrieval_method') if kb_id and kb_manager.get(kb_id) else 'hybrid'),
                     temperature=data.get('temperature', 0.3),
                     max_tokens=data.get('max_tokens', 500)
                 )
@@ -877,27 +871,6 @@ def bounded_retrieval(mode: str):
         return wrapper
 
     return decorate
-
-
-@app.route('/api/clear', methods=['POST'])
-def clear_conversation():
-    """Clear conversation history"""
-    try:
-        session_id = session.get('session_id', str(uuid.uuid4()))
-        kb_id = request.json.get('kb_id') if request.is_json else None
-        user_pipeline = get_pipeline(session_id, kb_id)
-        user_pipeline.clear_conversation()
-        
-        return jsonify({
-            'success': True,
-            'message': 'Conversation history cleared'
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
 
 
 @app.route('/api/stats', methods=['GET'])
@@ -1100,30 +1073,15 @@ def _viewer_model_stats() -> dict:
 
 
 def _local_model_stats() -> dict:
-    """The shared local models at query time -- sentence-transformers
-    embedders and cross-encoder rerankers -- by name, with how often each
-    was actually loaded. Only modules already imported are asked, so this
-    costs nothing on a deployment that uses neither."""
+    """The shared sentence-transformers models resident at query time, by
+    name, with how often each was actually loaded. Only a module already
+    imported is asked, so this costs nothing on a deployment that loads
+    none."""
     stats = {}
     embedding = sys.modules.get('components.embedding.sentence_transformer_embedding')
     if embedding is not None:
         stats['sentence_transformers'] = embedding.model_stats()
-    reranker = sys.modules.get('components.reranker.cross_encoder_reranker')
-    if reranker is not None:
-        stats['cross_encoders'] = reranker.model_stats()
     return stats
-
-
-# Legacy route redirects: the old documents screen became the KB detail
-# pages, and the old chunk screen lives in the Lab now.
-@app.route('/documents')
-def documents_page():
-    return redirect('/')
-
-
-@app.route('/chunks')
-def chunks_page():
-    return redirect('/lab')
 
 
 @app.route('/api/chunks', methods=['GET'])
@@ -1473,59 +1431,6 @@ def delete_chunk(chunk_id):
         }), 500
 
 
-@app.route('/api/chunks', methods=['POST'])
-def add_chunk():
-    """Add a new chunk manually"""
-    try:
-        data = request.json
-        content = data.get('content', '').strip()
-        metadata = data.get('metadata', {})
-
-        if not content:
-            return jsonify({
-                'success': False,
-                'error': 'Content is required'
-            }), 400
-
-        # Generate chunk ID
-        import hashlib
-        chunk_id = f"manual_{hashlib.md5(content.encode()).hexdigest()[:16]}"
-
-        # Generate embedding
-        embedding = pipeline.embedding_model.encode(content).tolist()
-
-        # Ensure required metadata fields
-        if 'doc_id' not in metadata:
-            metadata['doc_id'] = 'manual'
-        if 'doc_title' not in metadata:
-            metadata['doc_title'] = 'Manually Added'
-        if 'chunk_index' not in metadata:
-            metadata['chunk_index'] = 0
-        if 'total_chunks' not in metadata:
-            metadata['total_chunks'] = 1
-
-        # Add chunk to vector DB
-        pipeline.vector_db.add_single_chunk(
-            chunk_id=chunk_id,
-            content=content,
-            embedding=embedding,
-            metadata=metadata
-        )
-
-        return jsonify({
-            'success': True,
-            'message': 'Chunk added successfully',
-            'chunk_id': chunk_id
-        })
-
-    except Exception as e:
-        logger.error(f"Failed to add chunk: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
 @app.route('/api/documents', methods=['GET'])
 def get_documents():
     """Get list of all ingested documents, optionally filtered by knowledge base"""
@@ -1724,45 +1629,6 @@ def delete_goldset(entry_id):
         return jsonify({'success': True})
     except Exception as e:
         logger.error(f"Failed to delete gold-set entry {entry_id}: {e}", exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/kb/options', methods=['GET'])
-def get_kb_options():
-    """Get available options for KB creation (embeddings, vector DBs, chunkers)"""
-    try:
-        # Common SentenceTransformer models
-        embedding_models = [
-            {'name': 'all-MiniLM-L6-v2', 'dimension': 384, 'description': 'Fast, English'},
-            {'name': 'all-mpnet-base-v2', 'dimension': 768, 'description': 'High quality, English'},
-            {'name': 'all-MiniLM-L12-v2', 'dimension': 384, 'description': 'Better quality, English'},
-            {'name': 'multi-qa-MiniLM-L6-cos-v1', 'dimension': 384, 'description': 'Optimized for Q&A'},
-            {'name': 'paraphrase-multilingual-MiniLM-L12-v2', 'dimension': 384, 'description': 'Multilingual'},
-        ]
-
-        vector_db_providers = [
-            {'name': 'chroma', 'description': 'ChromaDB - Production ready'},
-            {'name': 'faiss', 'description': 'FAISS - Fast similarity search'},
-        ]
-
-        from components.chunker import registry as chunker_registry
-
-        chunkers = chunker_registry.describe()
-
-        retrieval_methods = [
-            {'name': 'hybrid', 'description': 'Combines vector and BM25 search'},
-            {'name': 'vector', 'description': 'Vector similarity search only'},
-            {'name': 'bm25', 'description': 'BM25 keyword search only'},
-        ]
-
-        return jsonify({
-            'success': True,
-            'embedding_models': embedding_models,
-            'vector_db_providers': vector_db_providers,
-            'chunkers': chunkers,
-            'retrieval_methods': retrieval_methods
-        })
-    except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -2525,96 +2391,6 @@ def experiment_search_chunks():
         logger.error(f"Experiment search failed: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/api/experiment/rank_chunks', methods=['POST'])
-@bounded_retrieval('lab.experiment_rank')
-def experiment_rank_chunks():
-    """Rank selected chunks using KB-specific pipeline"""
-    try:
-        data = request.json
-        query = data.get('query', '').strip()
-        method = data.get('method', 'hybrid')
-        top_k = int(data.get('top_k', 20))
-        selected_ids = set(data.get('chunk_ids', []))
-        kb_id = data.get('kb_id')
-        
-        if not query:
-            return jsonify({'success': False, 'error': 'Query is required'}), 400
-        
-        # Use KB-specific pipeline
-        user_pipeline = get_pipeline(session.get('session_id', 'global'), kb_id)
-        
-        result_map = {}
-        ranked = []
-        if method == 'vector':
-            query_embedding = user_pipeline.embedding_model.encode(query).tolist()
-            results = user_pipeline.vector_db.query(query_embedding=query_embedding, top_k=top_k)
-            for i, result in enumerate(results):
-                cand = {
-                    'chunk_id': result['chunk_id'],
-                    'score': 1 - (result['distance'] / 2),
-                    'retrieval_method': 'vector',
-                    'search_term': query,
-                    'rank': i
-                }
-                result_map[result['chunk_id']] = cand
-                ranked.append(cand)
-        elif method == 'bm25':
-            results = user_pipeline.hybrid_retriever.keyword_search(query, top_k)
-            for i, r in enumerate(results):
-                cand = {
-                    'chunk_id': r.chunk.chunk_id,
-                    'score': r.score,
-                    'retrieval_method': r.retrieval_method,
-                    'search_term': query,
-                    'rank': i
-                }
-                result_map[r.chunk.chunk_id] = cand
-                ranked.append(cand)
-        elif method == 'hybrid':
-            results = user_pipeline.hybrid_retriever.hybrid_search(query, top_k)
-            for i, r in enumerate(results):
-                cand = {
-                    'chunk_id': r.chunk.chunk_id,
-                    'score': r.score,
-                    'retrieval_method': r.retrieval_method,
-                    'search_term': query,
-                    'rank': i
-                }
-                result_map[r.chunk.chunk_id] = cand
-                ranked.append(cand)
-        else:
-            return jsonify({'success': False, 'error': 'Unknown retrieval method'}), 400
-        
-        output = []
-        for cid in selected_ids:
-            info = result_map.get(cid)
-            if info:
-                output.append({
-                    'chunk_id': cid,
-                    'found': True,
-                    'rank': info['rank'],
-                    'score': info['score'],
-                    'retrieval_method': info['retrieval_method'],
-                    'search_term': info['search_term']
-                })
-            else:
-                output.append({
-                    'chunk_id': cid,
-                    'found': False,
-                    'rank': None,
-                    'score': None,
-                    'retrieval_method': None,
-                    'search_term': query
-                })
-        
-        return jsonify({'success': True, 'results': output, 'query': query, 'method': method, 'ranking': ranked})
-    except RESOURCE_CONTROL_EXCEPTIONS:
-        raise
-    except Exception as e:
-        logger.error(f"Experiment rank failed: {e}", exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
 def enable_console_utf8() -> None:
     """Let this process write any character to stdout without dying.
 
@@ -2700,7 +2476,7 @@ def startup_banner() -> None:
 
     if stats['total_documents'] == 0:
         print("\n⚠️  Warning: No documents ingested yet!")
-        print("   Run 'python main_new.py' first to ingest documents")
+        print("   Upload one at /, or POST /api/documents/upload")
 
 
 def resume_background_work() -> None:

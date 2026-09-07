@@ -7,14 +7,14 @@ import pytest
 from components.knowledgebase.manager import KnowledgeBaseManager
 
 
-def test_api_create_contract_persists_legacy_and_v4_across_reload(tmp_path):
+def test_api_create_contract_persists_every_chunker_across_reload(tmp_path):
     store = tmp_path / "knowledge-bases.json"
     manager = KnowledgeBaseManager(str(store))
 
-    legacy = manager.create_from_payload(
+    structure_first = manager.create_from_payload(
         {
-            "name": "legacy-kb",
-            "chunker": {"type": "legacy", "params": {}},
+            "name": "structure-first-kb",
+            "chunker": {"type": "structure_first", "params": {}},
         }
     )
     v4 = manager.create_from_payload(
@@ -25,8 +25,8 @@ def test_api_create_contract_persists_legacy_and_v4_across_reload(tmp_path):
     )
 
     persisted = json.loads(store.read_text(encoding="utf-8"))
-    assert persisted[legacy["kb_id"]]["chunker"] == {
-        "type": "legacy",
+    assert persisted[structure_first["kb_id"]]["chunker"] == {
+        "type": "structure_first",
         "params": {},
     }
     assert persisted[v4["kb_id"]]["chunker"] == {
@@ -35,19 +35,19 @@ def test_api_create_contract_persists_legacy_and_v4_across_reload(tmp_path):
     }
 
     reloaded = KnowledgeBaseManager(str(store))
-    assert reloaded.get(legacy["kb_id"])["chunker"]["type"] == "legacy"
+    assert reloaded.get(structure_first["kb_id"])["chunker"]["type"] == "structure_first"
     assert reloaded.get(v4["kb_id"])["chunker"] == {
         "type": "v4",
         "params": {},
     }
 
 
-def test_missing_chunker_defaults_to_canonical_legacy(tmp_path):
+def test_missing_chunker_defaults_to_the_product_chunker(tmp_path):
     manager = KnowledgeBaseManager(str(tmp_path / "knowledge-bases.json"))
 
     created = manager.create_from_payload({"name": "default-kb"})
 
-    assert created["chunker"] == {"type": "legacy", "params": {}}
+    assert created["chunker"] == {"type": "structure_first", "params": {}}
 
 
 def test_v4_runtime_params_are_rejected_at_persistence_boundary(tmp_path):

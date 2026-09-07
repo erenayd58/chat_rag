@@ -285,12 +285,12 @@ def _analysis_ids() -> list[str]:
 
 @pytest.mark.parametrize("name", _analysis_ids())
 def test_an_analysis_method_key_or_engine_is_not_an_indexing_chunker(name):
-    """The indexing registry (legacy / v4 / structure_first) must refuse every
+    """The indexing registry (v4 / structure_first) must refuse every
     analysis-method id and every engine name, so a future shared registry
     cannot quietly turn a Viewer selection into a retrieval change."""
     if name == "structure_first":
         pytest.skip("structure_first is the one legitimate indexing name the engine label reuses")
-    settings = SimpleNamespace(chunker_type=name, chunk_size=300, chunk_overlap=60, min_chunk_size=50)
+    settings = SimpleNamespace(chunker_type=name)
     with pytest.raises(ConfigurationException):
         create_chunker(settings)
     with pytest.raises(ValueError):
@@ -298,8 +298,6 @@ def test_an_analysis_method_key_or_engine_is_not_an_indexing_chunker(name):
 
 
 def test_the_indexing_registry_still_resolves_every_alias_it_documents():
-    for alias in ("legacy", "semanticchunker", "semantic_chunker"):
-        assert normalize_chunker_config({"type": alias})["type"] == "legacy"
     for alias in ("v4", "frozenv4chunker", "frozen_v4_chunker"):
         assert normalize_chunker_config({"type": alias})["type"] == "v4"
     for alias in ("structure_first", "structurefirst", "structural", "structuralchunker", "structural_chunker"):

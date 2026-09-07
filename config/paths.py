@@ -149,13 +149,12 @@ def logs() -> str:
     return _resolve("logs", "logs")
 
 
-def vector_store_root(provider: str = "chroma") -> str:
-    """The directory a provider's per-knowledge-base stores sit under."""
-    name = "faiss_db" if provider == "faiss" else "chroma_db"
-    return _resolve("faiss" if provider == "faiss" else "chroma", f"./{name}")
+def vector_store_root() -> str:
+    """The directory the per-knowledge-base stores sit under."""
+    return _resolve("chroma", "./chroma_db")
 
 
-def fallback_vector_store(provider: str = "chroma") -> str:
+def fallback_vector_store() -> str:
     """The store used when no knowledge base is selected.
 
     ``VECTOR_DB_PATH`` names it outright when set -- the one path override
@@ -166,17 +165,17 @@ def fallback_vector_store(provider: str = "chroma") -> str:
     :func:`vector_store`, which this override has never applied to.
     """
     override = (os.getenv(VECTOR_DB_PATH_ENV) or "").strip()
-    return override or vector_store_root(provider)
+    return override or vector_store_root()
 
 
-def vector_store(provider: str = "chroma", kb_id: Optional[str] = None) -> str:
+def vector_store(kb_id: Optional[str] = None) -> str:
     """Where one knowledge base keeps its vectors, by default.
 
     A knowledge base with an explicit ``vector_db_path`` overrides this; the
     default is what both the pipeline builder and the deletion guard resolve,
     and they must agree or a store is orphaned.
     """
-    root = vector_store_root(provider)
+    root = vector_store_root()
     return os.path.join(root, kb_id) if kb_id else root
 
 

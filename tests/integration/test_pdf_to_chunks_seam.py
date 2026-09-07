@@ -140,7 +140,7 @@ def test_plain_pdf_parser_path_stays_untyped():
     production. It is intentionally still available for backends that cannot
     recover structure; it must simply no longer be the default for PDFs.
     """
-    text = PDFParser(use_unstructured=False).parse(str(FIXTURE_PDF))
+    text = PDFParser().parse(str(FIXTURE_PDF))
     units = CanonicalUnitAdapter().normalize(text=text, document_id="seam-doc")
 
     assert units

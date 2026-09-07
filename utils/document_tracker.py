@@ -5,7 +5,7 @@ import json
 import os
 import hashlib
 import threading
-from typing import Dict, Set, Optional, List
+from typing import Dict, Optional, List
 from datetime import datetime
 
 from config import paths
@@ -264,28 +264,6 @@ class DocumentTracker:
         # does not know is not ingested, whatever the store holds.
         return self._mutate(add)
     
-    def get_ingested_files(self) -> Set[str]:
-        """
-        Get set of all ingested file paths
-        
-        Returns:
-            Set of absolute file paths
-        """
-        return set(self.ingested_docs.keys())
-    
-    def get_file_info(self, file_path: str) -> Optional[Dict]:
-        """
-        Get information about an ingested file
-        
-        Args:
-            file_path: Path to the file
-        
-        Returns:
-            Dictionary with file information or None
-        """
-        abs_path = os.path.abspath(file_path)
-        return self.ingested_docs.get(abs_path)
-    
     def remove_document(self, file_path: str):
         """
         Remove a document from tracking
@@ -334,13 +312,6 @@ class DocumentTracker:
             'latest_ingestion': max(doc['ingested_at'] for doc in filtered_docs.values())
         }
     
-    def clear_all(self):
-        """Clear all tracking data"""
-        def empty(records: Dict[str, Dict]) -> None:
-            records.clear()
-
-        self._mutate(empty)
-
     def get_all_documents(self, kb_id: Optional[str] = None) -> List[Dict]:
         """
         Get list of all ingested documents with their metadata

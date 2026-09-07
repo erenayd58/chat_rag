@@ -192,7 +192,7 @@ lease — is released on every exit.
 
 **Local models are loaded once per name.** A pipeline is built per browser
 session and knowledge base; each used to load its own copy of the
-sentence-transformers embedder (and, on the legacy profile, the
+sentence-transformers embedder (and the
 cross-encoder), so `PIPELINE_CACHE_MAX` was also a multiplier on model
 memory. Both are now shared process-wide by model name; `caches.local_models`
 on the metrics endpoint shows what is resident and how often it was loaded.
@@ -212,20 +212,18 @@ answer-model call, so they are given no answer budget. Their answers are
 unchanged apart from the two refusals every query path shares: **503** when
 admission is full, **504** past the deadline.
 
-**A limit is never a fallback.** The enhancement paths degrade on purpose —
-a clarification the model could not produce falls back to the original
-question, a strategy to hybrid, a document summary to the title — and that
-stays. It must not extend to a deadline, a refused budget or a
-cancellation: swallowed into a fallback, those become a query that runs on
-past its deadline making calls that are refused in turn and then answers
-from heuristics as though nothing happened. `RESOURCE_CONTROL_EXCEPTIONS`
-(`core/exceptions.py`) names the four, and every fallback handler in the
-query enhancer, the contextual enhancer, the LLM reranker and the pipeline
+**A limit is never a fallback.** The answer path degrades on purpose — a
+gateway that is down becomes an answer saying so rather than a broken
+request — and that stays. It must not extend to a deadline, a refused budget
+or a cancellation: swallowed into a fallback, those become a query that runs
+on past its deadline making calls that are refused in turn and then answers
+as though nothing happened. `RESOURCE_CONTROL_EXCEPTIONS`
+(`core/exceptions.py`) names the four, and every handler that degrades
 re-raises them first.
 
 **Every query is measured with the ingest instrument.** A query is a trace
-of kind `query` with stages `retrieve`, `rerank` (legacy profile), `context`
-and `answer`, plus provider seconds and slot wait recorded by the budget
+of kind `query` with stages `retrieve`, `context` and `answer`, plus
+provider seconds and slot wait recorded by the budget
 wrapper. `GET /api/ops/metrics` carries `metrics.queries` — active and peak
 active, p50/p95/max per stage, provider wait, outcomes (`succeeded`,
 `failed`, `timed_out`, `rejected`) and the last few traces — and `query`
@@ -235,12 +233,10 @@ in one sentence). `/api/health` carries one line: `query.active`,
 while every query slot is in use. The response's `metadata.query` carries
 the same timing for that one question, so a slow answer can be correlated
 with the metrics by `query_id`. The log carries the question's length, the
-stage times and the outcome; never the question, a chunk or the answer. The
-legacy profile's step-by-step retrieval trace — which used to print the
-question, the clarified rewrite, every generated variation and the
-conversation so far to stdout, a deployment's log stream — is at `DEBUG`
-with the rest of the content-bearing output, so `LOG_FILE_LEVEL=DEBUG` still
-gets all of it and the default gets none of it.
+stage times and the outcome; never the question, a chunk or the answer.
+Every content-bearing dump — the prompt, the retrieved chunks, the assembled
+context — is at `DEBUG`, so `LOG_FILE_LEVEL=DEBUG` gets all of it and the
+default gets none of it.
 
 ## Health, metrics and the caches
 
@@ -353,7 +349,6 @@ missing from keyword search in another until the process restarted.
 |---|---|
 | `artifacts/viewer-live/` — one directory per analysed document | Product data, not a cache: it is what the Viewer reads. It is deleted with its document and is regenerable from an ingest. Bounding it would mean deleting analyses a user still expects to open. |
 | `.cache/canonical-units/`, `.cache/embeddings/`, `.cache/boundary-embeddings/` | Content-addressed caches on disk, not in memory. They trade disk for a re-parse or a re-embed, and both are safe to delete at any time. Capping them needs an eviction policy and a size accounting that this product has no evidence it needs yet. |
-| Chat history per session | Already bounded by `MAX_CONVERSATION_HISTORY`, and it goes when its pipeline is evicted. |
 
 ---
 
@@ -404,7 +399,7 @@ answer attempt's socket timeout clamped to the time left. A stage already
 running is not interrupted, so an overshoot by one stage is expected; an
 overshoot by a whole provider timeout is not.
 
-**Look at:** `metrics.queries.stages` (p50/p95/max for `retrieve`, `rerank`,
+**Look at:** `metrics.queries.stages` (p50/p95/max for `retrieve`,
 `context`, `answer`) and the response's own `metadata.query`, which carries
 the same timing for that one question under a `query_id` that is also in the
 log.

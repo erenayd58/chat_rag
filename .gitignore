@@ -32,12 +32,11 @@ ENV/
 
 # Vector database
 chroma_db/
-# The FAISS store is runtime state exactly as the Chroma one is, and was never
-# ignored: one knowledge base's index and its meta.json -- which carries the
-# full text of every chunk in it -- were committed and travelled in every
-# clone. Nothing referenced them, .dockerignore already kept them out of the
-# image, and a clone that arrives carrying a populated vector store lets a
-# clean-clone check pass for the wrong reason.
+# The FAISS provider is gone; a local checkout may still carry the store it
+# left behind, and it must not be committed. It was once tracked: one
+# knowledge base's index and its meta.json -- which carries the full text of
+# every chunk in it -- travelled in every clone, and a clone arriving with a
+# populated vector store lets a clean-clone check pass for the wrong reason.
 faiss_db/
 
 # Document tracking. A .corrupt-<timestamp> copy is what the tracker keeps
@@ -75,7 +74,8 @@ htmlcov/
 # NLTK data (downloaded at runtime)
 nltk_data/
 logs/*
-chroma_db/*
+chroma_db/
+faiss_db/*
 documents/*
 archive/*
 docs/*

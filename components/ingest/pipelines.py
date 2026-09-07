@@ -2,27 +2,16 @@
 
 A ``RAGPipeline`` is not a small thing. Each one holds an embedding model
 (a local sentence-transformers model, when that is the provider), a Chroma
-client with the store's sqlite file and hnsw index open, a chunker, possibly
-a cross-encoder reranker, and a BM25 index built from **every chunk in the
-knowledge base** -- held in memory, as objects. Phase 2's own report called
-the cache holding these "effectively unbounded", and it was: the key is
-``session_id:kb_id``, ``session_id`` is a uuid4 in a browser cookie, and
-nothing ever removed an entry. Every new browser that opened a knowledge
-base added one, for the life of the process.
+client with the store's sqlite file and hnsw index open, a chunker, and a
+BM25 index built from **every chunk in the knowledge base** -- held in
+memory, as objects. The cache holding these was effectively unbounded: the
+key is ``session_id:kb_id``, ``session_id`` is a uuid4 in a browser cookie,
+and nothing ever removed an entry. Every new browser that opened a knowledge
+base added one, for the life of the process. So the cache is *bounded*
+instead, and the session stays in the key because a store handle and a
+lexical index are per-pipeline state that eviction has to be able to close.
 
-Why the key still has a session in it
--------------------------------------
-
-The obvious fix is one pipeline per knowledge base. It is the wrong fix
-here, and the reason is three lines above the cache: ``RAGPipeline`` owns a
-``ConversationManager``. Chat history -- the questions a person asked and
-the answers they were given -- lives on the pipeline. Sharing one pipeline
-between browsers would put one person's conversation into another person's
-context window, and ``/api/clear`` would clear everybody's. That is not a
-refactor, it is a privacy defect, so the session dimension stays and the
-cache is *bounded* instead.
-
-What that leaves is the drift Phase 2 also noted: two pipelines for one
+What that leaves is a drift: two pipelines for one
 knowledge base each hold their own BM25 index, and an ingest rebuilds only
 the index of the pipeline that ran it. Left alone, a document ingested in
 one browser is invisible to lexical search in another until the process

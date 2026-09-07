@@ -90,15 +90,15 @@ def test_storage_path_follows_an_explicit_configuration(tmp_path):
 def test_storage_path_falls_back_to_a_directory_named_after_the_kb(tmp_path):
     kb = manager(tmp_path)
     chroma = kb.create(name="c", vector_db_provider="chroma")
-    faiss = kb.create(name="f", vector_db_provider="faiss")
+    second = kb.create(name="f")
 
     chroma_path = pathlib.Path(kb.storage_path(chroma["kb_id"], str(tmp_path)))
-    faiss_path = pathlib.Path(kb.storage_path(faiss["kb_id"], str(tmp_path)))
+    second_path = pathlib.Path(kb.storage_path(second["kb_id"], str(tmp_path)))
 
     assert chroma_path.name == chroma["kb_id"]
     assert chroma_path.parent.name == "chroma_db"
-    assert faiss_path.name == faiss["kb_id"]
-    assert faiss_path.parent.name == "faiss_db"
+    assert second_path.name == second["kb_id"]
+    assert second_path.parent.name == "chroma_db"
 
 
 def test_delete_removes_the_record_and_its_store(tmp_path):

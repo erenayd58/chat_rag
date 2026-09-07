@@ -1,4 +1,4 @@
-/* Chat page: KB-scoped conversation with source cards. */
+/* Chat page: KB-scoped questions with source cards. */
 'use strict';
 
 let docModeByDocId = {};
@@ -262,9 +262,6 @@ $('#clearBtn').addEventListener('click', async () => {
     confirmLabel: 'Clear'
   });
   if (!ok) return;
-  try {
-    await api('/api/clear', { method: 'POST', json: { kb_id: currentKbId() || null } });
-  } catch (e) { /* clearing the view is still fine */ }
   $('#chatThread').innerHTML =
     '<div class="empty-state" id="chatEmpty"><h3>Conversation cleared</h3><p>Ask a new question to continue.</p></div>';
 });

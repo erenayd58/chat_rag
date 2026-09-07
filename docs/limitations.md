@@ -121,20 +121,12 @@ them would need a re-export shim per module — the duplicate-surface problem,
 not a fix for it.
 
 **Legacy that stays, and why.** `amsc.legacy_chat_rag` is a pinned
-reproduction of a public chunker kept as a benchmark candidate;
-`amsc.viewer_v2` and its template are the earlier Viewer page, kept for the
-research build's provenance arm and as a manual fallback. Both have real
-callers. Neither is something to build on.
+reproduction of a public chunker, kept as a benchmark candidate. It has a real
+caller — the frozen retrieval benchmark — and is not something to build on.
 
-**Some public utility methods have no caller.** `BaseLLM.generate_json`,
-`DocumentTracker.get_ingested_files` / `get_file_info` / `clear_all`, and
-`RAGPipeline.add_assistant_response` / `get_conversation_summary` are retained
-deliberately: they are the public surface of small classes with an obvious
-shape, and the evidence for removing them was weaker than the cost of breaking
-a caller outside this repository. They are not dead code by accident — Phase 8
-looked at each and decided. `ParserFactory.register_parser` is in the same
-position and *is* used by the extension recipe in
-[architecture.md](architecture.md).
+**`ParserFactory.register_parser` has no caller in this repository.** It is
+the extension point the recipe in [architecture.md](architecture.md) uses, so
+it is a documented surface rather than dead code.
 
 **Three duplicated small helpers remain.** `_ensure_parent` and the
 tmp-write-then-`os.replace` dance appear in the two record managers, the
@@ -151,6 +143,20 @@ See [testing.md](testing.md).
 ---
 
 ## Product scope
+
+**The console indexes with one chunker and searches with one store.** A
+knowledge base may be created with `structure_first` or the frozen `v4`
+package, and its vectors live in Chroma. The earlier `SemanticChunker`, the
+`legacy` retrieval profile and the FAISS store were removed once no knowledge
+base used any of them; a second store is a `BaseVectorDB` implementation and
+the contract it must meet is `tests/migration/test_document_store_contract.py`.
+
+**Questions carry no history.** Each question is answered from retrieval
+alone. The console kept a per-session conversation for a retrieval path that
+no longer exists, and nothing on the supported path ever recorded a turn, so
+the machinery went with it. Adding real multi-turn context is a feature: it
+needs a decision about where history lives once the runtime is more than one
+process.
 
 **No authentication, anywhere.** There is no login, no per-user data and no
 access boundary on any endpoint. `/api/ops/metrics` has none for a specific

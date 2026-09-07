@@ -52,7 +52,6 @@ cd chat_rag
 python -m venv venv                       # Python 3.11–3.13
 venv\Scripts\activate                     # macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
-python setup_nltk.py
 cp env.example .env                       # PowerShell: Copy-Item env.example .env
 
 # 3. prove the declared source installs and runs (minutes; needs Docker)
@@ -103,7 +102,6 @@ Then, in the browser and the terminal:
 python -m venv venv
 venv\Scripts\activate            # macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
-python setup_nltk.py             # NLTK data used by the legacy chunker
 cp env.example .env
 ```
 
@@ -233,8 +231,8 @@ Structure-first chunking lets document structure decide chunk boundaries
 (a chunk opens at every heading and section change, oversized units split at
 table row / list item / sentence seams) and BM25-only retrieval loads no
 embedding model at all: no dense vectors are computed or stored in this
-profile. The legacy and V4 chunkers and the `legacy` / `benchmark_aligned`
-retrieval profiles remain selectable for comparison.
+profile. The V4 chunker and the `benchmark_aligned` retrieval profile stay
+selectable for comparison against the library's frozen benchmark.
 
 **First upload of a PDF is slow.** Parsing runs layout inference over every
 logical page, which is a few seconds per page on CPU -- an 85-page report takes
@@ -281,9 +279,8 @@ never accepted as one:
 
 | `CHUNKER_TYPE` | what it is |
 |---|---|
-| `structure_first` | the demo profile: document structure decides the boundaries |
-| `legacy` | the original `SemanticChunker` — word windows with overlap |
-| `v4` | the frozen AMSC V4/A4 implementation, for comparison |
+| `structure_first` | the default: document structure decides the boundaries |
+| `v4` | the frozen AMSC V4/A4 implementation, for comparison against the library's benchmark |
 
 `v4` is frozen: the `amsc-poc` revision it runs
 against is the one `requirements.txt` pins — that line is the only place the
@@ -306,17 +303,16 @@ boundary embeddings use `.cache/boundary-embeddings`.
 
 ### Retrieval profiles
 
-`RETRIEVAL_PROFILE=legacy` preserves the existing chat_rag retrieval behavior.
-`RETRIEVAL_PROFILE=benchmark_aligned` selects the frozen Phase 4/5 profile:
-multilingual E5 role prefixes,
-normalized deterministic long-text pooling, Unicode BM25, and equal-weight RRF
-with a 100-result pool and `k=60`. Query expansion, contextualization, and
-reranking are disabled in this profile. Its E5 model is loaded with
-`local_files_only=true`, matching the frozen benchmark configuration.
+| `RETRIEVAL_PROFILE` | what it is |
+|---|---|
+| `bm25_only` | the default: the frozen deterministic BM25 alone. No embedding model is loaded and no vectors are stored, so it needs no provider at all |
+| `hybrid_rrf` | the final chain: stored dense vectors + BM25, fused by RRF, with a bounded labelled context the answer model must cite |
+| `benchmark_aligned` | the frozen Phase 4/5 configuration — multilingual E5 role prefixes, deterministic long-text pooling, Unicode BM25, equal-weight RRF over a 100-result pool at `k=60`, its E5 model loaded `local_files_only` — so a console result can be compared with the library's own benchmark |
 
-Indexes are profile-specific because the embedding models and dimensions differ.
-Use a new vector-database path/collection and re-ingest documents when changing
-profiles; do not point `benchmark_aligned` at an index created by `legacy`.
+Retrieval is deterministic in all three: no query rewriting, no reranking and
+no model call before the answer. Indexes are profile-specific because the
+embedding models and dimensions differ, so changing profile means a new store
+path and a re-ingest.
 
 ---
 
@@ -508,7 +504,6 @@ never reads or writes your local `chroma_db/`, `.knowledge_bases.json`,
 .docker-data/
   state/      knowledge_bases.json, ingested_documents.json, gold_set.json
   chroma/     one vector store per knowledge base
-  faiss/      the same, for knowledge bases using the FAISS provider
   cache/      the parser's canonical-unit cache
   logs/       application logs
   artifacts/  evaluation runs and QA reports written by the CLI
@@ -557,17 +552,16 @@ docker compose ps          # STATUS shows (healthy)
 
 ## The console API
 
-The screens are `/` (knowledge bases), `/chat`, `/documents`, `/chunks` and
-`/lab`. Everything they do is an HTTP call you can make yourself:
+The screens are `/` (knowledge bases), `/kb/<kb_id>`, `/chat` and `/lab`. Everything they do is an HTTP call you can make yourself:
 
 | group | endpoints |
 |---|---|
-| knowledge bases | `GET|POST /api/kb`, `GET|PUT|DELETE /api/kb/<kb_id>`, `GET /api/kb/options`, `GET /api/kb/<kb_id>/embedding-index`, `POST /api/kb/<kb_id>/reindex-embeddings` |
+| knowledge bases | `GET|POST /api/kb`, `GET|PUT|DELETE /api/kb/<kb_id>`, `GET /api/kb/<kb_id>/embedding-index`, `POST /api/kb/<kb_id>/reindex-embeddings` |
 | documents | `POST /api/documents/upload`, `GET /api/documents`, `DELETE /api/documents/<doc_id>`, `GET /api/documents/<doc_id>/chunks`, `GET /api/documents/<doc_id>/canonical-units` |
 | ingest jobs | `GET /api/ingest/jobs`, `GET|DELETE /api/ingest/jobs/<job_id>` |
-| asking | `POST /api/query`, `POST /api/clear` |
-| the Lab | `POST /api/chunks/search-vector`, `POST /api/chunks/search-bm25`, `POST /api/experiment/search_chunks`, `POST /api/experiment/rank_chunks` |
-| chunks | `GET|POST /api/chunks`, `GET|PUT|DELETE /api/chunks/<chunk_id>` |
+| asking | `POST /api/query` |
+| the Lab | `POST /api/chunks/search-vector`, `POST /api/chunks/search-bm25`, `POST /api/experiment/search_chunks` |
+| chunks | `GET /api/chunks`, `GET|PUT|DELETE /api/chunks/<chunk_id>` |
 | gold set | `GET|POST /api/goldset`, `DELETE /api/goldset/<entry_id>` |
 | the Viewer bridge | `GET /api/demo/viewer`, `GET /api/demo/workspace`, `GET /api/demo/methods`, `GET|POST /api/demo/viewer-analysis/<doc_id>`, `POST /api/demo/viewer-analysis/<doc_id>/methods`, `GET /api/demo/viewer-analysis/<doc_id>/payload`, `GET /api/demo/viewer-analysis/<doc_id>/chunks` |
 | instruments | `GET /api/health`, `GET /api/ops/metrics`, `GET /api/stats`, `GET /api/models`, `GET /api/retrieval/capabilities` |

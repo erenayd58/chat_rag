@@ -112,8 +112,8 @@ class KnowledgeBaseManager:
         if self.find_by_name(name) is not None:
             raise ValueError(f"A knowledge base named {name!r} already exists")
         provider = str(vector_db_provider or "chroma").strip().lower()
-        if provider not in {"chroma", "faiss"}:
-            raise ValueError("vector_db_provider must be 'chroma' or 'faiss'")
+        if provider != "chroma":
+            raise ValueError("vector_db_provider must be 'chroma'")
         cfg = {
             "name": name,
             "chunker": normalize_chunker_config(chunker),
@@ -185,19 +185,16 @@ class KnowledgeBaseManager:
         configured = cfg.get("vector_db_path")
         if configured:
             return os.path.abspath(os.path.join(root, configured))
-        default = paths.vector_store(cfg.get("vector_db_provider") or "chroma", kb_id)
+        default = paths.vector_store(kb_id)
         return os.path.abspath(os.path.join(root, default))
 
-    #: Roots and the fallback store the app uses when no knowledge base is
-    #: selected. Deleting one of these would take every other store with it.
-    PROTECTED_DIRECTORY_NAMES = ("chroma_db", "faiss_db")
+    #: The root and the fallback store the app uses when no knowledge base
+    #: is selected. Deleting one of these would take every store with it.
+    PROTECTED_DIRECTORY_NAMES = ("chroma_db",)
 
     def _protected_roots(self, root: str) -> List[str]:
         """The shared roots, wherever this deployment puts them."""
-        resolved = [
-            os.path.abspath(os.path.join(root, paths.vector_store_root(provider)))
-            for provider in ("chroma", "faiss")
-        ]
+        resolved = [os.path.abspath(os.path.join(root, paths.vector_store_root()))]
         resolved += [
             os.path.abspath(os.path.join(root, name))
             for name in self.PROTECTED_DIRECTORY_NAMES

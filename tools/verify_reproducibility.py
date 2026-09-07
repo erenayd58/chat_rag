@@ -87,7 +87,6 @@ MUST_NOT_BE_CLONED = (
     ".ingested_documents.json",
     ".gold_set.json",
     "chroma_db",
-    "faiss_db",
     ".cache",
     "venv",
     ".venv",
@@ -443,15 +442,6 @@ def check_host_install(report: Report, work: Path, clone: Path | None,
                f"requirements.txt installed into a fresh 3.11 venv in {minutes:.1f} min "
                f"(amsc {origin.stdout.split()[0][:7] if origin.stdout.split() else '?'}, "
                f"editable={origin.stdout.split()[1] if len(origin.stdout.split()) > 1 else '?'})")
-
-    # The tokenizer and stopword corpora the legacy chunker and the query
-    # enhancer look up at import time. The image installs them at build; a host
-    # install has to as well, and that is a declared step, not a surprise.
-    nltk = run([str(python), "setup_nltk.py"], cwd=clone,
-               env=isolated_env(work / "smoke-state"), timeout=900)
-    report.add(PASS if nltk.returncode == 0 else FAIL, "install.nltk",
-               "corpora installed" if nltk.returncode == 0 else "setup_nltk.py failed",
-               tail(nltk))
     return python
 
 
@@ -560,7 +550,7 @@ def check_docker(report: Report, clone: Path | None, docker: str | None,
         # /app is the image, and a write there would be state in a layer.
         listing = run(["docker", "exec", name, "sh", "-c",
                        "ls -1 /data; echo ---; ls -a /app | "
-                       "grep -E 'chroma_db|faiss_db|knowledge_bases|ingested_documents|^[.]cache' "
+                       "grep -E 'chroma_db|knowledge_bases|ingested_documents|^[.]cache' "
                        "|| true"], timeout=120)
         under_data, _, in_app = listing.stdout.partition("---")
         if in_app.strip():

@@ -51,7 +51,7 @@ the first upload.
 | **query limits** | `QUERY_MAX_ACTIVE`, `QUERY_TIMEOUT`, `ANSWER_SLOT_WAIT` | how many questions run at once, and for how long |
 | **caches** | `PIPELINE_CACHE_MAX`, `PIPELINE_CACHE_TTL` | the largest memory dial in the process |
 | **models** | `ANSWER_*`, `EMBEDDING_*`, `DEEP_ANALYSIS_*`, `OLLAMA_*`, `AZURE_*`, `LLM_PROVIDER` | which model answers, embeds and proposes boundaries, and through which gateway |
-| **retrieval and chunking** | `RETRIEVAL_PROFILE`, `CHUNKER_TYPE`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `MIN_CHUNK_SIZE`, `DEFAULT_TOP_K`, `CONTEXT_*`, `RERANKER_TYPE` | what gets indexed and what gets found |
+| **retrieval and chunking** | `RETRIEVAL_PROFILE`, `CHUNKER_TYPE`, `DEFAULT_TOP_K`, `CONTEXT_*` | what gets indexed and what gets found |
 | **logging** | `LOG_LEVEL`, `LOG_FILE_LEVEL`, `LOG_MAX_BYTES`, `LOG_BACKUPS`, `LOG_RUNS_KEPT` | what is written and how much is kept. `LOG_FILE_LEVEL=DEBUG` writes document content to disk |
 
 The relationships that matter are in *Cross-setting rules* below; how each

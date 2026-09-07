@@ -2,8 +2,8 @@
 
 A pipeline is built per browser session and knowledge base and bounded by
 the pipeline cache; before this, each one loaded its own copy of the same
-sentence-transformers weights (and, on the legacy profile, its own
-cross-encoder), so the cache bound was also a multiplier on model memory.
+sentence-transformers weights, so the cache bound was also a multiplier on
+model memory.
 The model classes are replaced by fakes here: what is under test is the
 sharing, and no weights are downloaded.
 """
@@ -40,18 +40,6 @@ def embedding_module(monkeypatch):
     FakeModel.instances.clear()
     module.release_models()
     monkeypatch.setattr(module, "SentenceTransformer", FakeModel)
-    monkeypatch.setattr(module, "_loads", 0)
-    yield module
-    module.release_models()
-
-
-@pytest.fixture
-def reranker_module(monkeypatch):
-    from components.reranker import cross_encoder_reranker as module
-
-    FakeModel.instances.clear()
-    module.release_models()
-    monkeypatch.setattr(module, "CrossEncoder", FakeModel)
     monkeypatch.setattr(module, "_loads", 0)
     yield module
     module.release_models()
@@ -95,13 +83,6 @@ def test_release_drops_the_instances(embedding_module):
     assert embedding_module.model_stats()["count"] == 0
     embedding_module.SentenceTransformerEmbedding("x")
     assert embedding_module.model_stats()["loads"] == 2, "a reload after release is counted"
-
-
-def test_cross_encoders_share_too(reranker_module):
-    first = reranker_module.CrossEncoderReranker("cross-encoder/x")
-    second = reranker_module.CrossEncoderReranker("cross-encoder/x")
-    assert first.model is second.model
-    assert reranker_module.model_stats()["loads"] == 1
 
 
 def test_a_model_that_cannot_load_is_reported_not_cached(embedding_module, monkeypatch):

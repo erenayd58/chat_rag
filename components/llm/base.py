@@ -39,25 +39,3 @@ class BaseLLM(ABC):
     def get_model_name(self) -> str:
         """Get the specific model name"""
         pass
-    
-    def generate_json(
-        self,
-        messages: List[Dict[str, str]],
-        temperature: float = 0.2,
-        max_tokens: int = 300,
-        **kwargs
-    ) -> str:
-        """
-        Generate JSON output from messages
-        
-        Args:
-            messages: List of message dicts
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens to generate
-            **kwargs: Additional parameters
-        
-        Returns:
-            Generated JSON string
-        """
-        return self.generate(messages, temperature, max_tokens, **kwargs)
-

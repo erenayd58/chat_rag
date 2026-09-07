@@ -3,7 +3,6 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from components.contextual_enhancer import ContextualRAGEnhancer
 from components.llm import ollama_llm
 from core.exceptions import LLMException
 from core.models import DocumentChunk, RetrievalResult
@@ -37,19 +36,16 @@ def _ollama(monkeypatch) -> ollama_llm.OllamaLLM:
     )
 
 
-def test_summary_and_retrieved_context_answer_use_ollama_client(monkeypatch):
+def test_an_answer_over_retrieved_context_uses_the_ollama_client(monkeypatch):
     llm = _ollama(monkeypatch)
     client = FakeOllamaClient.instances[0]
     assert (client.host, client.timeout) == ("http://ollama.test:11434", 7)
 
-    enhancer = ContextualRAGEnhancer(llm)
-    summary = enhancer.generate_document_summary("Document body", "Test document")
-
     pipeline = RAGPipeline.__new__(RAGPipeline)
+    pipeline.settings = None
     pipeline.llm_model = llm
     pipeline.vector_db = object()
     pipeline.embedding_model = object()
-    pipeline.reranker = None
     result = RetrievalResult(
         chunk=DocumentChunk(
             chunk_id="chunk-1",
@@ -60,15 +56,14 @@ def test_summary_and_retrieved_context_answer_use_ollama_client(monkeypatch):
             total_chunks=1,
         ),
         score=0.9,
-        retrieval_method="hybrid",
+        retrieval_method="bm25_only",
         rank=1,
     )
     answer = pipeline.generate_answer("What is in the document?", [result])
 
-    assert summary == "Ollama response"
     assert answer == "Ollama response"
-    assert len(client.messages) == 2
-    assert "Retrieved context" in client.messages[1][1]["content"]
+    assert len(client.messages) == 1
+    assert "Retrieved context" in client.messages[0][1]["content"]
 
 
 def test_ollama_timeout_is_wrapped_without_requests_attribute_error(monkeypatch):

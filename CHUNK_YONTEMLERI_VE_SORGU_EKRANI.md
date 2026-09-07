@@ -131,12 +131,13 @@ Soru → Netleştirme → Arama (vektör + BM25) → Yeniden Sıralama → Cevap
      birlikte puanlanır. Varsayılan mod budur; çünkü "kredi riski" gibi teknik terimlerde
      kelime eşleşmesi, serbest sorularda ise anlam benzerliği daha güçlüdür.
 
-4. **Yeniden sıralama (reranking)** — Bulunan adaylar bir **cross-encoder** modelinden
-   geçirilir: model, soru ile her chunk'ı yan yana okuyup "bu parça bu soruyu gerçekten
-   cevaplıyor mu?" diye puanlar ve en iyileri öne alır.
+4. **Bağlam paketi** — En iyi chunk'lar sıra numarasıyla etiketlenir (`[S1]`, `[S2]`…),
+   tekrarlananlar atılır, bir token bütçesi içinde toplanır. Aramanın bulduğu her
+   parçaya bütçeden önce yer verilir; ancak artan bütçeyle aynı bölümün komşu parçası
+   da eklenir.
 
-5. **Cevap üretimi** — En iyi chunk'lar bir bağlam paketi halinde dil modeline verilir.
-   Model cevabı **yalnızca bu parçalara dayanarak** yazar.
+5. **Cevap üretimi** — Bu bağlam paketi dil modeline verilir. Model cevabı **yalnızca
+   bu parçalara dayanarak** yazar ve kullandığı her parçanın etiketini gösterir.
 
 6. **Kaynak gösterimi** — Cevabın altında dayandığı doküman bölümleri listelenir:
    hangi doküman, hangi bölüm, hangi sayfalar ve benzerlik puanı. Bir kaynağa

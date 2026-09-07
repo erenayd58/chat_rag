@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from components.chunker import FrozenV4Chunker, SemanticChunker, create_chunker
+from components.chunker import FrozenV4Chunker, StructuralChunker, create_chunker
 from components.chunker.frozen_v4_chunker import (
     FROZEN_AMSC_COMMIT,
     FROZEN_V4_CONFIG_HASH,
@@ -15,42 +15,10 @@ from core.exceptions import ConfigurationException
 
 def _settings(**updates):
     values = {
-        "chunker_type": "legacy",
-        "chunk_size": 300,
-        "chunk_overlap": 60,
-        "min_chunk_size": 50,
+        "chunker_type": "structure_first",
     }
     values.update(updates)
     return SimpleNamespace(**values)
-
-
-def test_legacy_factory_preserves_existing_semantic_chunker_configuration():
-    chunker = create_chunker(
-        _settings(),
-        {
-            "type": "SemanticChunker",
-            "params": {
-                "chunk_size": 111,
-                "chunk_overlap": 22,
-                "min_chunk_size": 11,
-                "use_semantic_segmentation": False,
-                "use_embedding_segmentation": True,
-                "semantic_threshold": 0.7,
-                "semantic_window": 2,
-            },
-        },
-    )
-
-    assert isinstance(chunker, SemanticChunker)
-    assert chunker.get_config() == {
-        "chunk_size": 111,
-        "chunk_overlap": 22,
-        "min_chunk_size": 11,
-    }
-    assert chunker.use_semantic_segmentation is False
-    assert chunker.use_embedding_segmentation is True
-    assert chunker.semantic_threshold == 0.7
-    assert chunker.semantic_window == 2
 
 
 def test_v4_factory_selects_only_the_frozen_a4_configuration():
@@ -66,6 +34,15 @@ def test_v4_factory_selects_only_the_frozen_a4_configuration():
         "soft_max_tokens": 900,
         "hard_max_tokens": 1126,
     }
+
+
+def test_the_default_factory_builds_the_structure_first_chunker():
+    assert isinstance(create_chunker(_settings()), StructuralChunker)
+
+
+def test_an_unknown_chunker_type_is_refused_by_name():
+    with pytest.raises(ConfigurationException, match="Unsupported chunker type"):
+        create_chunker(_settings(chunker_type="legacy"))
 
 
 def test_v4_factory_rejects_runtime_tuning_params():

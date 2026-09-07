@@ -1,7 +1,6 @@
 # Runtime state belongs in a mounted directory, never in an image layer.
 .docker-data/
 chroma_db/
-faiss_db/
 .cache/
 logs/
 .pytest-tmp/
@@ -33,7 +32,6 @@ artifacts/reports/
 .vscode/
 .idea/
 documents/
-examples/
 
 # Local virtual environments must never enter an image layer.
 venv/

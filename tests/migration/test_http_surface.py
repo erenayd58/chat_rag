@@ -51,12 +51,11 @@ PAGES = {
     ("GET", "/kb/<kb_id>"),
 }
 
-#: Redirects kept so an old bookmark still works. Named here because "is this
-#: still needed?" is a cleanup question with an answer, not a mystery.
-LEGACY_REDIRECTS = {
-    ("GET", "/documents"),   # -> /
-    ("GET", "/chunks"),      # -> /lab
-}
+#: Redirects kept so an old bookmark still works. Empty: the two that were
+#: here (``/documents`` -> ``/``, ``/chunks`` -> ``/lab``) were linked from
+#: no screen and no client, and were removed. The group stays declared so the
+#: next one is classified when it is added rather than archaeologically.
+LEGACY_REDIRECTS: set[tuple[str, str]] = set()
 
 #: Flask's own endpoint, not the product's.
 FRAMEWORK_ROUTES = {("GET", "/static/<path:filename>")}
@@ -120,10 +119,9 @@ def test_every_route_is_either_api_page_or_a_declared_legacy_redirect():
     )
 
 
-def test_the_legacy_redirects_still_redirect_rather_than_render(client):
-    """They carry no content of their own; that is why they are cleanup
-    candidates and why removing them is a decision about bookmarks, not
-    about behaviour."""
+def test_a_declared_legacy_redirect_redirects_rather_than_renders(client):
+    """A redirect carries no content of its own. Vacuous while the group is
+    empty, and the check the next one has to pass."""
     for _, path in sorted(LEGACY_REDIRECTS):
         response = client.get(path)
         assert response.status_code in (301, 302, 308), path

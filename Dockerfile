@@ -24,18 +24,6 @@ RUN pip install --upgrade pip \
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
-# The tokenizer and stopword data the legacy chunker and the query enhancer
-# look up at import time. Downloading it now means the container needs no
-# network at runtime.
-COPY setup_nltk.py ./
-ENV NLTK_DATA=/opt/nltk_data
-# nltk only writes into NLTK_DATA if the directory already exists; without
-# this it silently downloads somewhere else and the next stage copies nothing.
-RUN mkdir -p /opt/nltk_data \
- && python setup_nltk.py \
- && python -c "import nltk; nltk.data.find('tokenizers/punkt'); nltk.data.find('corpora/stopwords')" \
- && test -d /opt/nltk_data/tokenizers
-
 
 FROM python:3.11-slim-bookworm
 
@@ -48,7 +36,6 @@ ENV CHAT_RAG_GIT_SHA=${CHAT_RAG_GIT_SHA}
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    NLTK_DATA=/opt/nltk_data \
     # Turkish filenames and chunk text pass through stdout and the log files.
     PYTHONIOENCODING=utf-8 \
     LANG=C.UTF-8 \
@@ -63,7 +50,6 @@ ENV PATH="/opt/venv/bin:$PATH" \
     CHAT_RAG_DATA_DIR=/data
 
 COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /opt/nltk_data /opt/nltk_data
 
 # Runs as a normal user. /data is created here so a named volume inherits the
 # right ownership; a bind mount takes the host's, which Docker Desktop makes

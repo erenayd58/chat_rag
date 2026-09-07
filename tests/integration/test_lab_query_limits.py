@@ -149,9 +149,6 @@ ENDPOINTS = {
                         lambda kb: {"query": QUESTION, "kb_id": kb, "offset": 0, "limit": 5}),
     "lab.experiment_search": ("/api/experiment/search_chunks",
                               lambda kb: {"query": QUESTION, "kb_id": kb, "method": "bm25", "top_k": 5}),
-    "lab.experiment_rank": ("/api/experiment/rank_chunks",
-                            lambda kb: {"query": QUESTION, "kb_id": kb, "method": "bm25",
-                                        "top_k": 5, "chunk_ids": ["c0"]}),
 }
 
 
@@ -275,16 +272,11 @@ def test_a_lexical_search_runs_to_the_end_of_its_stage(lab, monkeypatch):
 def test_the_answers_are_what_the_lab_screen_already_expected(lab):
     with flask_app.app.test_client() as client:
         search = post(client, lab, "lab.experiment_search").get_json()
-        ranked = post(client, lab, "lab.experiment_rank").get_json()
         vector = post(client, lab, "lab.search_vector").get_json()
         bm25 = post(client, lab, "lab.search_bm25").get_json()
 
     assert search["success"] and search["retrieval_method"] == "bm25"
     assert [c["chunk_id"] for c in search["chunks"]] == ["c0", "c1", "c2"]
-    assert ranked["success"] and ranked["results"][0] == {
-        "chunk_id": "c0", "found": True, "rank": 0, "score": 1.0,
-        "retrieval_method": "bm25", "search_term": QUESTION,
-    }
     assert vector["success"] and len(vector["chunks"]) == 3
     assert vector["search_metadata"]["search_method"] == "vector"
     assert bm25["success"] and bm25["chunks"][0]["retrieval_method"] == "bm25"

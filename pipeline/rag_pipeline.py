@@ -1,5 +1,10 @@
-"""
-Main RAG pipeline orchestrator
+"""The pipeline: one object that ingests a document and answers a question.
+
+It builds the embedder, the store, the retriever and the answer model from
+settings, and runs the two flows the product has. Retrieval is deterministic
+in every profile -- no query rewriting, no reranking, no model call before the
+answer -- so what reaches the answer model is a function of the question and
+the index alone.
 """
 import contextlib
 import json
@@ -9,6 +14,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from config import Settings
+from config.settings import DEFAULT_RETRIEVAL_PROFILE, RETRIEVAL_PROFILES
 from components.llm import (
     BaseLLM, AzureOpenAILLM, OllamaLLM, UnavailableLLM, OpenAICompatibleLLM, FallbackLLM,
 )
@@ -17,22 +23,17 @@ from components.embedding import (
 )
 from components.context import assemble_context
 from config import paths as data_paths
-from components.vectordb import BaseVectorDB, ChromaVectorDB, FaissVectorDB
+from components.vectordb import BaseVectorDB, ChromaVectorDB
 from components.chunker import BaseChunker, create_chunker
-from components.contextual_enhancer import ContextualRAGEnhancer
-from components.query_processor import QueryEnhancer
 from components.retriever import (
     HybridRRFRetriever,
     BM25OnlyRetriever,
     NullEmbedding,
     BenchmarkAlignedEmbedding,
     BenchmarkAlignedRetriever,
-    HybridRetriever,
 )
-from components.reranker import BaseReranker, LLMReranker, CrossEncoderReranker
-from components.conversation import ConversationManager
 from components.parsers import ParserFactory
-from core.models import DocumentChunk, RetrievalResult, SearchQuery
+from core.models import DocumentChunk, RetrievalResult
 from core.exceptions import (
     ConfigurationException, IndexIncompatibleException, IngestInterrupted, LLMException,
     QueryOverloaded, QueryTimeout, RAGException, RESOURCE_CONTROL_EXCEPTIONS,
@@ -70,51 +71,31 @@ def _source_pages(metadata: Optional[Dict[str, Any]]) -> Optional[List[Any]]:
 
 
 class RAGPipeline:
-    """Main RAG pipeline coordinating ingestion and query pipelines"""
-    
+    """Ingestion and query for one knowledge base."""
+
     def __init__(
         self,
         llm_model: Optional[BaseLLM] = None,
         embedding_model: Optional[BaseEmbedding] = None,
         vector_db: Optional[BaseVectorDB] = None,
         chunker: Optional[BaseChunker] = None,
-        reranker: Optional[BaseReranker] = None,
         settings: Optional[Settings] = None
     ):
-        """
-        Initialize RAG pipeline
-        
-        Args:
-            llm_model: LLM model instance (created from settings if None)
-            embedding_model: Embedding model instance (created from settings if None)
-            vector_db: Vector database instance (created from settings if None)
-            chunker: Chunker instance (created from settings if None)
-            reranker: Reranker instance (created from settings if None)
-            settings: Settings instance (uses default if None)
-        """
-        # Load settings
         self.settings = settings or Settings()
-        self.retrieval_profile = getattr(self.settings, 'retrieval_profile', 'legacy')
-        if self.retrieval_profile not in {'legacy', 'benchmark_aligned', 'bm25_only', 'hybrid_rrf'}:
+        self.retrieval_profile = getattr(
+            self.settings, 'retrieval_profile', DEFAULT_RETRIEVAL_PROFILE
+        )
+        if self.retrieval_profile not in RETRIEVAL_PROFILES:
             raise ValueError(
-                "retrieval_profile must be 'legacy', 'benchmark_aligned', 'bm25_only' or 'hybrid_rrf'"
+                "retrieval_profile must be one of "
+                + ", ".join(sorted(RETRIEVAL_PROFILES))
             )
-        
-        # Initialize components
+
         self.llm_model = llm_model or self._create_llm()
         self.embedding_model = embedding_model or self._create_embedding()
         self.vector_db = vector_db or self._create_vectordb()
         self.chunker = chunker or self._create_chunker()
-        
-        # Every answer-model call made on behalf of a *query* -- clarification,
-        # strategy, query generation, the LLM reranker and the answer itself --
-        # goes through the budgeted view. The contextual enhancer does not: it
-        # is called only from ``ingest_document`` (a document summary, chunk
-        # enrichment), so its cost is an ingest worker's, bounded by
-        # INGEST_WORKERS as the resource model says. Budgeting it would let an
-        # ingest take a slot reserved for a person waiting on an answer.
-        self.contextual_enhancer = ContextualRAGEnhancer(self.llm_model)
-        self.query_enhancer = QueryEnhancer(self.answer_model)
+
         if self.retrieval_profile == 'bm25_only':
             self.hybrid_retriever = BM25OnlyRetriever(
                 self.embedding_model,
@@ -128,7 +109,7 @@ class RAGPipeline:
                 self.vector_db,
                 store_path=getattr(self.settings, 'vector_db_path', None),
             )
-        elif self.retrieval_profile == 'benchmark_aligned':
+        else:
             if not isinstance(self.embedding_model, BenchmarkAlignedEmbedding):
                 raise ValueError(
                     "benchmark_aligned requires BenchmarkAlignedEmbedding"
@@ -137,28 +118,10 @@ class RAGPipeline:
                 self.embedding_model,
                 self.vector_db,
             )
-        else:
-            self.hybrid_retriever = HybridRetriever(
-                self.embedding_model,
-                self.vector_db,
-                self.contextual_enhancer
-            )
-        self.reranker = (
-            reranker
-            if self.retrieval_profile in {'benchmark_aligned', 'bm25_only', 'hybrid_rrf'}
-            else (reranker or self._create_reranker())
-        )
-        
-        # Initialize conversation manager
-        self.enable_conversation = self.settings.enable_conversation
-        self.conversation = ConversationManager(
-            max_history=self.settings.max_conversation_history
-        ) if self.enable_conversation else None
-        
-        # Initialize parser factory
+
         self.parser_factory = ParserFactory()
 
-        # Build BM25 index at startup from existing vector DB contents (if any)
+        # Build the lexical index at startup from whatever the store holds.
         try:
             existing_chunks = self.vector_db.get_all_chunks()
             if existing_chunks:
@@ -166,7 +129,7 @@ class RAGPipeline:
         except Exception:
             # Non-fatal; keyword search will lazily build if needed
             pass
-    
+
     @property
     def answer_model(self) -> BaseLLM:
         """The answer model as a query calls it: one budget slot per call,
@@ -185,17 +148,14 @@ class RAGPipeline:
         return LimitedAnswerModel(inner, wait_seconds=wait)
 
     def _create_llm(self) -> BaseLLM:
-        """Create the answer model from settings: a primary provider and,
-        when configured, a local fallback.
+        """The answer model: a primary provider and, when configured, a local
+        fallback.
 
         A provider that cannot be reached does not stop the pipeline from
-        being built. Ollama runs outside this process -- on the host, when
-        the application runs in a container -- and ingestion, chunking,
-        structural QA and lexical retrieval need no language model at all.
-        The failure is carried by UnavailableLLM and raised, with its cause,
-        only when something asks for generated text; with a fallback
-        configured, FallbackLLM answers from the fallback instead and
-        records that it did.
+        being built. Ingestion, chunking, structural QA and lexical retrieval
+        need no language model at all, so the failure is carried by
+        UnavailableLLM and raised, with its cause, only when something asks
+        for generated text.
         """
         primary = self._build_answer_model(
             provider=self.settings.answer_provider,
@@ -203,7 +163,6 @@ class RAGPipeline:
         )
         fallback_provider = getattr(self.settings, 'answer_fallback_provider', 'none') or 'none'
         if fallback_provider in ('', 'none', 'off', 'false'):
-            # No fallback configured: the primary answers or fails on its own.
             return primary
         fallback = self._build_answer_model(
             provider=fallback_provider,
@@ -246,7 +205,6 @@ class RAGPipeline:
             return UnavailableLLM(provider or 'answer model', str(exc), endpoint)
 
     def _create_embedding(self) -> BaseEmbedding:
-        """Create embedding instance from settings"""
         if self.retrieval_profile == 'bm25_only':
             # No dense leg in this profile: never load an embedding model.
             return NullEmbedding()
@@ -269,16 +227,8 @@ class RAGPipeline:
         return SentenceTransformerEmbedding(
             model_name=self.settings.embedding_model_name
         )
-    
+
     def _create_vectordb(self) -> BaseVectorDB:
-        """Create vector database instance from settings"""
-        provider = getattr(self.settings, 'vector_db_provider', 'chroma')
-        if provider == 'faiss':
-            # Use FAISS; path can be a folder per KB if provided via settings
-            return FaissVectorDB(
-                path=self.settings.vector_db_path
-            )
-        # Default Chroma
         return ChromaVectorDB(
             path=self.settings.vector_db_path,
             collection_name=self.settings.vector_db_collection_name,
@@ -287,22 +237,14 @@ class RAGPipeline:
             hnsw_ef_search=self.settings.hnsw_ef_search,
             space="cosine"
         )
-    
+
     def _create_chunker(self) -> BaseChunker:
-        """Create chunker instance from settings"""
         return create_chunker(self.settings)
-    
-    def _create_reranker(self) -> BaseReranker:
-        """Create reranker instance from settings"""
-        reranker_type = getattr(self.settings, 'reranker_type', 'llm')
-        
-        if reranker_type == 'cross_encoder':
-            model_name = getattr(self.settings, 'cross_encoder_model', 'cross-encoder/ms-marco-MiniLM-L-6-v2')
-            return CrossEncoderReranker(model_name=model_name)
-        else:
-            # Default to LLM reranker
-            return LLMReranker(self.answer_model)
-    
+
+    # ------------------------------------------------------------------
+    # Ingestion
+    # ------------------------------------------------------------------
+
     def ingest_document_from_file(
         self,
         file_path: str,
@@ -311,48 +253,32 @@ class RAGPipeline:
         additional_metadata: Dict[str, Any] = None,
         deep_analysis: bool = False
     ) -> List[DocumentChunk]:
-        """
-        Ingest a document from a file (PDF, DOCX, TXT, MD, images, etc.)
+        """Parse a file and ingest it.
 
-        Args:
-            file_path: Path to the document file
-            doc_id: Unique document identifier (auto-generated if None)
-            doc_title: Document title (uses filename if None)
-            additional_metadata: Optional additional metadata
-            deep_analysis: Per-upload ingest mode. False is the Standard
-                structure-only path; True runs the Deep Analysis pipeline
-                at ingest (never at query time).
-
-        Returns:
-            List of processed document chunks
+        ``deep_analysis`` is the per-upload ingest mode: False is the Standard
+        structure-only path, True runs the Deep Analysis pipeline. Never a
+        query-time decision.
         """
         try:
             import os
-            
-            # Auto-generate doc_id and doc_title if not provided
+
             if doc_id is None:
                 doc_id = os.path.basename(file_path).replace('.', '_')
-            
+
             if doc_title is None:
                 doc_title = os.path.basename(file_path)
-            
+
             print(f"Parsing file: {file_path}")
 
-            # Minimal telemetry: how long the parser actually took on this
-            # file (text + structured units + metadata). Read by the upload
-            # route for the Viewer's debug/benchmark screens; changes nothing
-            # about what is parsed or how.
             from time import perf_counter
             _parse_started = perf_counter()
 
-            # Parse the file
             # One stage covering everything the parser does for this file: the
             # text, the structured units and the metadata. Measured once, so
             # the number here and the one the Viewer shows are the same number.
             with T.stage(T.PARSE):
                 document_text = self.parser_factory.parse_file(file_path)
 
-                # Parse structured canonical units when the parser supports it.
                 # Structure-aware chunkers need typed units (heading/list/table)
                 # with section_path and page provenance; without them every
                 # structural setting silently degrades to token-budget cutting.
@@ -362,7 +288,6 @@ class RAGPipeline:
                     print(f"  - Structured unit extraction unavailable: {exc}")
                     parsed_units = None
 
-                # Get metadata from parser
                 parser_metadata = self.parser_factory.get_metadata(file_path)
                 self.last_parse_seconds = round(perf_counter() - _parse_started, 2)
                 T.annotate(characters=len(document_text or ''),
@@ -372,11 +297,10 @@ class RAGPipeline:
             # If this ingest is a job that has run out of time or been
             # cancelled, this is where it stops.
             checkpoint()
-            
-            # Merge metadata
+
             merged_metadata = additional_metadata or {}
             merged_metadata.update(parser_metadata)
-            
+
             print(f"  - Extracted {len(document_text)} characters")
             print(f"  - Parser used: {parser_metadata.get('parser', 'unknown')}")
             if parsed_units is not None:
@@ -384,7 +308,6 @@ class RAGPipeline:
             else:
                 print("  - Structured canonical units: none (flat text fallback)")
 
-            # Ingest the parsed document
             return self.ingest_document(
                 document_text=document_text,
                 doc_id=doc_id,
@@ -401,92 +324,7 @@ class RAGPipeline:
             raise
         except Exception as e:
             raise RAGException(f"Failed to ingest document from file {file_path}: {e}")
-    
-    def ingest_documents_from_directory(
-        self,
-        directory_path: Optional[str] = None,
-        recursive: Optional[bool] = None,
-        file_pattern: Optional[str] = None,
-        additional_metadata: Dict[str, Any] = None
-    ) -> Dict[str, List[DocumentChunk]]:
-        """
-        Ingest all supported documents from a directory
-        
-        Args:
-            directory_path: Path to the directory (uses settings default if None)
-            recursive: Whether to search subdirectories (uses settings default if None)
-            file_pattern: Optional glob pattern to filter files (e.g., "*.pdf")
-            additional_metadata: Optional metadata to add to all documents
-        
-        Returns:
-            Dictionary mapping file paths to their chunks
-        """
-        import os
-        import glob
-        
-        # Use settings defaults if not provided
-        if directory_path is None:
-            directory_path = self.settings.documents_input_path
-        
-        if recursive is None:
-            recursive = self.settings.documents_recursive
-        
-        if not os.path.isdir(directory_path):
-            raise RAGException(f"Directory not found: {directory_path}")
-        
-        print(f"Scanning directory: {directory_path}")
-        print(f"Recursive: {recursive}")
-        
-        # Find all files
-        if file_pattern:
-            pattern = os.path.join(directory_path, '**' if recursive else '', file_pattern)
-            files = glob.glob(pattern, recursive=recursive)
-        else:
-            # Find all files in directory
-            files = []
-            if recursive:
-                for root, _, filenames in os.walk(directory_path):
-                    for filename in filenames:
-                        files.append(os.path.join(root, filename))
-            else:
-                files = [
-                    os.path.join(directory_path, f) 
-                    for f in os.listdir(directory_path) 
-                    if os.path.isfile(os.path.join(directory_path, f))
-                ]
-        
-        # Filter to supported files
-        supported_files = []
-        for file_path in files:
-            if self.parser_factory.get_parser(file_path) is not None:
-                supported_files.append(file_path)
-        
-        print(f"Found {len(supported_files)} supported documents")
-        
-        # Ingest each file
-        results = {}
-        for i, file_path in enumerate(supported_files, 1):
-            print(f"\n[{i}/{len(supported_files)}] Processing: {os.path.basename(file_path)}")
-            try:
-                chunks = self.ingest_document_from_file(
-                    file_path=file_path,
-                    additional_metadata=additional_metadata
-                )
-                results[file_path] = chunks
-                print(f"  ✓ Successfully ingested {len(chunks)} chunks")
-            except Exception as e:
-                print(f"  ✗ Failed to ingest {file_path}: {e}")
-                results[file_path] = []
-        
-        total_chunks = sum(len(chunks) for chunks in results.values())
-        print(f"\n{'='*80}")
-        print(f"✓ Ingestion complete!")
-        print(f"  Files processed: {len(supported_files)}")
-        print(f"  Total chunks: {total_chunks}")
-        print(f"{'='*80}")
-        
-        return results
-    
+
     def ingest_document(
         self,
         document_text: str,
@@ -496,46 +334,21 @@ class RAGPipeline:
         parsed_units: Optional[List[Dict[str, Any]]] = None,
         deep_analysis: bool = False
     ) -> List[DocumentChunk]:
-        """
-        Ingest a document through the complete processing pipeline
+        """Chunk, embed and index one already-parsed document.
 
-        Args:
-            document_text: Raw document text
-            doc_id: Unique document identifier
-            doc_title: Document title
-            additional_metadata: Optional additional metadata
-            deep_analysis: When True, this ingest runs the final Deep
-                Analysis pipeline (``amsc.deep_pipeline``: structural walk,
-                LLM proposer, deterministic quality selector, verifier).
-                Requires the structure-first chunker; a missing or failing
-                model provider degrades to the deterministic quality
-                contract and is reported in the status, never raised.
-                Everything after chunking (embeddings, vector store, BM25)
-                is the unchanged shared path.
-
-        Returns:
-            List of processed document chunks
+        ``deep_analysis`` runs ``amsc.deep_pipeline`` instead of the plain
+        structural walk. It requires the structure-first chunker; a missing or
+        failing model provider degrades to the deterministic quality contract
+        and is reported in the status, never raised. Everything after chunking
+        is the unchanged shared path.
         """
-        # The Deep Analysis report of the most recent ingest (status, model
-        # ids, quality before/after, LLM usage), for the caller to persist
-        # into document metadata/provenance. Reset per ingest; stays None on
+        # The Deep Analysis report of the most recent ingest, for the caller
+        # to persist into document metadata. Reset per ingest; stays None on
         # the Standard path.
         self.last_deep_analysis_report = None
         try:
             print(f"Ingesting document: {doc_title}")
 
-            # Step 1: Generate document summary
-            print("  - Generating document summary...")
-            if self.retrieval_profile in ('benchmark_aligned', 'hybrid_rrf'):
-                # No model-written summary: the chunk text is what is
-                # embedded and what the answer model reads.
-                doc_summary = ""
-            else:
-                doc_summary = self.contextual_enhancer.generate_document_summary(
-                    document_text, doc_title
-                )
-
-            # Step 2: Create semantic chunks with context
             if deep_analysis:
                 print("  - Creating chunks (Deep Analysis: amsc.deep_pipeline)...")
                 if not hasattr(self.chunker, "chunk_text_deep"):
@@ -568,13 +381,9 @@ class RAGPipeline:
                 # process-wide provider budget (components.ingest.limits).
                 # (None, None) means no model run: the contract runs alone.
                 provider, verifier_provider = limited_providers(configuration)
-                # The Deep stage covers the structural walk, the proposer, the
-                # selector and the verifier. The provider calls inside it are
-                # counted by the budget wrappers, so a report can say how much
-                # of this stage was spent waiting on a gateway.
                 with T.stage(T.DEEP):
                     chunks, deep_report = self.chunker.chunk_text_deep(
-                        document_text, doc_id, doc_title, doc_summary,
+                        document_text, doc_id, doc_title, "",
                         configuration=configuration,
                         provider=provider,
                         verifier_provider=verifier_provider,
@@ -585,21 +394,20 @@ class RAGPipeline:
                 self.last_deep_analysis_report = deep_report
                 print(f"  - Deep Analysis status: {deep_report.get('status')}")
             else:
-                print("  - Creating semantic chunks...")
+                print("  - Creating chunks...")
                 with T.stage(T.CHUNK):
                     chunks = self.chunker.chunk_text(
-                        document_text, doc_id, doc_title, doc_summary,
+                        document_text, doc_id, doc_title, "",
                         embedding_model=self.embedding_model,
                         parser_metadata=additional_metadata,
                         parsed_units=parsed_units
                     )
                     T.annotate(chunks=len(chunks) if chunks else 0)
-            
+
             if not chunks:
-                print(f"  ⚠️  Warning: No chunks created for document (text may be too short)")
-                print(f"  Document will be skipped")
+                print("  ⚠️  Warning: No chunks created for document (text may be too short)")
                 return []
-            
+
             print(f"  - Created {len(chunks)} chunks")
             # Chunked, nothing written: a job that must stop, stops here.
             checkpoint()
@@ -614,7 +422,6 @@ class RAGPipeline:
                         f"current embedding model before new documents can be added: {reason}"
                     )
 
-            # Step 3: Generate embeddings
             embeddings = []
             needs_embeddings = getattr(
                 self.hybrid_retriever, "requires_document_embeddings", True
@@ -630,7 +437,7 @@ class RAGPipeline:
                         for chunk in chunks:
                             if chunk.metadata:
                                 chunk.metadata.update(additional_metadata)
-                elif self.retrieval_profile in ('benchmark_aligned', 'hybrid_rrf'):
+                else:
                     print("  - Generating embeddings...")
                     # A table embeds as its pipes *and* its rendering: the
                     # rendering is the half a question resembles, the markdown
@@ -645,25 +452,11 @@ class RAGPipeline:
                         embeddings.append(embedding.tolist())
                         if additional_metadata and chunk.metadata:
                             chunk.metadata.update(additional_metadata)
-                else:
-                    print("  - Generating embeddings...")
-                    for chunk in chunks:
-                        # Create contextual representation for embedding
-                        contextual_text = self.contextual_enhancer.enrich_chunk_with_context(chunk)
-
-                        # Generate embedding
-                        embedding = self.embedding_model.encode(contextual_text, convert_to_tensor=False)
-                        chunk.embedding = embedding
-                        embeddings.append(embedding.tolist())
-
-                        # Add additional metadata
-                        if additional_metadata and chunk.metadata:
-                            chunk.metadata.update(additional_metadata)
                 T.annotate(vectors=len(embeddings))
-            
-            # Step 4: Store in vector database. The last seam before anything
-            # is written: past this point the ingest runs to completion,
-            # because a half-written store is worse than a late one.
+
+            # The last seam before anything is written: past this point the
+            # ingest runs to completion, because a half-written store is worse
+            # than a late one.
             checkpoint()
             with T.stage(T.INDEX):
                 print("  - Storing in vector database...")
@@ -672,16 +465,15 @@ class RAGPipeline:
                     if self.retrieval_profile == 'hybrid_rrf' and embeddings:
                         self.hybrid_retriever.record_index(len(embeddings[0]))
                 else:
-                    print(f"  ⚠️  Warning: No chunks to store")
+                    print("  ⚠️  Warning: No chunks to store")
                     return []
-            
-                # Step 5: Update BM25 index
+
                 print("  - Building BM25 index...")
                 all_chunks = self.vector_db.get_all_chunks()
-                if all_chunks:  # Only build index if we have chunks
+                if all_chunks:
                     self.hybrid_retriever.build_keyword_index(all_chunks)
                 T.annotate(stored=len(chunks), indexed=len(all_chunks or []))
-            
+
             print(f"✓ Document '{doc_title}' ingested successfully!")
             return chunks
 
@@ -692,255 +484,21 @@ class RAGPipeline:
             raise
         except Exception as e:
             raise RAGException(f"Document ingestion failed: {e}")
-    
+
+    # ------------------------------------------------------------------
+    # Retrieval
+    # ------------------------------------------------------------------
+
     def retrieve(
-        self,
-        query: str,
-        top_k: int = None,
-        use_query_expansion: bool = None,
-        use_reranking: bool = None,
-        retrieval_method: str = None,
-        assistant_response: str = None
-    ) -> Tuple[List[RetrievalResult], Dict[str, Any]]:
-        """
-        Retrieve relevant chunks for a query with conversation awareness
-        
-        Args:
-            query: User query
-            top_k: Number of results (auto-determined if None)
-            use_query_expansion: Whether to expand query (auto-determined if None)
-            use_reranking: Whether to rerank (auto-determined if None)
-            retrieval_method: 'vector', 'bm25', or 'hybrid' (auto-determined if None)
-            assistant_response: Response to store in conversation history
-        
-        Returns:
-            Tuple of (retrieval_results, metadata_dict)
-        """
-        if self.retrieval_profile in {'benchmark_aligned', 'bm25_only', 'hybrid_rrf'}:
-            return self._retrieve_benchmark_aligned(query, top_k)
-
-        try:
-            logger.debug(f"\n{'='*80}")
-            logger.debug(f"PROCESSING QUERY: '{query}'")
-            logger.debug(f"{'='*80}")
-            
-            metadata = {
-                "original_query": query,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            # Step 1: Get conversation context
-            conversation_context = ""
-            if self.enable_conversation and self.conversation:
-                conversation_context = self.conversation.get_recent_context(num_turns=3)
-                if conversation_context:
-                    logger.debug("\n📜 Conversation Context:")
-                    logger.debug(conversation_context)
-            
-            # Step 2: Clarify query using conversation context
-            logger.debug("\n🔍 Step 1: Query Clarification")
-            clarification = self.query_enhancer.clarify_query_with_context(
-                query, conversation_context
-            )
-            
-            clarified_query = clarification.clarified_query
-            # Extract keywords from the refined query and log details. At
-            # DEBUG: a question is the user's text, and the default log
-            # level carries counts and ids only.
-            search_keywords = self.query_enhancer.extract_keywords(clarified_query)
-            logger.debug(f"Original query: {query}")
-            logger.debug(f"Refined query: {clarified_query}")
-            logger.debug(f"Search keywords: {', '.join(search_keywords) if search_keywords else '[]'}")
-            metadata['clarification'] = {
-                'clarified_query': clarification.clarified_query,
-                'needs_clarification': clarification.needs_clarification,
-                'entities': clarification.entities,
-                'resolution_notes': clarification.resolution_notes,
-                'confidence': clarification.confidence
-            }
-            metadata['refined_query'] = clarified_query
-            metadata['search_keywords'] = search_keywords
-            
-            logger.debug(f"  Original: '{query}'")
-            if clarification.needs_clarification:
-                logger.debug(f"  ✓ Clarified: '{clarified_query}'")
-                logger.debug(f"  Reasoning: {clarification.resolution_notes}")
-                logger.debug(f"  Confidence: {clarification.confidence}")
-            else:
-                logger.debug(f"  ✓ No clarification needed")
-            
-            if clarification.entities:
-                logger.debug(f"  Entities: {', '.join(clarification.entities)}")
-            
-            # Step 3: Determine search strategy
-            logger.debug("\n🎯 Step 2: Search Strategy Selection")
-            strategy = self.query_enhancer.determine_search_strategy(
-                query, clarified_query
-            )
-            metadata['strategy'] = {
-                'recommended_strategy': strategy.recommended_strategy,
-                'reasoning': strategy.reasoning,
-                'query_type': strategy.query_type,
-                'expected_answer_type': strategy.expected_answer_type
-            }
-            
-            logger.debug(f"  Recommended: {strategy.recommended_strategy.upper()}")
-            logger.debug(f"  Query Type: {strategy.query_type}")
-            logger.debug(f"  Answer Type: {strategy.expected_answer_type}")
-            logger.debug(f"  Reasoning: {strategy.reasoning}")
-            
-            # Use strategy recommendations or user overrides
-            final_top_k = top_k if top_k is not None else strategy.suggested_top_k
-            final_use_expansion = use_query_expansion if use_query_expansion is not None else strategy.use_query_expansion
-            final_use_reranking = use_reranking if use_reranking is not None else strategy.use_reranking
-            final_method = retrieval_method if retrieval_method is not None else strategy.recommended_strategy
-            
-            logger.debug(f"  Settings: top_k={final_top_k}, expansion={final_use_expansion}, reranking={final_use_reranking}")
-            
-            # Step 4: Generate optimized search queries
-            logger.debug("\n🔎 Step 3: Query Generation")
-            search_queries = self.query_enhancer.generate_search_queries(
-                query, clarified_query, strategy
-            )
-            metadata['search_queries'] = [
-                {'text': sq.text, 'type': sq.type, 'purpose': sq.purpose}
-                for sq in search_queries
-            ]
-            logger.info(f"Generated {len(search_queries)} search query variations")
-            
-            logger.debug(f"  Generated {len(search_queries)} query variations:")
-            for i, sq in enumerate(search_queries[:5], 1):
-                logger.debug(f"    {i}. [{sq.type}] {sq.text}")
-                logger.debug(f"       Purpose: {sq.purpose}")
-            
-            # Step 5: Retrieve with each query variation
-            logger.debug(f"\n📊 Step 4: Retrieval ({final_method} search)")
-            all_results = {}
-            
-            # Select queries based on method
-            queries_to_use = self._select_queries_for_method(search_queries, final_method)
-            
-            if not queries_to_use:
-                queries_to_use = [clarified_query]
-            
-            logger.debug(f"  Using {len(queries_to_use)} queries for {final_method} search")
-            # Log search terms
-            for q in queries_to_use:
-                logger.debug(f"Search term: {q}")
-            
-            for i, q in enumerate(queries_to_use, 1):
-                q_text = q if isinstance(q, str) else q.text
-                logger.debug(f"  Query {i}/{len(queries_to_use)}: '{q_text[:60]}...'")
-                
-                if final_method == 'vector':
-                    results = self.hybrid_retriever.vector_search(q_text, final_top_k * 3)
-                elif final_method == 'bm25':
-                    results = self.hybrid_retriever.keyword_search(q_text, final_top_k * 3)
-                else:  # hybrid
-                    results = self.hybrid_retriever.hybrid_search(
-                        q_text, 
-                        final_top_k * 3,
-                        self.settings.vector_weight,
-                        self.settings.bm25_weight,
-                        include_vector_results_n=self.settings.include_vector_results_n,
-                        include_bm25_results_n=self.settings.include_bm25_results_n
-                    )
-                
-                # Merge results
-                for result in results:
-                    # Attach originating search term for logging
-                    try:
-                        setattr(result, 'search_term', q_text)
-                    except Exception:
-                        pass
-                    chunk_id = result.chunk.chunk_id
-                    if chunk_id in all_results:
-                        # Boost score for multiple occurrences
-                        all_results[chunk_id].score = max(
-                            all_results[chunk_id].score,
-                            result.score * 1.1
-                        )
-                    else:
-                        all_results[chunk_id] = result
-            
-            # Sort by score (to get a consistent order, but do NOT truncate yet)
-            merged_results = sorted(
-                all_results.values(),
-                key=lambda x: x.score,
-                reverse=True
-            )
-            logger.debug(f"  ✓ Retrieved {len(merged_results)} candidate chunks")
-            # Log full retrieval results (human-readable)
-            # Gather retrieval configuration details
-            vectordb_name = self.vector_db.get_name() if hasattr(self.vector_db, 'get_name') else None
-            embedding_model_name = self.embedding_model.get_name() if hasattr(self.embedding_model, 'get_name') else None
-            reranker_name = self.reranker.get_name() if hasattr(self.reranker, 'get_name') else None
-            RAGLogger.log_retrieval_results(
-                logger, 
-                clarified_query, 
-                merged_results,
-                vectordb_name=vectordb_name,
-                embedding_model_name=embedding_model_name,
-                retrieval_method=final_method,
-                reranker_name=reranker_name,
-                top_k=final_top_k
-            )
-
-            # Step 6: Rerank on all merged results using refined query (clarified_query), then take top-k
-            # Always rerank in hybrid mode to utilize ensured inclusion mix
-            if (final_use_reranking or final_method == 'hybrid') and len(merged_results) > final_top_k:
-                logger.debug(f"\n🎖️  Step 5: Reranking {len(merged_results)} results down to top {final_top_k}")
-                with T.stage(T.RERANK, candidates=len(merged_results)):
-                    final_results = self.reranker.rerank(clarified_query, merged_results, final_top_k)
-                logger.debug(f"  ✓ Reranking complete")
-                logger.debug(f"  Used clarified query for reranking: {clarified_query}")
-            else:
-                # No rerank or not enough to rerank
-                final_results = merged_results[:final_top_k]
-                logger.debug(f"\n✓ Skipping reranking; using top {final_top_k} by score")
-            
-            metadata['num_results'] = len(final_results)
-            
-            # Step 7: Store in conversation history
-            if self.enable_conversation and self.conversation:
-                retrieved_context = self.get_retrieval_context(final_results[:3], include_metadata=False)
-                self.conversation.add_turn(
-                    user_query=query,
-                    clarified_query=clarified_query,
-                    retrieved_context=retrieved_context,
-                    assistant_response=assistant_response,
-                    metadata={
-                        'entities': clarification.entities,
-                        'strategy': strategy.recommended_strategy,
-                        'num_results': len(final_results)
-                    }
-                )
-            
-            # Print summary
-            logger.debug(f"\n{'='*80}")
-            logger.debug(f"✅ RETRIEVAL COMPLETE")
-            logger.debug(f"{'='*80}")
-            logger.debug(f"Results: {len(final_results)}")
-            if final_results:
-                logger.debug(f"Top Score: {final_results[0].score:.4f}")
-                logger.debug(f"Top Result: {final_results[0].chunk.doc_title} - {final_results[0].chunk.section_title}")
-            logger.debug(f"{'='*80}\n")
-            
-            return final_results, metadata
-
-        except RESOURCE_CONTROL_EXCEPTIONS:
-            # The query's own limits speak for themselves; wrapping them
-            # would turn a deadline into a 500.
-            raise
-        except Exception as e:
-            raise RAGException(f"Retrieval failed: {e}")
-
-    def _retrieve_benchmark_aligned(
         self, query: str, top_k: int = None
     ) -> Tuple[List[RetrievalResult], Dict[str, Any]]:
-        """Run the original query through a deterministic profile: the frozen
-        Phase 4/5 index, the lexical-only index, or the final hybrid_rrf
-        profile. No query rewriting, no reranking, no model call."""
+        """Run the question through the configured profile, as it was asked.
+
+        Deterministic in every profile: no query rewriting, no reranking, no
+        model call. The metadata says which legs actually answered, which is
+        what lets a dense-unavailable knowledge base say so rather than
+        silently returning keyword hits.
+        """
         try:
             started = time.perf_counter()
             final_top_k = top_k if top_k is not None else self.settings.default_top_k
@@ -1032,7 +590,6 @@ class RAGPipeline:
         question: str,
         retrieval_results: List[RetrievalResult],
         metadata: Dict[str, Any],
-        conversation_context: str,
         temperature: float,
         max_tokens: int,
         started: float,
@@ -1053,10 +610,12 @@ class RAGPipeline:
             T.annotate(selected=len(bundle.sources), tokens=bundle.token_count)
         retrieval_ms = round((time.perf_counter() - started) * 1000.0, 1)
 
-        user_prompt = "Kaynak parçalar:\n\n" + (bundle.text or "(kaynak bulunamadı)") + "\n\n"
-        if conversation_context:
-            user_prompt += "Önceki konuşma:\n" + conversation_context + "\n\n"
-        user_prompt += "Soru: " + question
+        user_prompt = (
+            "Kaynak parçalar:\n\n"
+            + (bundle.text or "(kaynak bulunamadı)")
+            + "\n\nSoru: "
+            + question
+        )
         messages = [
             {"role": "system", "content": self.GROUNDED_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
@@ -1136,6 +695,10 @@ class RAGPipeline:
         )
         return {"answer": answer, "sources": sources, "metadata": metadata}
 
+    # ------------------------------------------------------------------
+    # Index state
+    # ------------------------------------------------------------------
+
     def embedding_index_status(self) -> Dict[str, Any]:
         """Whether the store's vectors belong to the current embedding."""
         retriever = self.hybrid_retriever
@@ -1186,8 +749,8 @@ class RAGPipeline:
         }
 
     def model_chain(self) -> Dict[str, Any]:
-        """The three model roles as configured, plus the retrieval and
-        context settings. Names and ids only; never a key."""
+        """The model roles as configured, plus the retrieval and context
+        settings. Names and ids only; never a key."""
         from components.chunker.deep_analysis import build_configuration, deep_config
         from components.chunker.structural_chunker import (
             HARD_MAX_TOKENS, MIN_TOKENS, SOFT_MAX_TOKENS, TARGET_TOKENS,
@@ -1228,221 +791,66 @@ class RAGPipeline:
                 "expand_neighbors": bool(getattr(self.settings, 'context_expand_neighbors', True)),
             },
         }
-    
-    def _select_queries_for_method(
-        self,
-        search_queries: List[SearchQuery],
-        method: str
-    ) -> List[str]:
-        """Select appropriate queries based on retrieval method"""
-        if method == 'bm25':
-            # For BM25, prefer keyword-optimized queries
-            queries = [
-                sq.text for sq in search_queries 
-                if sq.type in ['keyword', 'original']
-            ][:3]
-        elif method == 'vector':
-            # For vector, prefer semantic queries
-            queries = [
-                sq.text for sq in search_queries 
-                if sq.type in ['semantic', 'alternative', 'original']
-            ][:3]
-        else:  # hybrid
-            # Use all query types
-            queries = [sq.text for sq in search_queries][:4]
-        
-        return queries
-    
-    def retrieve_simple(
-        self,
-        query: str,
-        top_k: int = 5,
-        use_query_expansion: bool = True,
-        use_reranking: bool = True,
-        retrieval_method: str = 'hybrid'
-    ) -> List[RetrievalResult]:
-        """
-        Simple retrieve method without conversation awareness
-        
-        Args:
-            query: Search query
-            top_k: Number of results
-            use_query_expansion: Whether to expand query
-            use_reranking: Whether to rerank results
-            retrieval_method: 'vector', 'bm25', or 'hybrid'
-        
-        Returns:
-            List of retrieval results
-        """
-        logger.debug(f"\nProcessing query: '{query}'")
-        
-        # Step 1: Understand query intent
-        logger.debug("  - Analyzing query intent...")
-        intent = self.query_enhancer.understand_intent(query)
-        logger.debug(f"    Intent: {intent.get('query_type', 'unknown')}")
-        
-        # Step 2: Expand query if needed
-        queries = [query]
-        if use_query_expansion:
-            logger.debug("  - Expanding query...")
-            queries = self.query_enhancer.expand_query(query)
-            logger.debug(f"    Generated {len(queries)} query variations")
-        
-        # Step 3: Retrieve with each query variation
-        logger.debug(f"  - Retrieving with {retrieval_method} search...")
-        all_results = {}
-        
-        for q in queries:
-            if retrieval_method == 'vector':
-                results = self.hybrid_retriever.vector_search(q, top_k * 2)
-            elif retrieval_method == 'bm25':
-                results = self.hybrid_retriever.keyword_search(q, top_k * 2)
-            else:  # hybrid
-                results = self.hybrid_retriever.hybrid_search(
-                    q, 
-                    top_k * 2,
-                    self.settings.vector_weight,
-                    self.settings.bm25_weight,
-                    include_vector_results_n=self.settings.include_vector_results_n,
-                    include_bm25_results_n=self.settings.include_bm25_results_n
-                )
-            
-            # Merge results
-            for result in results:
-                chunk_id = result.chunk.chunk_id
-                if chunk_id in all_results:
-                    all_results[chunk_id].score = max(
-                        all_results[chunk_id].score,
-                        result.score
-                    )
-                else:
-                    all_results[chunk_id] = result
-        
-        # Sort by score
-        merged_results = sorted(
-            all_results.values(),
-            key=lambda x: x.score,
-            reverse=True
-        )[:top_k * 2]
-        
-        logger.debug(f"    Found {len(merged_results)} candidates")
-        
-        # Step 4: Rerank if requested (always rerank for hybrid to respect inclusion mix)
-        if (use_reranking or retrieval_method == 'hybrid') and len(merged_results) > top_k:
-            logger.debug("  - Reranking results...")
-            final_results = self.reranker.rerank(query, merged_results, top_k)
-        else:
-            final_results = merged_results[:top_k]
-        
-        logger.debug(f"✓ Retrieved {len(final_results)} results")
-        return final_results
-    
-    def add_assistant_response(self, response: str):
-        """Add assistant response to the last conversation turn"""
-        if self.enable_conversation and self.conversation and self.conversation.history:
-            self.conversation.history[-1].assistant_response = response
-    
-    def get_conversation_summary(self) -> str:
-        """Get a summary of the conversation"""
-        if not self.enable_conversation or not self.conversation:
-            return "Conversation tracking disabled"
-        
-        return self.conversation.get_summary()
-    
-    def clear_conversation(self):
-        """Clear conversation history"""
-        if self.enable_conversation and self.conversation:
-            self.conversation.clear_history()
-            logger.debug("✓ Conversation history cleared")
-    
-    def get_conversation_entities(self) -> List[str]:
-        """Get entities mentioned in recent conversation"""
-        if self.enable_conversation and self.conversation:
-            return self.conversation.get_last_entities()
-        return []
-    
+
+    # ------------------------------------------------------------------
+    # Answering
+    # ------------------------------------------------------------------
+
     def get_retrieval_context(
         self,
         results: List[RetrievalResult],
         include_metadata: bool = True
     ) -> str:
-        """
-        Format retrieval results as context for LLM
-        
-        Args:
-            results: List of retrieval results
-            include_metadata: Whether to include metadata
-        
-        Returns:
-            Formatted context string
-        """
+        """Retrieved chunks as one plain-text context block."""
         context_parts = []
-        
+
         for i, result in enumerate(results, 1):
             chunk = result.chunk
             context = f"[Result {i}] (Score: {result.score:.3f})\n"
-            
+
             if include_metadata:
                 context += f"Document: {chunk.doc_title}\n"
                 if chunk.section_title:
                     context += f"Section: {chunk.section_title}\n"
-            
+
             context += f"Content: {chunk.content}\n"
             context_parts.append(context)
-        
+
         return "\n---\n".join(context_parts)
-    
+
     def generate_answer(
         self,
         query: str,
         retrieval_results: List[RetrievalResult],
-        conversation_context: Optional[str] = None,
         temperature: float = 0.3,
         max_tokens: int = 500
     ) -> str:
-        """
-        Generate an answer to the query using retrieved documents
-        
-        Args:
-            query: User's question
-            retrieval_results: Retrieved document chunks
-            conversation_context: Optional conversation history
-            temperature: LLM temperature for generation
-            max_tokens: Maximum tokens in response
-        
-        Returns:
-            Generated answer
+        """Answer from retrieved chunks, without the citation contract.
+
+        The plain path, used by every profile but ``hybrid_rrf``, which has
+        its own labelled, budgeted, cited assembly in ``_answer_grounded``.
         """
         logger.debug(f"Generating answer for query: {query}")
         logger.debug(f"Number of retrieval results: {len(retrieval_results)}")
-        
+
         if not retrieval_results:
             logger.warning("No retrieval results available for answer generation")
             return "I don't have enough information to answer this question. Please try rephrasing or ask something else."
-        
-        # Log retrieval results being used
-        # Gather retrieval configuration details
+
         vectordb_name = self.vector_db.get_name() if hasattr(self.vector_db, 'get_name') else None
         embedding_model_name = self.embedding_model.get_name() if hasattr(self.embedding_model, 'get_name') else None
-        reranker_name = self.reranker.get_name() if hasattr(self.reranker, 'get_name') else None
-        # Note: retrieval_method and top_k not available in this context, so they're omitted
         RAGLogger.log_retrieval_results(
-            logger, 
-            query, 
+            logger,
+            query,
             retrieval_results,
             vectordb_name=vectordb_name,
             embedding_model_name=embedding_model_name,
-            reranker_name=reranker_name
         )
-        
-        # Format retrieved documents as context
+
         retrieved_context = self.get_retrieval_context(retrieval_results, include_metadata=True)
-        
-        # Log the context being passed to LLM
         RAGLogger.log_chunks_passed_to_llm(logger, retrieval_results, retrieved_context)
-        
-        # Build the prompt
-        system_prompt = """You are a helpful AI assistant. Your task is to answer the user's question based ONLY on the provided context from retrieved documents and previous conversation.
+
+        system_prompt = """You are a helpful AI assistant. Your task is to answer the user's question based ONLY on the provided context from retrieved documents.
 
 Guidelines:
 - Use ONLY information from the provided context
@@ -1452,34 +860,22 @@ Guidelines:
 - If multiple documents provide relevant information, synthesize them
 - Maintain a professional and helpful tone
 - Respond in the same language as the user's question"""
-        
+
         user_prompt = f"""Context from retrieved documents:
 {retrieved_context}
 
-"""
-        
-        if conversation_context:
-            user_prompt += f"""Previous conversation:
-{conversation_context}
-
-"""
-            logger.debug(f"Including conversation context: {len(conversation_context)} chars")
-        
-        user_prompt += f"""Question: {query}
+Question: {query}
 
 Please provide a clear and accurate answer based on the context provided above."""
-        
-        # Generate response
+
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
-        
+
         logger.info("Calling LLM to generate answer...")
-        # Log full LLM input
         RAGLogger.log_llm_request(logger, messages, temperature, max_tokens)
-        RAGLogger.log_llm_response(logger, "="*80, success=True)
-        
+
         try:
             with T.stage(T.ANSWER):
                 response = self.answer_model.generate(
@@ -1487,11 +883,8 @@ Please provide a clear and accurate answer based on the context provided above."
                     temperature=temperature,
                     max_tokens=max_tokens
                 )
-            RAGLogger.log_llm_response(logger, "="*80, success=True)
-            # Log full LLM response
             RAGLogger.log_llm_response(logger, response, success=True)
             logger.info(f"Answer generated successfully. Length: {len(response)} chars")
-            logger.debug(f"Generated answer: {response}")
             return response.strip()
         except RESOURCE_CONTROL_EXCEPTIONS:
             # Not an answer: the query was stopped by its own limits, and
@@ -1503,84 +896,40 @@ Please provide a clear and accurate answer based on the context provided above."
             logger.error(f"Answer generation failed: {e}", exc_info=True)
             RAGLogger.log_llm_response(logger, str(e), success=False)
             return error_msg
-    
+
     def query(
         self,
         question: str,
         top_k: int = None,
-        use_query_expansion: bool = None,
-        use_reranking: bool = None,
-        retrieval_method: str = None,
         temperature: float = 0.3,
         max_tokens: int = 500
     ) -> Dict[str, Any]:
-        """
-        Complete RAG query: retrieve relevant documents and generate answer
-        
-        Args:
-            question: User's question
-            top_k: Number of documents to retrieve
-            use_query_expansion: Whether to expand query
-            use_reranking: Whether to rerank results
-            retrieval_method: 'vector', 'bm25', or 'hybrid'
-            temperature: LLM temperature for generation
-            max_tokens: Maximum tokens in response
-        
-        Returns:
-            Dictionary with 'answer', 'sources', and 'metadata'
-        """
-        logger.info("="*80)
+        """Retrieve and answer: the whole question path, on one thread."""
+        logger.info("=" * 80)
         logger.info(f"QUERY START: {len(question)} chars")
         logger.debug(f"Question: {question}")
-        logger.info("="*80)
+        logger.info("=" * 80)
         started = time.perf_counter()
 
-        # Get conversation context if available
-        conversation_context = ""
-        if self.enable_conversation and self.conversation:
-            conversation_context = self.conversation.get_recent_context(num_turns=3)
-            if conversation_context:
-                logger.debug(f"Conversation context available: {len(conversation_context)} chars")
-        
-        # Retrieve relevant documents
         logger.info("Phase 1: Document Retrieval")
         with T.stage(T.RETRIEVE):
-            retrieval_results, metadata = self.retrieve(
-                query=question,
-                top_k=top_k,
-                use_query_expansion=use_query_expansion,
-                use_reranking=use_reranking,
-                retrieval_method=retrieval_method
-            )
-        
+            retrieval_results, metadata = self.retrieve(query=question, top_k=top_k)
+
         logger.info(f"Retrieved {len(retrieval_results)} documents")
 
         if self.retrieval_profile == 'hybrid_rrf':
             return self._answer_grounded(
-                question, retrieval_results, metadata, conversation_context,
-                temperature, max_tokens, started,
+                question, retrieval_results, metadata, temperature, max_tokens, started,
             )
 
-        # Generate answer
         logger.info("Phase 2: Answer Generation")
-        logger.debug("\n💬 Generating answer...")
         answer = self.generate_answer(
             query=question,
             retrieval_results=retrieval_results,
-            conversation_context=conversation_context,
             temperature=temperature,
             max_tokens=max_tokens
         )
-        
-        logger.info("Answer generation complete")
-        logger.debug(f"Final answer length: {len(answer)} chars")
-        
-        # Update conversation with answer
-        if self.enable_conversation and self.conversation and self.conversation.history:
-            self.conversation.history[-1].assistant_response = answer
-            logger.debug("Updated conversation history with answer")
-        
-        # Format sources
+
         sources = []
         for result in retrieval_results:
             sources.append({
@@ -1591,14 +940,10 @@ Please provide a clear and accurate answer based on the context provided above."
                 'score': result.score,
                 'content_preview': result.chunk.content[:200] + '...' if len(result.chunk.content) > 200 else result.chunk.content
             })
-        
-        logger.info("="*80)
+
         logger.info("QUERY COMPLETE")
-        logger.info("="*80)
-        
         return {
             'answer': answer,
             'sources': sources,
             'metadata': metadata
         }
-
