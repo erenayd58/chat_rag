@@ -5,6 +5,9 @@ from __future__ import annotations
 
 from flask import Blueprint, redirect, render_template
 
+from application import knowledge_bases
+from application.errors import NotFound
+
 from .context import ensure_session, services
 
 bp = Blueprint('pages', __name__)
@@ -27,7 +30,9 @@ def kb_list_page():
 def kb_detail_page(kb_id):
     """Knowledge base detail: Overview | Documents | Settings."""
     ensure_session()
-    if not services().kb_manager.get(kb_id):
+    try:
+        knowledge_bases.get(services(), kb_id)
+    except NotFound:
         return redirect('/')
     return render_template('kb_detail.html', active_nav='kb', kb_id=kb_id)
 
