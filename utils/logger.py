@@ -252,56 +252,36 @@ class RAGLogger:
     
     @staticmethod
     def log_retrieval_results(
-        logger, 
-        query, 
+        logger,
+        query,
         results,
         vectordb_name: str = None,
         embedding_model_name: str = None,
-        retrieval_method: str = None,
-        top_k: int = None
     ):
-        """Log retrieval results with full content for each chunk (human-readable)"""
-        logger.debug("="*80)
+        """Every retrieved chunk, in full. DEBUG only: this is content."""
+        logger.debug("=" * 80)
         logger.debug("RETRIEVAL RESULTS")
-        # Log retrieval configuration details at the top
         if vectordb_name:
             logger.debug(f"Vector DB: {vectordb_name}")
         if embedding_model_name:
             logger.debug(f"Embedding Model: {embedding_model_name}")
-        if retrieval_method:
-            logger.debug(f"Retrieval Method: {retrieval_method.upper()}")
-        if top_k is not None:
-            logger.debug(f"Top-K: {top_k}")
         logger.debug("-" * 80)
-        logger.debug(f"Query (clarified): {query}")
+        logger.debug(f"Query: {query}")
         logger.debug(f"Number of results: {len(results)}")
         for i, result in enumerate(results, 1):
             chunk = result.chunk
-            # Try to get originating search_term if present
-            search_term = getattr(result, 'search_term', None)
-            if not search_term and chunk.metadata:
-                search_term = chunk.metadata.get('search_term')
-            # Determine root_method from retrieval_method
-            root_method = None
-            if 'bm25' in result.retrieval_method:
-                root_method = 'bm25'
-            elif 'vector' in result.retrieval_method:
-                root_method = 'vector'
-            else:
-                root_method = result.retrieval_method.split('+')[0] if '+' in result.retrieval_method else result.retrieval_method
-            logger.debug(f"\n[Result {i}]" )
+            logger.debug("")
+            logger.debug(f"[Result {i}]")
             logger.debug(f"  Document: {chunk.doc_title}")
             if chunk.section_title:
                 logger.debug(f"  Section: {chunk.section_title}")
             logger.debug(f"  Chunk #: {getattr(chunk, 'chunk_index', 'NA')}")
             logger.debug(f"  Score: {result.score:.4f}")
             logger.debug(f"  Method: {result.retrieval_method}")
-            logger.debug(f"  Root method: {root_method}")
-            logger.debug(f"  Search term: {search_term if search_term else 'N/A'}")
             logger.debug("  Content:")
             logger.debug(chunk.content)
-        logger.debug("="*80)
-    
+        logger.debug("=" * 80)
+
     @staticmethod
     def log_chunks_passed_to_llm(logger, chunks, context_text):
         """Log full context passed to LLM (human-readable)"""

@@ -58,7 +58,7 @@ by the caller's own deadline.
 
 **Local models are memory, and the pipeline cache is the dial.** A pipeline
 holds an embedding model, a store handle and a whole knowledge base's lexical
-index. Embedding and cross-encoder models are shared process-wide by name
+index. Embedding models are shared process-wide by name
 (`caches.local_models` shows what is resident), which took the model copies
 out of `PIPELINE_CACHE_MAX` — but the lexical indexes and store handles still
 scale with it. On a small host, lower `PIPELINE_CACHE_MAX` before anything

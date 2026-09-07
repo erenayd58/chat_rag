@@ -55,7 +55,7 @@ budget slot is a context manager, and the trace is closed in a ``finally``;
 a query that raises anywhere gives everything back on the way out.
 
 Measurement reuses Phase 3's single abstraction: a query is a ``JobTrace``
-of kind ``query`` with its own stages (retrieve, rerank, context, answer),
+of kind ``query`` with its own stages (retrieve, context, answer),
 and the answer wrapper records provider seconds and slot wait on it exactly
 as the Deep wrapper does. Nothing here is a second telemetry system.
 """

@@ -55,11 +55,10 @@ STAGES = (QUEUE_WAIT, PARSE, CHUNK, DEEP, EMBED, INDEX, LEDGER, VIEWER)
 #: the registry keeps the two kinds in separate windows so a bad afternoon
 #: of chat cannot make the ingest picture look wrong or the reverse.
 RETRIEVE = "retrieve"
-RERANK = "rerank"
 CONTEXT = "context"
 ANSWER = "answer"
 
-QUERY_STAGES = (RETRIEVE, RERANK, CONTEXT, ANSWER)
+QUERY_STAGES = (RETRIEVE, CONTEXT, ANSWER)
 
 KIND_INGEST = "ingest"
 KIND_QUERY = "query"

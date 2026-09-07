@@ -192,14 +192,14 @@ lease — is released on every exit.
 
 **Local models are loaded once per name.** A pipeline is built per browser
 session and knowledge base; each used to load its own copy of the
-sentence-transformers embedder (and the
-cross-encoder), so `PIPELINE_CACHE_MAX` was also a multiplier on model
-memory. Both are now shared process-wide by model name; `caches.local_models`
-on the metrics endpoint shows what is resident and how often it was loaded.
+sentence-transformers embedder, so `PIPELINE_CACHE_MAX` was also a multiplier
+on model memory. They are now shared process-wide by model name;
+`caches.local_models` on the metrics endpoint shows what is resident and how
+often it was loaded.
 
 **The Lab's search endpoints run under the same limits.** `POST
-/api/chunks/search-vector`, `/api/chunks/search-bm25`,
-`/api/experiment/search_chunks` and `/api/experiment/rank_chunks` do the
+/api/chunks/search-vector`, `/api/chunks/search-bm25` and
+`/api/experiment/search_chunks` do the
 front half of a query on the request thread — embed the question, search the
 store, build the lexical index if this pipeline has not built it yet — so
 under no limit at all they were a way around `QUERY_MAX_ACTIVE`: a burst of
