@@ -37,6 +37,20 @@ DOCUMENTED_AS_REMOVED = {
     "LOG_TOKEN_USAGE": "configuration.md — the setting Phase 7B found inert",
 }
 
+#: Names shaped like a setting that are really Python constants in the
+#: *library*, which this repository documents but does not define. The scan
+#: below reads only this repository's own tracked ``*.py``, so a constant that
+#: lives in ``chunk`` can never satisfy it however correctly it is documented
+#: — the boundary the docs describe is exactly the boundary that hides it.
+#:
+#: Each entry names the file it is defined in, and
+#: ``test_every_library_constant_listed_really_exists`` checks that against the
+#: sibling checkout, so this is a statement about the library that can be
+#: falsified rather than a way to silence the guard.
+LIBRARY_CONSTANTS = {
+    "CONSOLE_API": "src/amsc/surface.py — the modules chat_rag may import",
+}
+
 #: Files whose *content* is the source of truth for a variable name.
 _SOURCE_GLOBS = ("*.py", "*.ps1", "*.yml", "*.yaml", "Dockerfile", "env.example",
                  ".env.docker", "requirements.txt")
@@ -193,12 +207,14 @@ def test_every_setting_the_docs_name_is_one_the_code_reads():
         for name, where in sorted(named.items())
         if name not in source
         and name not in DOCUMENTED_AS_REMOVED
+        and name not in LIBRARY_CONSTANTS
         and name not in filenames
         and name not in constants
     }
     assert unread == {}, "\n".join(
         ["documents name settings no code reads; wire them, remove them, or "
-         "list them in DOCUMENTED_AS_REMOVED with the reason:"]
+         "list them in DOCUMENTED_AS_REMOVED (a knob that is gone) or "
+         "LIBRARY_CONSTANTS (a constant that lives in chunk), with the reason:"]
         + [f"  {name}  <- {', '.join(where)}" for name, where in unread.items()]
     )
 
@@ -210,6 +226,47 @@ def test_every_removal_listed_is_really_removed():
     assert resurrected == [], (
         f"these are read by code again; drop them from DOCUMENTED_AS_REMOVED: "
         f"{resurrected}"
+    )
+
+
+def test_every_library_constant_listed_really_exists():
+    """The other allow-list, held to the same standard.
+
+    An entry claims two things -- that the name is defined in the library, and
+    where -- and both are checked against the sibling checkout. Without one the
+    test skips rather than guessing, exactly as ``test_amsc_pin.py`` does; the
+    claim is then unverified here but it is never quietly assumed true.
+    """
+    if not CHUNK.exists():
+        pytest.skip("no chunk checkout beside this one")
+    wrong = []
+    for name, where in sorted(LIBRARY_CONSTANTS.items()):
+        path = CHUNK / where.split(" — ")[0].split(" -- ")[0].strip()
+        if not path.is_file():
+            wrong.append(f"{name}: {path.name} does not exist in the library")
+            continue
+        if not re.search(rf"^{re.escape(name)}\s*[:=]", _read(path), re.M):
+            wrong.append(f"{name} is not defined in {path.name}")
+    assert wrong == [], (
+        "LIBRARY_CONSTANTS describes the library wrongly:\n  " + "\n  ".join(wrong)
+    )
+
+
+def test_no_library_constant_hides_a_setting_this_repository_reads():
+    """The allow-list must not be a way to stop checking a real setting.
+
+    If a name on it ever becomes something the application reads from the
+    environment, the entry is wrong and the ordinary rule should apply again.
+    """
+    source = _shipping_source()
+    shadowed = sorted(
+        name for name in LIBRARY_CONSTANTS
+        if re.search(rf"getenv\(\s*[\"']{re.escape(name)}[\"']", source)
+        or re.search(rf"environ\[\s*[\"']{re.escape(name)}[\"']", source)
+    )
+    assert shadowed == [], (
+        "these are read from the environment here after all; drop them from "
+        f"LIBRARY_CONSTANTS: {shadowed}"
     )
 
 

@@ -1,0 +1,18 @@
+# The frozen V4 fixtures travel byte for byte.
+#
+# `tests/fixtures/frozen_v4/manifest.json` records a sha256 for every file
+# beside it, and `test_frozen_v4_equivalence.py` refuses to run against bytes
+# that do not match -- which is the whole point of a frozen equivalence
+# fixture. Git for Windows checks out with `core.autocrlf=true` by default,
+# which rewrites LF to CRLF on the way into the working tree, changing exactly
+# those hashes. (The `.npz` is unaffected: git leaves binary files alone, which
+# is why three of the four files failed and one did not.)
+#
+# The committed blobs are correct and already hash to the manifest values.
+# `-text` only stops the checkout from altering them on the way out.
+#
+# Without this, a fresh clone on Windows fails
+# test_adapter_and_pinned_v4_are_strictly_equivalent_to_authoritative_a4 while
+# the same clone on Linux passes. The same rule, and the same reason, applies
+# to the frozen corpora in the `chunk` repository.
+tests/fixtures/** -text
