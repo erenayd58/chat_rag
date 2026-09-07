@@ -569,7 +569,7 @@ The screens are `/` (knowledge bases), `/chat`, `/documents`, `/chunks` and
 | the Lab | `POST /api/chunks/search-vector`, `POST /api/chunks/search-bm25`, `POST /api/experiment/search_chunks`, `POST /api/experiment/rank_chunks` |
 | chunks | `GET|POST /api/chunks`, `GET|PUT|DELETE /api/chunks/<chunk_id>` |
 | gold set | `GET|POST /api/goldset`, `DELETE /api/goldset/<entry_id>` |
-| the Viewer bridge | `GET /api/demo/workspace`, `GET /api/demo/methods`, `GET|POST /api/demo/viewer-analysis/<doc_id>`, `POST /api/demo/viewer-analysis/<doc_id>/methods` |
+| the Viewer bridge | `GET /api/demo/viewer`, `GET /api/demo/workspace`, `GET /api/demo/methods`, `GET|POST /api/demo/viewer-analysis/<doc_id>`, `POST /api/demo/viewer-analysis/<doc_id>/methods`, `GET /api/demo/viewer-analysis/<doc_id>/payload`, `GET /api/demo/viewer-analysis/<doc_id>/chunks` |
 | instruments | `GET /api/health`, `GET /api/ops/metrics`, `GET /api/stats`, `GET /api/models`, `GET /api/retrieval/capabilities` |
 
 `POST /api/documents/upload` and `POST /api/query` are the two that can refuse
