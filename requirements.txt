@@ -5,7 +5,7 @@ sentence-transformers
 # `from amsc... import` in product code has to resolve at this revision;
 # tests/unit/test_amsc_pin.py checks that against the sibling checkout's
 # git history, so a stale pin fails the suite instead of the Docker build.
-amsc-poc @ git+https://github.com/erenayd58/chunk.git@1e6419d695c14bb542bbaab93487a14bf4029f9f
+amsc-poc @ git+https://github.com/erenayd58/chunk.git@0d1edceb11ad8b64a37d144a0306a6b37f6c24e1
 chromadb
 openai
 rank-bm25
