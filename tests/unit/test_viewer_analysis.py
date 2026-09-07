@@ -125,7 +125,11 @@ def test_only_the_selected_methods_are_produced(workspace):
 
 
 def test_the_same_bytes_are_one_document_however_often_they_are_uploaded(workspace):
-    """A second upload of the same PDF enriches the document it already is."""
+    """A second upload of the same PDF enriches the document it already is.
+
+    One directory, one canonical, one variant per method -- and each upload
+    keeps its own choice of which of them it is asking about.
+    """
     analysis.stage(doc_id="first", label="Ayni belge.pdf", units=_corpus(),
                    methods=["structure-only"], content_sha="same-bytes")
     analysis._queue.join()
@@ -133,13 +137,22 @@ def test_the_same_bytes_are_one_document_however_often_they_are_uploaded(workspa
                    methods=["markdown"], content_sha="same-bytes")
     analysis._queue.join()
 
-    assert analysis.key_for("first", "same-bytes") == analysis.key_for("second", "same-bytes")
+    key = analysis.key_for("first", "same-bytes")
+    assert key == analysis.key_for("second", "same-bytes")
     directories = [d.name for d in workspace.iterdir() if d.is_dir()]
     assert len(directories) == 1, f"the same PDF made {len(directories)} documents: {directories}"
-    payload = analysis.payload("second", "same-bytes")
-    assert sorted(payload["arms"]) == ["markdown", "structure-only"], (
-        "the second upload's method joins the first's, in one document"
-    )
+
+    # Content level: the second upload's method joined the first's, and both
+    # variants are on disk, built once.
+    state = analysis._read_state_file(key)
+    assert state["ready_methods"] == ["markdown", "structure-only"]
+    assert analysis.chunks_path(key, "markdown") is not None
+    assert analysis.chunks_path(key, "structure-only") is not None
+
+    # Upload level: each console record answers for what it asked for.
+    assert list(analysis.payload("second", "same-bytes")["arms"]) == ["markdown"]
+    assert list(analysis.payload("first", "same-bytes")["arms"]) == ["structure-only"]
+
     # Both console records point at the one analysis.
     assert sorted(analysis.states()) == ["first", "second"]
     assert analysis.states()["first"]["key"] == analysis.states()["second"]["key"]

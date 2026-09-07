@@ -399,7 +399,12 @@ them side by side under a single document. Identity is the file's content
 hash: uploading the same PDF again adds variants to the document that is
 already there instead of making a second one, and
 `POST /api/demo/viewer-analysis/<doc_id>/methods` adds a method later without
-re-reading the file. `GET /api/demo/methods` says which methods this machine
+re-reading the file. The *analysis* is shared that way; the *choice* is not.
+Each upload record keeps the methods it asked for, and that is what the Viewer
+opens it on — an upload that ticked Standard and Hybrid is not shown the
+Markdown and Deep Analysis variants another upload of the same file left
+behind. The shared analysis keeps all of them, so neither upload costs a
+second parse. `GET /api/demo/methods` says which methods this machine
 can actually run, and why one cannot. The methods themselves are defined once,
 in the library's registry (`amsc.methods` in the chunk repository): key,
 engine kind, product name, summary and capabilities. `components/viewer/methods.py`

@@ -4,12 +4,30 @@ The product model this implements:
 
     DOCUMENT   the PDF someone uploaded, identified by its *content*
     VARIANT    one chunking method run over that document's canonical
+    UPLOAD     one console record pointing at that document, with the
+               methods *that* upload asked for
 
 A document is parsed once. Its canonical units are written here and every
 requested method runs over that same file, so three methods cost one parse.
 Re-uploading the same bytes does not make a second document: identity is the
 content hash, so the existing analysis gains the new variants instead. Two
 files with the same name and different bytes stay two documents.
+
+Sharing the analysis is not sharing the *choice*. The methods are picked per
+upload, and an upload that asked for Standard and Hybrid must open on Standard
+and Hybrid -- not on everything every other upload of the same PDF ever
+produced. So the record keeps two different things apart:
+
+* **content level** -- ``requested`` and ``ready_methods``: every variant this
+  content has, built once and reused by every upload of it. Nothing here is
+  ever thrown away to satisfy one upload's choice.
+* **upload level** -- ``selections``, one entry per ``doc_id``: what that
+  upload asked for. What an upload may *see* is its own selection narrowed to
+  the variants that are actually ready, and that is what
+  :func:`payload` serves and what the console reports for it.
+
+A record written before uploads carried their own selection has none, and then
+the two levels are one: those documents keep behaving exactly as they did.
 
 What is never done twice:
 
@@ -211,6 +229,9 @@ def _normalise_state(key: str, state: dict) -> dict:
     state.setdefault("doc_ids", [])
     state.setdefault("methods", {})
     state.setdefault("requested", [])
+    # doc_id -> the methods that upload asked for. Absent on every record
+    # written before uploads carried their own choice; see ``selection_for``.
+    state.setdefault("selections", {})
     if state.get("status") == STATUS_READY and not payload_path(key).is_file():
         state["status"] = STATUS_PENDING
         state["error"] = "the viewer payload is gone; it will be built again"
@@ -250,20 +271,64 @@ def _all_states() -> dict[str, dict]:
     return found
 
 
+def selection_for(state: dict, doc_id: str) -> list[str]:
+    """The methods *this upload* asked for, in display order.
+
+    An upload that recorded no selection -- every record written before
+    uploads carried one -- falls back to the content-level request, which is
+    what those documents have always shown. A method that is no longer
+    registered is dropped rather than named, here as everywhere else.
+    """
+    recorded = (state.get("selections") or {}).get(doc_id)
+    wanted = recorded if recorded else (state.get("requested") or [])
+    return [key for key in M.ORDER if key in wanted]
+
+
+def visible_methods(state: dict, doc_id: str) -> list[str]:
+    """What this upload may be shown: its own selection, narrowed to the
+    variants that are actually built.
+
+    The narrowing is the whole point of keeping the two levels apart. The
+    other uploads' variants stay on disk and stay reusable; they are simply
+    not this upload's answer.
+    """
+    ready = state.get("ready_methods") or []
+    return [key for key in selection_for(state, doc_id) if key in ready]
+
+
+def _for_document(state: dict, doc_id: str) -> dict:
+    """One content-level record, answered for one upload."""
+    return {
+        **state,
+        "doc_id": doc_id,
+        # What this upload asked for, and what of it is ready. The
+        # content-level ``requested`` / ``ready_methods`` are left alone: they
+        # are what the analysis holds, and several uploads share them.
+        "selected_methods": selection_for(state, doc_id),
+        "available_methods": visible_methods(state, doc_id),
+    }
+
+
 def read_state(doc_id: str, content_sha: str | None = None) -> dict:
     """One console document's analysis state, derived from disk."""
-    state = _read_state_file(key_for(doc_id, content_sha))
-    state["doc_id"] = doc_id
-    return state
+    return _for_document(_read_state_file(key_for(doc_id, content_sha)), doc_id)
 
 
-def _set_state(key: str, **fields: Any) -> dict:
+def _set_state(key: str, _merge: Any = None, **fields: Any) -> dict:
     # One critical section for the read and the write. Two writers would
     # otherwise each merge onto the record they read and the later one would
     # drop the other's fields; and a reader holding the file open is enough to
     # make the rename underneath fail outright on Windows.
+    #
+    # ``_merge`` is for a field whose new value is a function of the old one --
+    # the sets of doc_ids, requested methods and per-upload selections. Two
+    # uploads of the same PDF landing together would otherwise each add
+    # themselves to the record they read, and the later write would drop the
+    # earlier one's upload entirely.
     with _state_lock(key):
         state = _state_for_update(key)
+        if _merge is not None:
+            fields = {**fields, **_merge(state)}
         state.update(fields)
         state["key"] = key
         state["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -282,7 +347,7 @@ def states() -> dict[str, dict]:
     found: dict[str, dict] = {}
     for key, state in _all_states().items():
         for doc_id in state.get("doc_ids") or [key]:
-            found[doc_id] = {**state, "doc_id": doc_id}
+            found[doc_id] = _for_document(state, doc_id)
     return found
 
 
@@ -300,7 +365,14 @@ def discard(doc_id: str, content_sha: str | None = None) -> bool:
     state = _read_state_file(key)
     remaining = [d for d in (state.get("doc_ids") or []) if d != doc_id]
     if remaining:
-        _set_state(key, doc_ids=remaining)
+        # The upload goes, and its choice with it. The variants it selected
+        # stay: they belong to the content, and another upload may be
+        # showing them.
+        _set_state(key, _merge=lambda current: {
+            "doc_ids": [d for d in (current.get("doc_ids") or []) if d != doc_id],
+            "selections": {d: keys for d, keys in (current.get("selections") or {}).items()
+                           if d != doc_id},
+        })
         return True
     with _lock:
         # Marked before the removal, so a build that is between two writes
@@ -346,9 +418,47 @@ def set_unit_resolver(resolver) -> None:
 
 
 def _merge_requested(state: dict, wanted: Sequence[str]) -> list[str]:
-    """The methods this document should end up with, in display order."""
+    """The methods this *document* should end up with, in display order.
+
+    Content level: the union of every upload's choice, because a variant is
+    built once and reused by all of them.
+    """
     have = set(state.get("requested") or []) | set(wanted or ())
     return [key for key in M.ORDER if key in have]
+
+
+def _joins(doc_id: str, *, selected: Sequence[str] | None = None,
+           requested: Sequence[str] | None = None):
+    """The record fields that change when an upload joins this document.
+
+    Returned as a function of the record *as the write sees it*, so that two
+    uploads of one PDF landing together both end up in it: each would
+    otherwise merge onto the copy it read, and the later write would drop the
+    earlier upload and its selection outright.
+
+    ``selected`` is what this upload asked for -- an upload-level fact, and a
+    content-level request as well. ``requested`` alone widens the document
+    without recording a choice: the catch-up path for a document ingested
+    before this packaging existed, where nobody picked anything and the two
+    levels stay one.
+    """
+    def merge(state: dict) -> dict:
+        fields: dict[str, Any] = {
+            "doc_ids": sorted(set(state.get("doc_ids") or []) | {doc_id}),
+        }
+        if selected is not None:
+            selections = dict(state.get("selections") or {})
+            # An upload's own selection only ever grows, and only by its own
+            # asking: another upload of the same bytes never widens it.
+            mine = set(selections.get(doc_id) or []) | set(selected)
+            selections[doc_id] = [key for key in M.ORDER if key in mine]
+            fields["selections"] = selections
+        widen = selected if selected is not None else requested
+        if widen is not None:
+            fields["requested"] = _merge_requested(state, list(widen))
+        return fields
+
+    return merge
 
 
 def request_build(*, doc_id: str, label: str, kb_id: str | None = None,
@@ -365,18 +475,19 @@ def request_build(*, doc_id: str, label: str, kb_id: str | None = None,
     key = key_for(doc_id, content_sha)
     state = _read_state_file(key)
     # An older record carries only its ingest mode; honour that as the
-    # variant set rather than inventing methods it was never given.
+    # variant set rather than inventing methods it was never given. It is not
+    # recorded as an upload-level selection either: nobody chose it.
     default = [M.STANDARD] + ([M.DEEP] if chunking_mode == "deep_analysis" else [M.DEEP])
     _set_state(
         key,
+        _merge=(_joins(doc_id, selected=list(wanted)) if wanted is not None
+                else _joins(doc_id, requested=default)),
         status=STATUS_PENDING,
         label=label,
         kb_id=kb_id,
         kb_name=kb_name,
         chunking_mode=chunking_mode,
         content_sha=content_sha or state.get("content_sha"),
-        doc_ids=sorted(set(state.get("doc_ids") or []) | {doc_id}),
-        requested=_merge_requested(state, wanted if wanted is not None else default),
         error=None,
     )
     enqueue(key)
@@ -414,7 +525,9 @@ def stage(
         unit_count = state.get("unit_count") or _count_lines(units_path(key))
     else:
         unit_count = _dump_units(list(units), units_path(key))
-    wanted = M.normalise(methods) if methods else _merge_requested(state, [M.STANDARD, M.DEEP])
+    # What *this* upload asked for. Without an explicit list nobody chose
+    # anything, so the document is widened and no selection is recorded.
+    selected = M.normalise(methods) if methods else None
 
     variants = dict(state.get("methods") or {})
     if deep_result is not None:
@@ -430,14 +543,14 @@ def stage(
 
     _set_state(
         key,
+        _merge=(_joins(doc_id, selected=selected) if selected is not None
+                else _joins(doc_id, requested=[M.STANDARD, M.DEEP])),
         status=STATUS_PENDING,
         label=label,
         kb_id=kb_id,
         kb_name=kb_name,
         chunking_mode=chunking_mode,
         content_sha=content_sha or state.get("content_sha"),
-        doc_ids=sorted(set(state.get("doc_ids") or []) | {doc_id}),
-        requested=_merge_requested(state, wanted),
         methods=variants,
         unit_count=unit_count,
         # The ingest's own measured parse time; a re-stage without a fresh
@@ -456,12 +569,16 @@ def add_methods(doc_id: str, wanted: Sequence[str], content_sha: str | None = No
     again, but by asking for another analysis of the one already here. The
     canonical is on disk, so nothing is parsed and no variant already built
     is built again.
+
+    The asking is this upload's, so the method joins *its* selection -- the
+    other uploads of the same content are not shown something nobody asked
+    them for. A variant another upload already built is simply adopted.
     """
     key = key_for(doc_id, content_sha)
     state = _read_state_file(key)
     if state.get("status") == STATUS_MISSING:
         raise FileNotFoundError(f"{doc_id} has no analysis to add to")
-    _set_state(key, requested=_merge_requested(state, M.normalise(wanted)),
+    _set_state(key, _merge=_joins(doc_id, selected=M.normalise(wanted)),
                status=STATUS_PENDING, error=None)
     enqueue(key)
     return read_state(doc_id, content_sha)
@@ -884,7 +1001,66 @@ def chunk_rows(doc_id: str, method: str, content_sha: str | None = None) -> list
     ]
 
 
+def _for_upload(payload: dict, state: dict, doc_id: str) -> dict | None:
+    """One upload's view of the shared payload.
+
+    The file on disk is the *content's* analysis and carries every variant the
+    content has -- that is what makes a second upload of the same PDF free.
+    This narrows it to the methods this upload actually asked for, in memory,
+    at read time: nothing is rebuilt, nothing is deleted, and another upload
+    of the same bytes goes on seeing its own choice.
+
+    Narrowing has to take the cross-arm work with it. The difference points
+    are computed across arms and the Deep decision trail annotates the
+    Standard arm's cuts; leaving either in place while its arm is hidden would
+    have the page explain a comparison it is not showing.
+    """
+    visible = visible_methods(state, doc_id)
+    arms = payload.get("arms") or {}
+    hidden = [arm for arm in arms if arm not in visible]
+
+    if hidden:
+        payload = dict(payload)
+        payload["arms"] = {arm: spec for arm, spec in arms.items() if arm in visible}
+        if not payload["arms"]:
+            # Nothing this upload asked for is built. That is the same answer
+            # as "no analysis yet", and the state record says which methods
+            # are pending or failed.
+            return None
+        payload["diffs"] = []
+        payload["diffPages"] = []
+        if M.DEEP in hidden:
+            payload.pop("story", None)
+            payload["deepDiffPages"] = []
+            payload["meta"] = {**(payload.get("meta") or {}), "deep": None}
+
+    live = dict(payload.get("live") or {})
+    if live:
+        variants = live.get("methods") or {}
+        chosen = set(selection_for(state, doc_id))
+        payload = dict(payload)
+        payload["live"] = {
+            **live,
+            "docId": doc_id,
+            # This upload's own request, not the union every upload of this
+            # content adds up to.
+            "requested": selection_for(state, doc_id),
+            "methods": {
+                key: (variants.get(key) or {"status": STATUS_MISSING}) if key in chosen
+                else {"status": STATUS_MISSING}
+                for key in M.ORDER
+            },
+            "deepSource": live.get("deepSource") if M.DEEP in visible else None,
+        }
+    return payload
+
+
 def payload(doc_id: str, content_sha: str | None = None) -> dict | None:
+    """The finished analysis, as *this upload* asked for it.
+
+    ``None`` when there is nothing to show it: no payload built yet, or none
+    of the methods it selected are ready.
+    """
     key = key_for(doc_id, content_sha)
     path = payload_path(key)
     # Same lock as the state record: this file is rewritten at the end of every
@@ -893,9 +1069,10 @@ def payload(doc_id: str, content_sha: str | None = None) -> dict | None:
         if not path.is_file():
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            shared = json.loads(path.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             return None
+    return _for_upload(shared, _read_state_file(key), doc_id)
 
 
 # --------------------------------------------------------------------------

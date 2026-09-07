@@ -283,12 +283,20 @@ def workspace_snapshot() -> dict:
                 'unit_count': viewer.get('unit_count'),
                 'error': viewer.get('error'),
                 'updated_at': viewer.get('updated_at'),
-                # Which chunking methods this document actually has, and what
-                # each of them cost. The Viewer offers exactly these.
-                'requested': viewer.get('requested') or [],
-                'ready_methods': viewer.get('ready_methods') or [],
-                'failed_methods': viewer.get('failed_methods') or [],
-                'methods': viewer.get('methods') or {},
+                # Two levels, deliberately apart. ``requested`` and
+                # ``ready_methods`` are what *this upload* asked for and what
+                # of it is built -- the Viewer offers exactly these, so it
+                # never shows a method this upload did not choose.
+                'requested': viewer.get('selected_methods') or [],
+                'ready_methods': viewer.get('available_methods') or [],
+                # ``content_*`` is what the shared analysis holds: every
+                # variant this content has, reusable by any upload of it.
+                'content_requested': viewer.get('requested') or [],
+                'content_ready_methods': viewer.get('ready_methods') or [],
+                'failed_methods': [m for m in (viewer.get('failed_methods') or [])
+                                   if m in (viewer.get('selected_methods') or [])],
+                'methods': {m: spec for m, spec in (viewer.get('methods') or {}).items()
+                            if m in (viewer.get('selected_methods') or [])},
                 # The same PDF uploaded twice is one analysis; this is how a
                 # caller can tell that two records are one document.
                 'analysis_key': viewer.get('key'),
@@ -577,12 +585,26 @@ def demo_viewer_chunks(doc_id):
             return jsonify({'success': False, 'state': state,
                             'error': f'no viewer analysis for {doc_id}'}), 404
         wanted = (request.args.get('method') or '').strip()
-        ready = state.get('ready_methods') or []
-        chosen = [wanted] if wanted else list(ready)
+        # What this upload may be asked about: its own selection, narrowed to
+        # the variants that are built. Another upload of the same PDF may have
+        # more of them; they are not this document's answer.
+        available = state.get('available_methods') or []
+        chosen = [wanted] if wanted else list(available)
         unknown = [m for m in chosen if m not in viewer_methods.METHODS]
         if unknown:
             return jsonify({'success': False,
                             'error': f"unknown chunking method {unknown[0]!r}"}), 400
+        # A method the content has but this upload did not select is not
+        # this document's to serve, and saying so is more use than an empty
+        # arm list.
+        refused = [m for m in chosen if m not in available]
+        chosen = [m for m in chosen if m in available]
+        if refused and not chosen:
+            return jsonify({
+                'success': False, 'state': state,
+                'error': (f"{refused[0]!r} is not one of this document's "
+                          f"analysis methods ({', '.join(available) or 'none ready'})"),
+            }), 404
 
         arms = {}
         for method in chosen:

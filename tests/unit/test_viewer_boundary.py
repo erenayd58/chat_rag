@@ -144,6 +144,8 @@ def test_a_failed_rebuild_keeps_the_last_published_payload(workspace, monkeypatc
     assert _build()["status"] == analysis.STATUS_READY
     published = analysis.payload("edge-doc")
     assert published is not None and published["arms"]
+    key = analysis.key_for("edge-doc")
+    on_disk = analysis.payload_path(key).read_bytes()
 
     import amsc.viewer_corpus as corpus
 
@@ -158,7 +160,16 @@ def test_a_failed_rebuild_keeps_the_last_published_payload(workspace, monkeypatc
     assert state["status"] == analysis.STATUS_FAILED
     assert "RuntimeError" in (state.get("error") or "")
     # The published artifact is untouched, byte for byte.
-    assert analysis.payload("edge-doc") == published
+    assert analysis.payload_path(key).read_bytes() == on_disk
+    # And so is the analysis it serves: the same arms, over the same units.
+    served = analysis.payload("edge-doc")
+    for part in ("arms", "units", "pages", "meta", "label"):
+        assert served[part] == published[part], part
+    # The one thing that did change is the record of what was asked for --
+    # the method that failed is named as requested and reported absent, not
+    # quietly dropped.
+    assert M.MARKDOWN in served["live"]["requested"]
+    assert served["live"]["methods"][M.MARKDOWN]["status"] != analysis.STATUS_READY
     # And the arms that were on disk before are still fetchable.
     assert analysis.chunk_rows("edge-doc", M.STANDARD)
 
