@@ -6,7 +6,7 @@ from flask import Blueprint, request
 
 from application import goldsets as use_case
 
-from .context import services
+from ..context import services
 from .responses import install, ok
 
 bp = Blueprint('goldsets', __name__)

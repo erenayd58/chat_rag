@@ -9,13 +9,15 @@ added would never be found at all.
 
 So this module pins the surface itself, in two halves.
 
-**What exists.** The README's *console API* table is the published list, and
-it is compared against the application's real routing table. Neither may
-drift from the other: a new endpoint is documented in the same commit that
-adds it, and a removal is a removal from both. That table is also the input
-to the migration -- the set of paths and methods a FastAPI application has
-to answer -- and to the cleanup before it, because a route no screen and no
-client calls is visible here as a row nobody claims.
+**What exists.** Two published lists, held against the application's real
+routing table: the README's *console API* table (the Flask-era surface the
+console still speaks) and the endpoint tables in ``docs/api-v1.md`` (the
+product contract). Neither may drift from the routing table in either
+direction: a new endpoint is documented in the same commit that adds it, and
+a removal is a removal from both. Those tables are also the input to the
+migration -- the set of paths and methods a FastAPI application has to answer
+-- and to the cleanup before it, because a route no screen and no client calls
+is visible here as a row nobody claims.
 
 **What a refusal means.** The distinctions the product makes are a contract:
 a malformed request, an unknown resource, a rejected payload and a server
@@ -64,19 +66,41 @@ FRAMEWORK_ROUTES = {("GET", "/static/<path:filename>")}
 IMPLICIT_METHODS = {"HEAD", "OPTIONS"}
 
 
-def _documented_api() -> set[tuple[str, str]]:
+def _endpoints(text: str) -> set[tuple[str, str]]:
+    """Every ``VERB /api/...`` a piece of documentation publishes."""
+    found: set[tuple[str, str]] = set()
+    for verbs, path in re.findall(r"`([A-Z|]+)\s+(/api/[^`\s]+)`", text):
+        for verb in verbs.split("|"):
+            found.add((verb, path))
+    return found
+
+
+def _documented_legacy() -> set[tuple[str, str]]:
     """The endpoints the README's *console API* table publishes."""
     readme = (REPO / "README.md").read_text(encoding="utf-8")
     section = readme.split("## The console API", 1)
     assert len(section) == 2, "the README no longer has a console API section"
-    table = section[1].split("\n## ", 1)[0]
-
-    found: set[tuple[str, str]] = set()
-    for verbs, path in re.findall(r"`([A-Z|]+)\s+(/api/[^`\s]+)`", table):
-        for verb in verbs.split("|"):
-            found.add((verb, path))
+    found = _endpoints(section[1].split("\n## ", 1)[0])
     assert found, "the console API table listed no endpoints"
     return found
+
+
+def _documented_v1() -> set[tuple[str, str]]:
+    """The endpoints ``docs/api-v1.md`` publishes as the product contract.
+
+    A document that *is* the contract has to be the whole list rather than a
+    sample of it, so it is held against the routing table in both directions
+    exactly as the README's table is.
+    """
+    doc = REPO / "docs" / "api-v1.md"
+    assert doc.exists(), "the /api/v1 contract has no published endpoint list"
+    found = _endpoints(doc.read_text(encoding="utf-8"))
+    assert found, "docs/api-v1.md listed no endpoints"
+    return found
+
+
+def _documented_api() -> set[tuple[str, str]]:
+    return _documented_legacy() | _documented_v1()
 
 
 def _live_routes() -> set[tuple[str, str]]:
@@ -101,9 +125,34 @@ def test_the_documented_api_is_exactly_the_api_that_is_served():
     undocumented = sorted(served - documented)
     missing = sorted(documented - served)
     assert (undocumented, missing) == ([], []), (
-        "console API drift.\n"
-        "  served but not in the README table: " + repr(undocumented) + "\n"
-        "  in the README table but not served: " + repr(missing)
+        "API drift.\n"
+        "  served but published nowhere: " + repr(undocumented) + "\n"
+        "  published but not served: " + repr(missing)
+    )
+
+
+def test_the_product_contract_and_the_compatibility_surface_stay_apart():
+    """``/api/v1`` is the contract; the rest of ``/api`` is the surface the
+    console still speaks and the one a port is free to drop.
+
+    Each served route belongs to exactly one of them and is published in that
+    one's own place, so "is this supported long term?" is answered by the path
+    rather than by asking somebody. It is also what stops the two drifting into
+    each other: a v1 endpoint quietly added to the README's compatibility
+    table, or a legacy endpoint listed as contract, fails here.
+    """
+    served = {row for row in _live_routes()
+              if row not in PAGES | LEGACY_REDIRECTS | FRAMEWORK_ROUTES}
+    versioned = {row for row in served if row[1].startswith("/api/v1/")}
+    assert versioned, "the product contract serves nothing"
+
+    assert versioned == _documented_v1(), (
+        "docs/api-v1.md and the served /api/v1 disagree: "
+        + repr(sorted(versioned ^ _documented_v1()))
+    )
+    assert (served - versioned) == _documented_legacy(), (
+        "the README's console API table and the legacy surface disagree: "
+        + repr(sorted((served - versioned) ^ _documented_legacy()))
     )
 
 
@@ -231,7 +280,7 @@ def test_the_product_still_makes_every_distinction_in_its_refusal_taxonomy():
     assert adapter.is_dir(), "the HTTP adapter package is gone"
 
     returned = set()
-    for path in sorted(adapter.glob("*.py")):
+    for path in sorted(adapter.rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             # A status returned beside a body ...
             if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):

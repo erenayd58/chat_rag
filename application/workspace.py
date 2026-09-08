@@ -187,6 +187,15 @@ def analysis_state(doc_id: str) -> dict:
     return analysis.read_state(doc_id)
 
 
+def analysis_states() -> dict[str, dict]:
+    """Every document's analysis state, in one read.
+
+    A list of documents needs one of these per row, and asking per document
+    would walk the analysis directory once per row.
+    """
+    return analysis.states()
+
+
 def add_methods(doc_id: str, wanted) -> dict:
     """Add chunking variants to a document that is already here.
 
@@ -238,10 +247,19 @@ def chunk_rows(doc_id: str, method: str = "") -> dict:
     refused = [m for m in chosen if m not in available]
     chosen = [m for m in chosen if m in available]
     if refused and not chosen:
-        raise NotReady(
+        # Two different refusals, and conflating them costs a client the
+        # difference between "wait" and "stop asking". A method this upload
+        # *selected* is coming; one it did not select is not this document's
+        # to serve, however much the shared content has it packaged.
+        if refused[0] in (state.get('selected_methods') or []):
+            raise NotReady(
+                f"{refused[0]!r} has not been built for this document yet",
+                state=state,
+            )
+        raise NotFound(
             f"{refused[0]!r} is not one of this document's analysis methods "
             f"({', '.join(available) or 'none ready'})",
-            state=state,
+            details={'state': state},
         )
 
     arms = {}

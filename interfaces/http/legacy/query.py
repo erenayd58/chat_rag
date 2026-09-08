@@ -6,7 +6,7 @@ from flask import Blueprint, request
 
 from application import query as use_case
 
-from .context import fresh_session_id, services
+from ..context import fresh_session_id, services
 from .responses import install, ok
 
 bp = Blueprint('query', __name__)

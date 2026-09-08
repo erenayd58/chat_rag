@@ -28,7 +28,7 @@ load is in [operations.md](operations.md).
 
 ```
 POST /api/documents/upload
-  │  read the multipart body                      interfaces/http/ingest.py
+  │  read the multipart body                      interfaces/http/{v1,legacy}
   │  validate, stage the file, hash it            application/ingest.py
   ▼
 ingest job (queued → running)                     components/ingest/jobs.py
@@ -59,7 +59,7 @@ are additionally capped process-wide, by separate budgets.
 
 ```
 POST /api/query
-  │  read the body                                interfaces/http/query.py
+  │  read the body                                interfaces/http/{v1,legacy}
   │  admission: a slot now, or 503 now            application/query.py
   │                                               components/query/limits.py
   ▼
@@ -82,8 +82,11 @@ question: chat reads the chunks that were written at upload.
 One direction, and it is the whole rule:
 
 ```
-interfaces/http/          Flask.  Reads the request, calls one use case,
-      │                   turns the answer or the refusal into a status.
+interfaces/http/
+  v1/                     THE CONTRACT.  The surface a client builds against
+  legacy/                 compatibility: what the console still speaks
+      │                   Both read a request, call one use case, and turn
+      │                   the answer or the refusal into their own shape.
       ▼
 application/              The product's behaviour.  Plain functions over a
       │                   Services container; no framework, no request,
@@ -95,7 +98,7 @@ components/  config/  core/  pipeline/  utils/  amsc
 ```
 
 Nothing in `application/` imports Flask — `tests/application` fails if it
-ever does — and nothing below `interfaces/http/` builds a response. Two
+ever does — and nothing below `interfaces/http/` builds a response. Three
 consequences worth stating:
 
 * **the container is the seam.** `application/services.py` composes the whole
@@ -107,18 +110,29 @@ consequences worth stating:
   invalid request, not found, conflict, unavailable, not-ready, processing
   failed. Overload, deadline and interruption are not among them because
   `core/exceptions.py` already owns those, raised by the subsystem that owns
-  the limit. `interfaces/http/responses.py` is the only file that maps any of
-  it to a status.
+  the limit. Each adapter has exactly one file that maps them to a status —
+  `v1/envelope.py` and `legacy/responses.py` — and the two are free to
+  disagree, which they do: an analysis that is selected but not built yet is
+  a **409** `not_ready` on the contract and a **404** on the compatibility
+  surface, because that is what the console was written against.
+* **two surfaces, one application.** `/api/v1` is a second adapter, never a
+  second implementation: both call the same use cases, so a knowledge base
+  created through one is the record the other lists, with nothing
+  synchronising them. [api-v1.md](api-v1.md) is the contract, and
+  `interfaces/http/legacy/` is the directory to delete when nothing speaks
+  the old surface any more.
 
 ### Adding an endpoint
 
 1. put the decision in the `application/` module for its behaviour group, and
    raise from `application/errors.py` when it refuses;
-2. add the route to the matching blueprint in `interfaces/http/`: read the
-   inputs, call the use case, return `ok(...)`;
-3. add the row to the README's *console API* table — `tests/migration/
-   test_http_surface.py` compares that table against the live routing table
-   and fails on drift in either direction.
+2. add the route to the matching blueprint in `interfaces/http/v1/`: read the
+   inputs, call the use case, return `resource(...)` or `collection(...)`,
+   and project the result in `v1/resources.py`;
+3. publish it in [api-v1.md](api-v1.md) — `tests/migration/test_http_surface.py`
+   compares that document against the live routing table and fails on drift in
+   either direction. (The same is true of the README's *console API* table for
+   the compatibility surface, which should not be growing.)
 
 ---
 
@@ -130,7 +144,8 @@ open it.
 | path | owns | touch it when |
 |---|---|---|
 | `application/` | **the product's behaviour, with no web framework under it**: one module per behaviour group (`knowledge_bases`, `documents`, `ingest`, `chunks`, `query`, `workspace`, `catalogue`, `goldsets`, `ops`), plus `errors.py` (what a refusal means) and `services.py` (the container everything is handed) | changing what the product *does* |
-| `interfaces/http/` | the Flask adapter: one blueprint per behaviour group, each reading the request, calling one use case and letting `responses.py` turn the answer or the refusal into a status | adding an endpoint, changing what a route returns |
+| `interfaces/http/v1/` | **the product contract** (`/api/v1`): the resource projections, the envelope and the refusal-to-status table a FastAPI port has to reproduce — see [api-v1.md](api-v1.md) | adding or changing a supported endpoint |
+| `interfaces/http/legacy/` | the Flask-era surface the console and the Viewer's relay still speak; one directory to delete when they do not | keeping the current screens working |
 | `runtime/bootstrap.py` | what a process does before it serves: the banner, restart settlement, the staging sweep, the development server's options | changing start-up or restart behaviour |
 | `app.py` | the Flask application itself: the app object, the session key, CORS, and which container the blueprints are given | changing framework-level wiring |
 | `wsgi.py` | the production entrypoint (`python -m wsgi`, waitress, one process) | changing how the server is served or shut down |

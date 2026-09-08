@@ -19,9 +19,32 @@ def chunking_methods() -> list[dict]:
     """The chunking methods this deployment can run.
 
     The upload form and the Viewer both read this, so neither can offer a
-    method the machine cannot produce.
+    method the machine cannot produce. The shape is frozen: it is the body of
+    a compatibility endpoint, and ``tests/unit/test_method_wire_contract.py``
+    holds it verbatim.
     """
     return viewer_methods.catalogue()
+
+
+def chunking_method_facts() -> list[dict]:
+    """The same methods, with the rest of what the registry knows about them.
+
+    Two functions rather than one because the first is a frozen wire shape and
+    this is not: a picker wants to know that a method is an *orchestration*
+    over a baseline partition rather than a partition, and that a method needs
+    a local embedding model, and neither belongs in a body that predates the
+    question. Both read the one registry.
+    """
+    facts = []
+    for entry in viewer_methods.catalogue():
+        method = viewer_methods.METHODS[entry["key"]]
+        facts.append({
+            **entry,
+            "needs_embedder": method.needs_embedder,
+            "orchestration": method.deep,
+            "baseline": method.baseline,
+        })
+    return facts
 
 
 def model_chain(services, *, session_id: str, kb_id: Optional[str] = None) -> dict:

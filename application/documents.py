@@ -23,6 +23,14 @@ def list_all(services, kb_id: Optional[str] = None) -> list[dict]:
     return services.documents().get_all_documents(kb_id=kb_id)
 
 
+def get(services, doc_id: str) -> dict:
+    """One ingested document, by its own id."""
+    record = services.documents().get_document_by_doc_id(doc_id)
+    if not record:
+        raise NotFound('Document not found')
+    return record
+
+
 def statistics(services, *, kb_id: Optional[str], session_id: str) -> dict:
     """Ledger counts, plus what the store itself holds.
 
@@ -51,13 +59,21 @@ def statistics(services, *, kb_id: Optional[str], session_id: str) -> dict:
     }
 
 
-def chunks_of(services, doc_id: str, *, kb_id: Optional[str], session_id: str) -> dict:
-    """Every stored chunk of one document, from its own knowledge base's store."""
+#: What "every chunk of this document" means when a caller does not page.
+#: The legacy route asks for one page this size and hands the whole thing to
+#: the browser; a paging caller passes its own window instead.
+WHOLE_DOCUMENT = 10000
+
+
+def chunks_of(services, doc_id: str, *, kb_id: Optional[str], session_id: str,
+              offset: int = 0, limit: int = WHOLE_DOCUMENT) -> dict:
+    """The stored chunks of one document, from its own knowledge base's store."""
     pipeline = services.get_pipeline(session_id, kb_id)
     stored = pipeline.vector_db.get_chunks_paginated(
-        offset=0, limit=10000, filter_dict={'doc_id': doc_id}
+        offset=offset, limit=limit, filter_dict={'doc_id': doc_id}
     )
-    return {'chunks': stored['chunks'], 'total': stored['total']}
+    return {'chunks': stored['chunks'], 'total': stored['total'],
+            'offset': stored.get('offset', offset), 'limit': stored.get('limit', limit)}
 
 
 def canonical_units(services, doc_id: str, *, kb_id: Optional[str], session_id: str,

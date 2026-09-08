@@ -111,12 +111,19 @@ def test_one_registration_is_a_console_method(fifth):
 
 
 def test_the_api_offers_it(client, fifth, monkeypatch):
+    """Both surfaces, because both read the same registry and neither keeps a
+    list. The product contract's own discovery is driven end to end by
+    ``tests/migration/test_api_v1_contract.py``; what is checked here is that
+    a chunker author gets it on the compatibility surface too, with no edit."""
     monkeypatch.setattr(M, "embedder_available", lambda: (True, ""))
     body = client.get("/api/demo/methods").get_json()
     assert [row["key"] for row in body["methods"]] == list(M.ORDER)
     fifth_row = body["methods"][-1]
     assert fifth_row["key"] == "fixed-window" and fifth_row["label"] == "Sabit Pencere"
     assert fifth_row["available"] and not fifth_row["default"]
+
+    versioned = client.get("/api/v1/meta/chunking-methods").get_json()
+    assert [row["key"] for row in versioned["items"]] == list(M.ORDER)
 
 
 class _Chunker:

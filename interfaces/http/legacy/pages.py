@@ -8,7 +8,7 @@ from flask import Blueprint, redirect, render_template
 from application import knowledge_bases
 from application.errors import NotFound
 
-from .context import ensure_session, services
+from ..context import ensure_session, services
 
 bp = Blueprint('pages', __name__)
 

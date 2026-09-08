@@ -276,7 +276,7 @@ def test_no_library_constant_hides_a_setting_this_repository_reads():
 
 def test_the_documented_entry_points_exist():
     """Every doc the README sends a new developer to."""
-    for relative in ("docs/architecture.md", "docs/operations.md",
+    for relative in ("docs/api-v1.md", "docs/architecture.md", "docs/operations.md",
                      "docs/configuration.md", "docs/testing.md",
                      "docs/limitations.md", "env.example",
                      "tools/import_smoke.py", "tools/serve_smoke.py",
@@ -324,6 +324,6 @@ def test_the_readme_is_an_entry_point_not_a_manual():
     """
     readme = _read(REPO / "README.md")
     assert len(readme.splitlines()) < 800, "the README is growing back into a manual"
-    for doc in ("docs/architecture.md", "docs/operations.md",
+    for doc in ("docs/api-v1.md", "docs/architecture.md", "docs/operations.md",
                 "docs/configuration.md", "docs/testing.md", "docs/limitations.md"):
         assert doc in readme, f"the README no longer points at {doc}"

@@ -12,7 +12,7 @@ from flask import Blueprint, jsonify, request
 from application import ingest as use_case
 from application.errors import InvalidRequest
 
-from .context import flag, services, session_id
+from ..context import flag, services, session_id
 from .responses import install, ok
 
 bp = Blueprint('ingest', __name__)

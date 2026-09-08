@@ -550,9 +550,31 @@ docker compose ps          # STATUS shows (healthy)
 
 ---
 
+## The product API — `/api/v1`
+
+The versioned contract, and what a new client should build against:
+knowledge bases, documents and their chunking analyses, ingest jobs, questions
+and searches, and enough discovery to know what this deployment can do. It is
+designed to keep working while the implementation under it is replaced —
+FastAPI, PostgreSQL, pgvector, a Next.js front end — so it exposes no file
+path, no store provider and no state-file shape.
+
+**[docs/api-v1.md](docs/api-v1.md) is the contract**: every endpoint, the
+request and response shapes, the refusal taxonomy, and what was deliberately
+left out of it.
+
+```bash
+curl localhost:5005/api/v1/meta/chunking-methods   # what this deployment can chunk with
+curl localhost:5005/api/v1/knowledge-bases
+curl -X POST localhost:5005/api/v1/queries -H 'content-type: application/json' \
+     -d '{"knowledge_base_id":"<id>","question":"..."}'
+```
+
 ## The console API
 
-The screens are `/` (knowledge bases), `/kb/<kb_id>`, `/chat` and `/lab`. Everything they do is an HTTP call you can make yourself:
+The Flask-era surface. The screens speak it, the Viewer's relay speaks it, and
+it stays until they do not — new clients want `/api/v1` above. The screens are
+`/` (knowledge bases), `/kb/<kb_id>`, `/chat` and `/lab`. Everything they do is an HTTP call you can make yourself:
 
 | group | endpoints |
 |---|---|

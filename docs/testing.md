@@ -78,13 +78,14 @@ python -m pytest -m migration -q          # the same set, by marker
 ```
 
 It is seconds, not minutes, on purpose -- it is meant to be run on every step
-of a rewrite, not once at the end. Three files, one contract each:
+of a rewrite, not once at the end. Four files, one contract each:
 
 | file | holds |
 |---|---|
-| `test_document_store_contract.py` | what a document store must do, run against every shipped store: the result record, the metadata round trip (including `search_text` / `table_view`), per-document isolation, pagination, durability -- and the twelve methods the routes call unguarded, which is more than `BaseVectorDB` declares |
+| `test_document_store_contract.py` | what a document store must do: the result record, the metadata round trip (including `search_text` / `table_view`), per-document isolation, pagination, durability -- and the twelve methods the routes call unguarded, which is more than `BaseVectorDB` declares. Run against **two** implementations: the shipped Chroma store and `reference_store.py`, a dependency-free store written to the contract and nothing else. Two is the point -- with one, a contract quietly becomes a description of that one, and `reference_store.py` doubles as the runnable checklist for pgvector |
 | `test_http_surface.py` | the console API is exactly what the README publishes, every route belongs to a declared group, and the refusal taxonomy (400/404/409/500/503/504) still makes all six distinctions -- read from the HTTP adapter's own translation tables |
 | `test_domain_relations.py` | the edges between knowledge base, document, content and variant: what each deletion takes and what it must leave -- the foreign keys a schema has to declare |
+| `test_api_v1_contract.py` | `/api/v1` as the contract it is: resource shapes, both identities, `visible = selected ∩ ready` on the wire, the refusal taxonomy, registry-driven method discovery, and that no module behind it keeps a method catalogue of its own |
 
 What it deliberately leaves free: Flask, the module layout, the file-backed
 persistence, Chroma, the Viewer's implementation, and the internal call graph.

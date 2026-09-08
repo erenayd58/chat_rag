@@ -82,6 +82,7 @@ docs/*
 # ...except the handover package. docs/ is otherwise scratch and generated
 # output, so it is ignored by default and each document the README links to is
 # named here -- a doc that does not travel with a clone is worse than no doc.
+!docs/api-v1.md
 !docs/architecture.md
 !docs/configuration.md
 !docs/limitations.md

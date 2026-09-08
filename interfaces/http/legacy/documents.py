@@ -6,7 +6,7 @@ from flask import Blueprint, request
 
 from application import documents as use_case
 
-from .context import services, session_id
+from ..context import services, session_id
 from .responses import install, ok
 
 bp = Blueprint('documents', __name__)

@@ -24,7 +24,7 @@ from application.errors import (
 )
 from core.exceptions import IngestOverloaded, QueryOverloaded, QueryTimeout
 
-from .context import services
+from ..context import services
 
 logger = logging.getLogger("RAG.http")
 
