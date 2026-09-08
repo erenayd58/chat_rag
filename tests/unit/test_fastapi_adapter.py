@@ -325,6 +325,64 @@ def test_the_document_names_no_chunking_method(schema):
     assert named == [], f"the schema enumerates chunking methods: {named}"
 
 
+def test_every_refusal_is_typed_and_not_only_described(schema):
+    """A generated client types the happy path from the response models; the
+    refusal body is produced by the exception handlers and never returned by a
+    route, so without this it is the one shape a client has to hand-write --
+    and ``type``, which the whole taxonomy is branched on, is exactly what is
+    in it."""
+    for path, operations in schema["paths"].items():
+        for verb, operation in operations.items():
+            for code in ("400", "404", "409", "500", "503", "504"):
+                answer = operation["responses"][code]
+                media = (answer.get("content") or {}).get("application/json") or {}
+                assert media.get("schema"), f"{verb.upper()} {path} -> {code} is untyped"
+
+    error = schema["components"]["schemas"]["ApiError"]
+    assert set(error["required"]) == {"type", "message"}
+    assert set(error["properties"]) == {"type", "message", "details"}
+
+
+def test_the_two_headers_this_surface_sends_are_declared_where_it_sends_them(schema):
+    """``Location`` and ``Retry-After`` are answers, not decoration: one says
+    where to poll, the other how long to wait. A client generated from a
+    document that does not mention them has to be told separately."""
+    created = schema["paths"][f"{V1}/knowledge-bases"]["post"]["responses"]["201"]
+    accepted = schema["paths"][f"{V1}/documents"]["post"]["responses"]["202"]
+    assert "Location" in created["headers"]
+    assert "Location" in accepted["headers"]
+
+    for path, operations in schema["paths"].items():
+        for verb, operation in operations.items():
+            headers = operation["responses"]["503"].get("headers") or {}
+            assert "Retry-After" in headers, f"{verb.upper()} {path}"
+
+
+def test_the_document_publishes_exactly_the_operations_the_contract_lists(schema):
+    """``docs/api-v1.md`` is the published endpoint list and this is the
+    machine-readable one. They are generated from different things -- prose
+    and the routing table -- so a route added to one and not the other is a
+    client reading two different contracts."""
+    import re
+    from pathlib import Path
+
+    doc = Path(__file__).resolve().parents[2] / "docs" / "api-v1.md"
+    published = {
+        (verb, path)
+        for verbs, path in re.findall(r"`([A-Z|]+)\s+(/api/v1/[^`\s]+)`",
+                                      doc.read_text(encoding="utf-8"))
+        for verb in verbs.split("|")
+    }
+    generated = {
+        (verb.upper(), path.replace("{", "<").replace("}", ">"))
+        for path, operations in schema["paths"].items()
+        for verb in operations
+    }
+    # The document serves itself; prose lists it, the routing table cannot.
+    published.discard(("GET", f"{V1}/openapi.json"))
+    assert published == generated, sorted(published ^ generated)
+
+
 # ================================================ validation at the boundary
 def test_an_unreadable_body_is_the_products_400_and_not_fastapis_422(api):
     """FastAPI's default is a 422 with a ``detail`` list, which is a second

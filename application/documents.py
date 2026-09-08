@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from components.observability import events
+
 from . import workspace
 from .errors import NotFound
 
@@ -60,6 +62,23 @@ def statistics(services, *, kb_id: Optional[str], session_id: str) -> dict:
     }
 
 
+def owning_knowledge_base(services, doc_id: str, kb_id: Optional[str]) -> Optional[str]:
+    """Which knowledge base's store holds this document.
+
+    A document belongs to exactly one, and the ledger row says which -- so a
+    caller does not have to, and a read that omits the filter must not be
+    answered out of the process default's store, which holds nothing and would
+    look like a document with no chunks. The console has always passed
+    ``?kb_id=``; a client on the contract is not required to know it.
+
+    The record wins over what the caller passed, the same way it does in
+    :func:`delete`, which applies this rule to the record it has already read:
+    there is one true answer and it is not the query string's.
+    """
+    record = services.documents().get_document_by_doc_id(doc_id)
+    return (record.get('kb_id') if record else None) or kb_id
+
+
 #: What "every chunk of this document" means when a caller does not page.
 #: The legacy route asks for one page this size and hands the whole thing to
 #: the browser; a paging caller passes its own window instead.
@@ -69,7 +88,8 @@ WHOLE_DOCUMENT = 10000
 def chunks_of(services, doc_id: str, *, kb_id: Optional[str], session_id: str,
               offset: int = 0, limit: int = WHOLE_DOCUMENT) -> dict:
     """The stored chunks of one document, from its own knowledge base's store."""
-    pipeline = services.get_pipeline(session_id, kb_id)
+    pipeline = services.get_pipeline(
+        session_id, owning_knowledge_base(services, doc_id, kb_id))
     stored = pipeline.vector_db.get_chunks_paginated(
         offset=offset, limit=limit, filter_dict={'doc_id': doc_id}
     )
@@ -91,7 +111,8 @@ def canonical_units(services, doc_id: str, *, kb_id: Optional[str], session_id: 
         find_cache_file, load_units, select_units, summarize_source,
     )
 
-    pipeline = services.get_pipeline(session_id, kb_id)
+    pipeline = services.get_pipeline(
+        session_id, owning_knowledge_base(services, doc_id, kb_id))
     stored = pipeline.vector_db.get_chunks_paginated(
         offset=0, limit=10000, filter_dict={'doc_id': doc_id}
     )
@@ -153,11 +174,14 @@ def delete(services, doc_id: str, *, kb_id: Optional[str] = None,
     """
     ledger = services.documents()
     record = ledger.get_document_by_doc_id(doc_id)
+    # The same rule :func:`owning_knowledge_base` applies for a read, on the
+    # record this function has already had to fetch.
     owning_kb = (record.get('kb_id') if record else None) or kb_id
 
     pipeline = (services.get_pipeline(session_id, owning_kb) if owning_kb
                 else services.default_pipeline)
     pipeline.vector_db.delete_by_doc_id(doc_id)
+    forget_lexical_indexes(services, pipeline, owning_kb, doc_id=doc_id)
 
     if record:
         # By the document's own identity. It used to be by the path the file
@@ -166,6 +190,37 @@ def delete(services, doc_id: str, *, kb_id: Optional[str] = None,
         ledger.remove_by_doc_id(doc_id)
 
     workspace.discard(doc_id)
+
+
+def forget_lexical_indexes(services, pipeline, kb_id: Optional[str], *,
+                           doc_id: str) -> None:
+    """Tell every pipeline of this knowledge base that its corpus shrank.
+
+    The lexical index is built once per pipeline, from the store, and is never
+    consulted against it again -- so a document deleted out of the store stays
+    in the BM25 index of every pipeline holding one, and a keyword or hybrid
+    search keeps returning its chunks until the process restarts. An ingest
+    already tells the others (``application.ingest``); a deletion has to tell
+    them too, and unlike an ingest it has to tell **itself**, because there is
+    nothing here that rebuilds its own index the way a completed ingest does.
+
+    Invalidation and not a rebuild: a delete should not pay for re-reading the
+    whole corpus, and ``ensure_index`` builds again on the next search.
+    """
+    if kb_id:
+        stale = services.pipeline_cache.invalidate_indexes(kb_id)
+        events.emit("pipeline.index.invalidated", kb_id=kb_id, pipelines=stale,
+                    doc_id=doc_id)
+    # The pipeline the deletion ran through is not necessarily in the cache --
+    # a document whose knowledge base is unknown is deleted through the
+    # process default, which is nobody's cache entry.
+    retriever = getattr(pipeline, 'hybrid_retriever', None)
+    dropper = getattr(retriever, 'invalidate_index', None)
+    if callable(dropper):
+        try:
+            dropper()
+        except Exception as error:  # noqa: BLE001 - a stale index is not a failed delete
+            logger.warning(f"could not invalidate the index after deleting {doc_id}: {error}")
 
 
 def of_ingest_job(services, job_id: str) -> Optional[dict[str, Any]]:

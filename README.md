@@ -31,6 +31,7 @@ Start here, then follow the question you have:
 | **[docs/database.md](docs/database.md)** | Where the records live, how to create the schema, what is still a file |
 | **[docs/testing.md](docs/testing.md)** | What to run before calling a change done, and the order for cross-repo changes |
 | **[docs/limitations.md](docs/limitations.md)** | What this system does not do, and why |
+| **[docs/legacy-removal.md](docs/legacy-removal.md)** | Which Flask-era endpoint each `/api/v1` route replaces, and the order they come out in |
 | **[../chunk/docs/adding-a-chunker.md](../chunk/docs/adding-a-chunker.md)** | How to add a chunking method, end to end |
 | **[../chunk/docs/viewer-architecture.md](../chunk/docs/viewer-architecture.md)** | How the Viewer works across both repos, and how to debug a package |
 | **[../chunk/docs/library-surface.md](../chunk/docs/library-surface.md)** | What is product, research and legacy in the library, and what the console may import |
@@ -597,6 +598,10 @@ it stays until they do not — new clients want `/api/v1` above. The screens are
 `POST /api/documents/upload` and `POST /api/query` are the two that can refuse
 you under load, with **503** and a `Retry-After`, or **504** past a deadline.
 [docs/operations.md](docs/operations.md) says what each refusal means.
+
+Every row above is classified in
+[docs/legacy-removal.md](docs/legacy-removal.md): what on `/api/v1` replaces
+it, who still calls it, and which step removes it.
 
 ## The offline CLI
 

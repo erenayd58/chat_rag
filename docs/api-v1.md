@@ -111,6 +111,15 @@ client generator at it. The interactive documentation pages are deliberately
 not served — they fetch their JavaScript from a public CDN, and nothing else
 this product serves needs the network to render.
 
+Three things a generated document cannot infer are declared for it, in
+`interfaces/http/v1/openapi.py`, so a generated client gets them as types
+rather than as prose: the refusal body above on **every** operation, the
+`Location` header on the two answers that send one, and the `Retry-After` on
+the 503. Nothing else is added, and the **422** FastAPI documents by itself is
+taken back out, because this surface answers a payload it cannot read with 400
+`invalid_request` and a document advertising a status the server never sends is
+worse than none.
+
 ```jsonc
 { "items": [ {
     "key": "markdown",
@@ -260,3 +269,7 @@ Each of these is served by the legacy surface and was not promoted:
 | `/api/demo/viewer`, `/api/demo/workspace` | a probe of a companion dev server, and a snapshot that `GET /api/v1/documents` now answers truthfully per document |
 | `/api/ops/metrics` | an operator surface whose contents are deliberately free to change. `GET /api/v1/health` is the stable half |
 | a synchronous upload | it exists on the legacy surface because it always did, and it is the reason that adapter needs a semaphore to stop uploads holding every request thread |
+
+[legacy-removal.md](legacy-removal.md) is the other half of this table: every
+endpoint the Flask-era surface still serves, what here replaces it, who still
+calls it, and which step removes it.

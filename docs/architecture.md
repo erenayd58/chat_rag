@@ -88,6 +88,7 @@ interfaces/http/
       routers/            FastAPI: one router per product concept
       schemas/            the API's own Pydantic types
       errors.py           the one refusal-to-status table
+      openapi.py          what the generated document cannot infer
   legacy/                 compatibility: Flask, what the console still speaks
   coexistence.py          one process, both frameworks — for this step only
       │                   Both surfaces read a request, call one use case, and
@@ -180,7 +181,9 @@ consequences worth stating:
 3. publish it in [api-v1.md](api-v1.md) — `tests/migration/test_http_surface.py`
    compares that document against the live routing table and fails on drift in
    either direction. (The same is true of the README's *console API* table for
-   the compatibility surface, which should not be growing.)
+   the compatibility surface, which should not be growing — and a route added
+   there is also a row in [legacy-removal.md](legacy-removal.md), which
+   `tests/migration/test_legacy_removal_map.py` holds to the same standard.)
 
 ---
 
@@ -192,7 +195,7 @@ open it.
 | path | owns | touch it when |
 |---|---|---|
 | `application/` | **the product's behaviour, with no web framework under it**: one module per behaviour group (`knowledge_bases`, `documents`, `ingest`, `chunks`, `query`, `workspace`, `catalogue`, `goldsets`, `ops`), plus `errors.py` (what a refusal means) and `services.py` (the container everything is handed) | changing what the product *does* |
-| `interfaces/http/v1/` | **the product contract** (`/api/v1`), as a FastAPI application: `routers/` (one per concept), `schemas/` (the API's own Pydantic types), `errors.py` (the one refusal-to-status table), `application.py` (the app and its lifespan) — see [api-v1.md](api-v1.md) | adding or changing a supported endpoint |
+| `interfaces/http/v1/` | **the product contract** (`/api/v1`), as a FastAPI application: `routers/` (one per concept), `schemas/` (the API's own Pydantic types), `errors.py` (the one refusal-to-status table), `openapi.py` (the refusal body, the two headers and the status the document must not advertise), `application.py` (the app and its lifespan) — see [api-v1.md](api-v1.md) | adding or changing a supported endpoint |
 | `interfaces/http/legacy/` | the Flask-era surface the console and the Viewer's relay still speak; one directory to delete when they do not | keeping the current screens working |
 | `interfaces/http/coexistence.py` | the ASGI-inside-WSGI bridge that lets one process serve both surfaces over one container; temporary, and deleted with the legacy directory | debugging why a `/api/v1` request behaves differently through the console's port |
 | `runtime/bootstrap.py` | what a process does before it serves: the banner, restart settlement, the staging sweep, the development server's options | changing start-up or restart behaviour |

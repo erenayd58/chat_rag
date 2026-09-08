@@ -20,6 +20,7 @@ from application.errors import InvalidRequest
 
 from ..dependencies import Container, Page, SessionId, optional_number
 from ..envelope import slice_of
+from ..openapi import LOCATION_HEADER
 from ..schemas import (
     Analysis, AnalysisChunks, AnalysisMethods, CanonicalUnit, CanonicalUnitCollection,
     Chunk, ChunkCollection, DocumentCollection, DocumentWithAnalysis, IngestJob,
@@ -65,6 +66,7 @@ def list_documents(services: Container, page: Page,
 
 
 @router.post("", response_model=IngestJob, status_code=status.HTTP_202_ACCEPTED,
+             responses={status.HTTP_202_ACCEPTED: {"headers": LOCATION_HEADER}},
              tags=["ingest jobs"], summary="Submit a document for ingestion")
 def upload_document(
     services: Container, session: SessionId, request: Request, response: Response,

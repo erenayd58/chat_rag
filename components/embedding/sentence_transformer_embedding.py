@@ -94,6 +94,20 @@ class SentenceTransformerEmbedding(BaseEmbedding):
         except Exception as e:
             raise EmbeddingException(f"Encoding failed: {e}")
     
+    def encode_documents(self, texts: Union[str, List[str]]) -> np.ndarray:
+        """The two-sided call path the dense profiles use.
+
+        A local model has one space and no asymmetric prefix, so both sides are
+        :meth:`encode`. They exist as their own names because that is the
+        interface ``hybrid_rrf`` ingests and searches through -- without them
+        the documented ``EMBEDDING_PROVIDER=sentence_transformers`` alternative
+        to the gateway raises ``AttributeError`` at the first upload.
+        """
+        return np.asarray(self.encode(texts))
+
+    def encode_queries(self, texts: Union[str, List[str]]) -> np.ndarray:
+        return self.encode_documents(texts)
+
     def get_name(self) -> str:
         """Get the embedding model name"""
         return f"SentenceTransformer-{self.model_name}"

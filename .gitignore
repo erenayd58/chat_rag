@@ -88,6 +88,7 @@ docs/*
 !docs/architecture.md
 !docs/configuration.md
 !docs/database.md
+!docs/legacy-removal.md
 !docs/limitations.md
 !docs/operations.md
 !docs/testing.md

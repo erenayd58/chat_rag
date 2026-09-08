@@ -11,6 +11,7 @@ from application import knowledge_bases as use_case
 
 from ..dependencies import Container, Page, SessionId
 from ..envelope import slice_of
+from ..openapi import LOCATION_HEADER
 from ..schemas import (
     Chunk, ChunkCollection, EmbeddingIndex, EmbeddingReindex, KnowledgeBase,
     KnowledgeBaseCollection, KnowledgeBaseCreate, KnowledgeBaseUpdate,
@@ -29,6 +30,7 @@ def list_knowledge_bases(services: Container, page: Page) -> KnowledgeBaseCollec
 
 
 @router.post("", response_model=KnowledgeBase, status_code=status.HTTP_201_CREATED,
+             responses={status.HTTP_201_CREATED: {"headers": LOCATION_HEADER}},
              summary="Create one")
 def create_knowledge_base(
     services: Container, request: Request, response: Response,

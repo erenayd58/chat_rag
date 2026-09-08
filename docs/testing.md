@@ -105,7 +105,7 @@ python -m pytest -m migration -q          # the same set, by marker
 ```
 
 It is seconds, not minutes, on purpose -- it is meant to be run on every step
-of a rewrite, not once at the end. Five files, one contract each:
+of a rewrite, not once at the end. Six files, one contract each:
 
 | file | holds |
 |---|---|
@@ -114,6 +114,7 @@ of a rewrite, not once at the end. Five files, one contract each:
 | `test_http_surface.py` | the console API is exactly what the README publishes, every route belongs to a declared group, and the refusal taxonomy (400/404/409/500/503/504) still makes all six distinctions -- read from the HTTP adapter's own translation tables |
 | `test_domain_relations.py` | the edges between knowledge base, document, content and variant: what each deletion takes and what it must leave -- the foreign keys a schema has to declare |
 | `test_api_v1_contract.py` | `/api/v1` as the contract it is: resource shapes, both identities, `visible = selected ∩ ready` on the wire, the refusal taxonomy, registry-driven method discovery, and that no module behind it keeps a method catalogue of its own |
+| `test_legacy_removal_map.py` | `docs/legacy-removal.md` is the whole legacy surface and nothing else: every endpoint served is classified into exactly one removal wave, and every `/api/v1` replacement it names is a route that is really served. A plan that has gone stale fails here rather than in the step that trusted it |
 
 What it deliberately leaves free: the web framework, the module layout, the
 persistence, the vector store, the Viewer's implementation, and the internal
@@ -130,6 +131,27 @@ document, the places FastAPI's defaults are bent to keep the contract (a bad
 payload is 400 `invalid_request`, not 422; an unreadable page size is the
 default, not a refusal), each refusal driven through the central table, and
 the bridge that lets one process serve both surfaces.
+
+### `/api/v1` over the real thing
+
+The contract suite drives `/api/v1` against doubles, which is what makes it
+blind to the framework and to the persistence -- and what stops it saying
+whether any of it *works*. Three files in `tests/integration` say that, over
+the tables the migrations built and the vectors pgvector stores, with only the
+answer model and the embedding model replaced (`tests/api_v1_doubles.py`; they
+are the two things that would otherwise leave the machine).
+
+```bash
+python -m pytest tests/integration/test_api_v1_end_to_end.py -q
+python -m pytest tests/integration/test_api_v1_restart_persistence.py -q
+python -m pytest tests/integration/test_api_v1_failure_and_concurrency.py -q
+```
+
+| file | holds |
+|---|---|
+| `test_api_v1_end_to_end.py` | the flows: a knowledge base created and renamed, an upload followed to its job and its stored chunks, an analysis built and a variant added, all three retrieval methods, a question answered with citations, an embedding index rebuilt in place, two knowledge bases that cannot see each other's corpus, and the two deletions |
+| `test_api_v1_restart_persistence.py` | what a second process reads back: the records, the vectors, the manifest, the analysis and its rows, a job settled against the ledger, a staged upload swept -- and retrieval on a process that indexed nothing itself, because the lexical index is process-local and rebuilt rather than persisted |
+| `test_api_v1_failure_and_concurrency.py` | the answers no seam can fake: a really full ingest queue refusing with `Retry-After`, the same bytes submitted twice at once becoming one parse, a delete racing an upload, a search running across a re-index, and a content two uploads share |
 
 ### The guards worth knowing by name
 
