@@ -19,6 +19,7 @@ There are two entrypoints, and which one is running is not a detail.
 |---|---|---|---|---|
 | Development | `python app.py` | Werkzeug | `127.0.0.1` | on (`FLASK_DEBUG=false` turns it off) |
 | Production | `python -m wsgi` | waitress | `0.0.0.0` | none |
+| The API alone | `python -m asgi` | uvicorn | `0.0.0.0` | none |
 
 `python app.py` is for a developer at a keyboard: it keeps the reloader and the
 traceback page, and it listens on loopback only so neither is offered to the
@@ -35,6 +36,15 @@ worker process would duplicate all three. `wsgi.py` says so in more detail.
 
 It stops on SIGTERM (what `docker stop` and service managers send) as well as on
 Ctrl+C, draining in-flight requests first.
+
+`python -m asgi` is the third row, and not yet the one to deploy: it serves
+`/api/v1` on uvicorn and **nothing else** -- no screens, no console API, no
+Viewer relay. It is where the product is going, and it runs the same FastAPI
+application that `python -m wsgi` already serves for `/api/v1`, over the same
+container; the difference is only which surfaces are mounted. Run it when
+nothing needs the console. Its request-thread pool is sized from
+`WAITRESS_THREADS`, the same number every ingest and query limit is rationed
+against, so the two entrypoints are configured identically.
 
 ### Where state goes
 

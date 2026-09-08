@@ -1,14 +1,16 @@
 # `/api/v1` — the product contract
 
 The surface a client builds against. It is versioned because it has to keep
-working while everything under it is replaced: Flask by FastAPI, the state
-files by PostgreSQL, Chroma by pgvector, the templates by a Next.js front end.
-None of those is a reason to change anything on this page.
+working while everything under it is replaced: the state files by PostgreSQL,
+Chroma by pgvector, the templates by a Next.js front end. None of those is a
+reason to change anything on this page — and neither was the first of them,
+which has already happened. These routes were Flask and are now **FastAPI**,
+at the same URLs, with the same statuses and the same bodies.
 
 The Flask-era surface is still served beside it — see *The console API* in
 [../README.md](../README.md). That one is compatibility, this one is the
-contract. Both call the same application layer, so they cannot disagree about
-behaviour, only about spelling.
+contract. Both call the same application layer, over one container in one
+process, so they cannot disagree about behaviour, only about spelling.
 
 ---
 
@@ -89,6 +91,7 @@ free.
 | `GET /api/v1/meta/retrieval-methods` | which retrieval methods a knowledge base's retriever can serve |
 | `GET /api/v1/meta/models` | the configured model chain — names and endpoints, never a key |
 | `GET /api/v1/health` | liveness, readiness, and one line of capacity |
+| `GET /api/v1/openapi.json` | this contract, machine-readable |
 
 `chunking-methods` is the one that matters architecturally. It is a projection
 of `amsc.chunking.registry` and **there is no second method catalogue** — not
@@ -98,6 +101,14 @@ implementation, its registration in that registry and its own tests; no API
 list is edited. A method this machine cannot run is listed as
 `"available": false` with `unavailable_reason`, never hidden, so a picker can
 explain the gap instead of silently dropping the option.
+
+`openapi.json` is **generated** from the routers and their request and
+response models, so it cannot drift from what is served: there is no second
+document to keep in step, and a field that is not declared on a response model
+cannot appear in either the schema or the answer. Point any OpenAPI viewer or
+client generator at it. The interactive documentation pages are deliberately
+not served — they fetch their JavaScript from a public CDN, and nothing else
+this product serves needs the network to render.
 
 ```jsonc
 { "items": [ {

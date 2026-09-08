@@ -556,18 +556,22 @@ The versioned contract, and what a new client should build against:
 knowledge bases, documents and their chunking analyses, ingest jobs, questions
 and searches, and enough discovery to know what this deployment can do. It is
 designed to keep working while the implementation under it is replaced —
-FastAPI, PostgreSQL, pgvector, a Next.js front end — so it exposes no file
-path, no store provider and no state-file shape.
+PostgreSQL, pgvector, a Next.js front end — so it exposes no file path, no
+store provider and no state-file shape. The first of those replacements has
+already happened underneath it: these routes are **FastAPI**, the console's
+are still Flask, and both run in one process over one application.
 
 **[docs/api-v1.md](docs/api-v1.md) is the contract**: every endpoint, the
 request and response shapes, the refusal taxonomy, and what was deliberately
-left out of it.
+left out of it. `GET /api/v1/openapi.json` is the same list, generated from
+the routers and their models, for a client generator to read.
 
 ```bash
 curl localhost:5005/api/v1/meta/chunking-methods   # what this deployment can chunk with
 curl localhost:5005/api/v1/knowledge-bases
 curl -X POST localhost:5005/api/v1/queries -H 'content-type: application/json' \
      -d '{"knowledge_base_id":"<id>","question":"..."}'
+curl localhost:5005/api/v1/openapi.json            # the contract, machine-readable
 ```
 
 ## The console API

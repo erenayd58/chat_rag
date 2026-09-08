@@ -18,6 +18,14 @@ pymupdf4llm[layout]==0.3.4  # layout-aware parsing, the structured PDF path
 python-docx  # DOCX parsing
 
 # Web Framework
+# The product contract (/api/v1) is a FastAPI application: typed request and
+# response models, one exception table, and an OpenAPI document generated from
+# them rather than maintained beside them. uvicorn is its host; while the
+# console's Flask-era screens are still served, that application is also
+# mounted inside the WSGI process (interfaces/http/coexistence.py) and waitress
+# below is what actually binds the socket.
+fastapi
+uvicorn
 flask
 flask-cors
 # The production WSGI server (python -m wsgi). Pure Python, so it needs no

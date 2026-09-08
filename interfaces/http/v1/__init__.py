@@ -1,8 +1,11 @@
-"""`/api/v1` -- the product contract.
+"""`/api/v1` -- the product contract, served by FastAPI.
 
 The surface a client is meant to build against, and the one that has to keep
-working while everything under it is replaced: Flask by FastAPI, files by
-PostgreSQL, Chroma by pgvector, the templates by a Next.js front end.
+working while everything under it is replaced: files by PostgreSQL, Chroma by
+pgvector, the templates by a Next.js front end. Flask has already been
+replaced here -- these routes are FastAPI, over the same use cases the Flask
+ones called, with the same URLs, statuses and bodies, held to that by
+``tests/migration/test_api_v1_contract.py``.
 
 It is not a renamed copy of the Flask-era surface. What is here is the product
 -- knowledge bases, documents and their analyses, ingest jobs, questions and
@@ -10,29 +13,22 @@ searches, and enough discovery for a client to know what this deployment can
 do. What is deliberately not here is listed in ``docs/api-v1.md``, with the
 reason for each.
 
-Every route reads its inputs, calls one use case in :mod:`application`, and
-lets :mod:`interfaces.http.v1.envelope` and :mod:`interfaces.http.v1.resources`
-turn the answer into the wire shape. No product decision is taken here, and
-none is duplicated from the legacy adapter: both call the same use cases.
+Four kinds of module, and nothing else:
+
+``routers/``     one per product concept. Read inputs, call one use case,
+                 return a schema.
+``schemas/``     the API's own Pydantic types -- the boundary between what a
+                 client sees and what a store holds.
+``errors.py``    the one table that turns a refusal into a status code.
+``application``  the FastAPI object, and the lifespan a deployment runs.
+
+No product decision is taken in any of them, and none is duplicated from the
+legacy adapter: both surfaces call the same use cases, over the same container.
 """
 
 from __future__ import annotations
 
-from . import documents, ingest_jobs, knowledge_bases, meta, queries
+from .application import OPENAPI_PATH, PREFIX, create_app
+from .envelope import DEFAULT_LIMIT, MAX_LIMIT
 
-#: The version prefix, in one place. Bumping the contract means adding a
-#: package beside this one, not editing these routes.
-PREFIX = "/api/v1"
-
-BLUEPRINTS = (
-    meta.bp,
-    knowledge_bases.bp,
-    documents.bp,
-    ingest_jobs.bp,
-    queries.bp,
-)
-
-
-def register(app) -> None:
-    for blueprint in BLUEPRINTS:
-        app.register_blueprint(blueprint, url_prefix=PREFIX)
+__all__ = ["DEFAULT_LIMIT", "MAX_LIMIT", "OPENAPI_PATH", "PREFIX", "create_app"]

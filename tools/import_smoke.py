@@ -45,8 +45,10 @@ PRODUCT_MODULES = (
     "application.services",
     "application.ingest",
     "application.query",
+    "interfaces.http.v1",
     "interfaces.http",
     "app",
+    "asgi",
 )
 
 

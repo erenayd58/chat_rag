@@ -83,10 +83,14 @@ One direction, and it is the whole rule:
 
 ```
 interfaces/http/
-  v1/                     THE CONTRACT.  The surface a client builds against
-  legacy/                 compatibility: what the console still speaks
-      │                   Both read a request, call one use case, and turn
-      │                   the answer or the refusal into their own shape.
+  v1/                     THE CONTRACT.  The surface a client builds against.
+      routers/            FastAPI: one router per product concept
+      schemas/            the API's own Pydantic types
+      errors.py           the one refusal-to-status table
+  legacy/                 compatibility: Flask, what the console still speaks
+  coexistence.py          one process, both frameworks — for this step only
+      │                   Both surfaces read a request, call one use case, and
+      │                   turn the answer or the refusal into their own shape.
       ▼
 application/              The product's behaviour.  Plain functions over a
       │                   Services container; no framework, no request,
@@ -96,6 +100,15 @@ components/  config/  core/  pipeline/  utils/  amsc
                           Stores, models, limits, telemetry, the chunking
                           library.
 ```
+
+`/api/v1` is **FastAPI** and the console's surface is still **Flask**, in one
+process over one container. `interfaces/http/coexistence.py` mounts the ASGI
+application inside the WSGI one and registers its routes — read from FastAPI's
+own table, never written out twice — so `python -m wsgi` keeps serving both.
+`asgi.py` is the same FastAPI application standing alone, which is what a
+deployment runs once nothing needs the console's screens. There is no
+synchronisation between the two surfaces and there is nothing to synchronise:
+they are two adapters over one application.
 
 Nothing in `application/` imports Flask — `tests/application` fails if it
 ever does — and nothing below `interfaces/http/` builds a response. Three
@@ -126,9 +139,12 @@ consequences worth stating:
 
 1. put the decision in the `application/` module for its behaviour group, and
    raise from `application/errors.py` when it refuses;
-2. add the route to the matching blueprint in `interfaces/http/v1/`: read the
-   inputs, call the use case, return `resource(...)` or `collection(...)`,
-   and project the result in `v1/resources.py`;
+2. add the route to the matching router in `interfaces/http/v1/routers/`:
+   read the inputs, call the use case, return a model from
+   `interfaces/http/v1/schemas/`. Declare the response model on the route —
+   the schemas forbid undeclared fields, which is what keeps a storage
+   column out of an answer. Do not catch the refusal: `v1/errors.py` is the
+   only place a status code is decided;
 3. publish it in [api-v1.md](api-v1.md) — `tests/migration/test_http_surface.py`
    compares that document against the live routing table and fails on drift in
    either direction. (The same is true of the README's *console API* table for
@@ -144,11 +160,13 @@ open it.
 | path | owns | touch it when |
 |---|---|---|
 | `application/` | **the product's behaviour, with no web framework under it**: one module per behaviour group (`knowledge_bases`, `documents`, `ingest`, `chunks`, `query`, `workspace`, `catalogue`, `goldsets`, `ops`), plus `errors.py` (what a refusal means) and `services.py` (the container everything is handed) | changing what the product *does* |
-| `interfaces/http/v1/` | **the product contract** (`/api/v1`): the resource projections, the envelope and the refusal-to-status table a FastAPI port has to reproduce — see [api-v1.md](api-v1.md) | adding or changing a supported endpoint |
+| `interfaces/http/v1/` | **the product contract** (`/api/v1`), as a FastAPI application: `routers/` (one per concept), `schemas/` (the API's own Pydantic types), `errors.py` (the one refusal-to-status table), `application.py` (the app and its lifespan) — see [api-v1.md](api-v1.md) | adding or changing a supported endpoint |
 | `interfaces/http/legacy/` | the Flask-era surface the console and the Viewer's relay still speak; one directory to delete when they do not | keeping the current screens working |
+| `interfaces/http/coexistence.py` | the ASGI-inside-WSGI bridge that lets one process serve both surfaces over one container; temporary, and deleted with the legacy directory | debugging why a `/api/v1` request behaves differently through the console's port |
 | `runtime/bootstrap.py` | what a process does before it serves: the banner, restart settlement, the staging sweep, the development server's options | changing start-up or restart behaviour |
 | `app.py` | the Flask application itself: the app object, the session key, CORS, and which container the blueprints are given | changing framework-level wiring |
-| `wsgi.py` | the production entrypoint (`python -m wsgi`, waitress, one process) | changing how the server is served or shut down |
+| `wsgi.py` | the production entrypoint today (`python -m wsgi`, waitress, one process, both surfaces) | changing how the server is served or shut down |
+| `asgi.py` | the ASGI entrypoint (`python -m asgi`, uvicorn): `/api/v1` alone, and what a deployment runs once the console's screens are gone | changing FastAPI's own start-up, shutdown or thread pool |
 | `pipeline/rag_pipeline.py` | the pipeline object: builds the embedder / store / retriever / answer model from settings, and runs a query | changing retrieval or the answer chain end to end |
 | `components/ingest/jobs.py` | the job system: queue, workers, states, retention, cancellation | changing upload concurrency or job lifecycle |
 | `components/ingest/limits.py` | **the one owner of deadlines and provider budgets**: `current_guard()`, `deadline_timeout()`, the Deep and embedding semaphores | adding a transport, or anything that calls out over the network |

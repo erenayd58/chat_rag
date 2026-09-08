@@ -59,8 +59,9 @@ Flask object anywhere in it, which is the point: it is the evidence that the
 behaviour under the adapter is reusable, and `test_the_boundary_holds` fails
 if any module under `application/` ever imports a web framework.
 
-It does not repeat the API tests. Those prove the Flask adapter still maps
-correctly; this one proves there is something worth adapting.
+It does not repeat the API tests. Those prove an adapter still maps
+correctly; this one proves there is something worth adapting -- which is what
+made replacing the `/api/v1` adapter with FastAPI a change to one package.
 
 ```bash
 python -m pytest tests/application -q
@@ -87,8 +88,18 @@ of a rewrite, not once at the end. Four files, one contract each:
 | `test_domain_relations.py` | the edges between knowledge base, document, content and variant: what each deletion takes and what it must leave -- the foreign keys a schema has to declare |
 | `test_api_v1_contract.py` | `/api/v1` as the contract it is: resource shapes, both identities, `visible = selected ∩ ready` on the wire, the refusal taxonomy, registry-driven method discovery, and that no module behind it keeps a method catalogue of its own |
 
-What it deliberately leaves free: Flask, the module layout, the file-backed
-persistence, Chroma, the Viewer's implementation, and the internal call graph.
+What it deliberately leaves free: the web framework, the module layout, the
+file-backed persistence, Chroma, the Viewer's implementation, and the internal
+call graph. That freedom has been spent once already: `/api/v1` moved from
+Flask to FastAPI with **no change to any file in this directory**, which is
+the strongest thing that can be said about a contract suite.
+
+`tests/unit/test_fastapi_adapter.py` is the other half of that port -- the
+questions the contract suite is blind to on purpose: the generated OpenAPI
+document, the places FastAPI's defaults are bent to keep the contract (a bad
+payload is 400 `invalid_request`, not 422; an unreadable page size is the
+default, not a refusal), each refusal driven through the central table, and
+the bridge that lets one process serve both surfaces.
 
 ### The guards worth knowing by name
 
