@@ -8,8 +8,13 @@ happened to be covered. A pgvector store written against ``BaseVectorDB``
 would satisfy the abstract base class and still break four routes, because
 the base class declares six methods and the product calls twelve.
 
-This module is that contract, stated once and run against every shipped
-store. It is what a new store has to pass to be finished.
+This module is that contract, stated once and run against more than one
+implementation -- the store the product ships, and a dependency-free reference
+store written to the contract and nothing else (``reference_store.py``). Two
+implementations is the point: with one, a contract quietly becomes a
+description of that one, which is exactly what a pgvector store would then
+fail to be measured against. It is what a new store has to pass to be
+finished.
 
 Three things it deliberately does **not** pin:
 
@@ -66,7 +71,16 @@ def _chroma(path):
     return ChromaVectorDB(path=str(path), collection_name="documents")
 
 
-STORES = {"chroma": _chroma}
+def _reference(path):
+    from reference_store import ReferenceVectorDB
+
+    return ReferenceVectorDB(path=str(path), collection_name="documents")
+
+
+#: ``chroma`` is what the product runs. ``reference`` is not shipped and is
+#: never configured; it is here so the contract has a second implementation to
+#: be a contract against -- see reference_store.py.
+STORES = {"chroma": _chroma, "reference": _reference}
 
 
 def _close(store):
