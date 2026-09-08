@@ -64,6 +64,7 @@ http.register(app, services)
 # ---- The entrypoints' shared start-up, bound to this process's container ----
 enable_console_utf8 = bootstrap.enable_console_utf8
 development_server_options = bootstrap.development_server_options
+require_database = bootstrap.require_database
 
 
 def startup_banner() -> None:
@@ -82,6 +83,10 @@ if __name__ == '__main__':
     # same `app` object on waitress, in one process, with no debugger and no
     # reloader to switch off.
     enable_console_utf8()
+    # Before anything reads a record. The relational state is PostgreSQL, so a
+    # missing or unreachable database is a start-up refusal that names it, not
+    # a server that binds a port and fails every request.
+    require_database()
     startup_banner()
     resume_background_work()
 

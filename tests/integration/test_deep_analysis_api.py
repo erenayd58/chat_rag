@@ -130,14 +130,16 @@ def use_pipeline(monkeypatch, pipeline):
 
 
 def records():
-    """The ledger, wherever this configuration puts it.
+    """The ledger, read through the store that owns it.
 
     Resolved through the same API the application resolves it with, rather
-    than named as a file in the working directory: the two agree only while no
-    data root is configured, and a test that hard-codes one of them is testing
-    the other's default by accident.
+    than named as a file in the working directory -- which since Step 8 is not
+    where it is at all. What these tests assert is what a document record
+    carries, which is the same question either way.
     """
-    return json.load(open(paths.ingested_documents(), encoding="utf-8"))
+    from utils import DocumentTracker
+
+    return DocumentTracker().ingested_docs
 
 
 def test_a_chunker_without_deep_support_is_a_client_error(client, monkeypatch):

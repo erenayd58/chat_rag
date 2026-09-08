@@ -221,14 +221,22 @@ def test_an_ingest_that_captured_nothing_records_no_snapshot(tracker, document):
 
 
 def test_a_record_written_before_snapshots_existed_still_reads(tracker, tmp_path):
-    path = tmp_path / "tracked.json"
-    path.write_text(json.dumps({
-        "C:/old.pdf": {"doc_id": "old-1", "file_hash": "abc", "chunk_count": 3,
-                       "file_size": 1, "ingested_at": "2026-01-01T00:00:00",
-                       "kb_id": "kb-1", "metadata": {}}
-    }), encoding="utf-8")
-    reopened = DocumentTracker(str(path))
+    """A document ingested before the snapshot field existed has none, and
+    reading it must answer ``None`` rather than fail.
 
-    record = reopened.get_document_by_doc_id("old-1")
+    Written straight through the repository, which is what a record from an
+    older console looks like once it has been imported: every other column
+    filled and ``pipeline_snapshot`` never set.
+    """
+    from storage import DocumentRepository, session_scope
+
+    with session_scope() as session:
+        DocumentRepository(session).upsert({
+            "doc_id": "old-1", "file_path": "C:/old.pdf", "file_name": "old.pdf",
+            "file_hash": "abc", "chunk_count": 3, "file_size": 1,
+            "ingested_at": "2026-01-01T00:00:00", "kb_id": "kb-1", "metadata": {},
+        })
+
+    record = DocumentTracker().get_document_by_doc_id("old-1")
     assert record["chunk_count"] == 3
     assert record["pipeline_snapshot"] is None

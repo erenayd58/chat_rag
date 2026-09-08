@@ -1,10 +1,16 @@
-"""Where runtime state lives.
+"""Where the *files* this application writes live.
 
-Every persistent thing this application writes -- the knowledge base records,
-the ingest ledger, the runtime gold set, the vector stores, the logs -- has
-always been a path relative to the working directory. That is right for local
-development and wrong for a container, where the source tree is rebuilt on
-every image change and only a mounted directory survives.
+Since Step 8 that is a smaller set than it was. The knowledge bases, the
+ingest ledger, the gold set, the ingest journal and the Viewer's analysis
+records are rows in PostgreSQL (``config/database.py`` owns that connection
+string). What is left here is what is genuinely a file: the vector stores, the
+parser's canonical-unit cache, the packaged Viewer artifacts, the embedding
+caches, the upload staging directory and the logs.
+
+Every one of those has always been a path relative to the working directory.
+That is right for local development and wrong for a container, where the
+source tree is rebuilt on every image change and only a mounted directory
+survives.
 
 Rather than move those paths, this module adds one switch. With
 ``CHAT_RAG_DATA_DIR`` unset every function returns exactly the path the code
@@ -133,6 +139,16 @@ def _resolve(relative: str, default: str) -> str:
     return os.path.join(root, *relative.split("/")) if root else default
 
 
+# ---------------------------------------------------------- pre-Step-8 state
+#
+# These four named the JSON files that held the knowledge bases, the ingest
+# ledger, the gold set and the ingest journal. PostgreSQL holds all four now
+# (``storage/``), and nothing in the application writes to these paths any
+# more. They are kept for one real job: ``tools/import_legacy_state.py`` finds
+# an existing installation's files here, and the record stores keep the value
+# so a diagnostic can still say which layout a process was configured for.
+
+
 def knowledge_bases() -> str:
     return _resolve("state/knowledge_bases.json", "./.knowledge_bases.json")
 
@@ -218,12 +234,11 @@ def embedding_cache() -> str:
 
 
 def ingest_journal() -> str:
-    """Where ingest jobs write the record a restart answers from.
+    """Where ingest jobs used to write the record a restart answers from.
 
-    Small JSON files, one per job, pruned on the same retention window as the
-    in-memory registry (``components/ingest/journal.py``). It travels with the
-    data root when one is set, because a client's ``job_id`` should survive a
-    container restart the same way its documents do.
+    Small JSON files, one per job. The ``ingest_jobs`` table holds them since
+    Step 8; this is kept alongside the three above so an existing installation
+    can be imported, and so the journal can report what it was configured for.
     """
     return _resolve("state/ingest-jobs", ".ingest-jobs")
 

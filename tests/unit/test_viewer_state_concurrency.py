@@ -1,24 +1,32 @@
 """One document's Viewer records, written by the worker while a poll reads them.
 
-The packaging worker writes ``state.json`` at every stage of a build and
-rewrites ``viewer-payload.json`` at the end of it. Meanwhile the console reads
-both from request threads: the workspace snapshot walks every state record,
-the browser polls one document's state while its build runs, and the Viewer
-fetches the payload.
+The packaging worker records every stage of a build and rewrites
+``viewer-payload.json`` at the end of it. Meanwhile the console reads both from
+request threads: the workspace snapshot reads every analysis record, the
+browser polls one document's state while its build runs, and the Viewer fetches
+the payload.
 
-Those two sides used to collide, and on Windows the collision is not subtle.
-``os.replace`` cannot replace a file that another handle has open, so a reader
-merely *having* ``state.json`` open made the worker's write raise
-``PermissionError``; and the reader that lost the same race got a
-``PermissionError`` of its own, which ``_read_state_file`` catches and reports
-as an unreadable -- that is, failed -- record. The worse half was silent: a
-write merges onto whatever it just read, so a write that read the placeholder
-persisted a record with no ``doc_ids``, and the document dropped out of the
-workspace it belonged to.
+Those two sides used to collide, and on Windows the collision was not subtle.
+The record was a ``state.json`` beside the artifacts, and ``os.replace`` cannot
+replace a file another handle has open -- so a reader merely *having* it open
+made the worker's write raise ``PermissionError``, and the reader that lost the
+same race reported a healthy document as an unreadable, that is failed, record.
+The worse half was silent: a write merged onto whatever it had just read, so a
+write that read the placeholder persisted a record with no ``doc_ids``, and the
+document dropped out of the workspace it belonged to.
 
-Everything under one analysis directory is written by this module, in this
-process, so one lock per key covering reads as well as writes is the whole
-fix; there is no second process to coordinate with.
+Step 8 made the record a row, and the two halves are now answered differently:
+
+* **the record** -- a write reads and updates it inside one transaction, with
+  the row locked, so a concurrent write cannot be merged over and a concurrent
+  read cannot see a half-applied one. Unlike the lock this replaced, that holds
+  for two processes as well as two threads.
+* **the payload** -- still a file, still rewritten at the end of every build
+  and read by the Viewer at the same moment, so it still needs the per-key lock
+  that covers reads as well as writes (``analysis._artifact_lock``).
+
+Every test below is the same question asked of whichever of the two now
+answers it.
 """
 
 from __future__ import annotations
@@ -171,7 +179,7 @@ def test_reading_the_payload_never_breaks_the_build_rewriting_it(workspace):
     reader.start()
     try:
         for index in range(200):
-            with analysis._state_lock(KEY):
+            with analysis._artifact_lock(KEY):
                 analysis._write_json(path, {"arms": {}, "units": [], "n": index})
     finally:
         stop.set()
@@ -181,34 +189,45 @@ def test_reading_the_payload_never_breaks_the_build_rewriting_it(workspace):
     assert not misses, "a payload that is on disk read back as absent"
 
 
-# ------------------------------- an unreadable record is not overwritten
+# ------------------------------------ a write that fails changes nothing
 
 
-def test_a_state_record_that_cannot_be_read_is_not_merged_over(workspace):
-    """With the lock in place this only happens to a genuinely damaged file,
-    and then the right move is to leave it: merging onto a blank record would
-    replace the document's identity with the absence of one."""
+def test_a_write_that_fails_leaves_the_record_whole(workspace, monkeypatch):
+    """What replaced "an unreadable record is not merged over".
+
+    The damaged-file case is gone with the file. Its consequence is not: a
+    write that fails part way must leave the record exactly as it was, because
+    a record merged onto a blank one replaces the document's identity with the
+    absence of one -- and that is what made a document vanish from the
+    workspace it belonged to. The failure is injected *after* the membership
+    has been written inside the transaction, so only a rollback satisfies this.
+    """
+    from storage.repositories import ContentRepository
+
     _seed()
-    path = analysis.document_dir(KEY) / "state.json"
-    path.write_text('{"key": "doc-concurrency-probe", "doc_ids": ["upload-one"', encoding="utf-8")
+    before = analysis._read_state_file(KEY)
 
-    with pytest.raises(ValueError):
-        analysis._set_state(KEY, status=analysis.STATUS_READY)
+    real = ContentRepository._apply
 
-    # Untouched, so the records it held can still be recovered by hand.
-    assert path.read_text(encoding="utf-8").startswith('{"key": "doc-concurrency-probe"')
-    # And a caller that only reads is told the record is unusable, not given
-    # an empty one that looks like a document with no analysis.
-    state = analysis._read_state_file(KEY)
-    assert state["status"] == analysis.STATUS_FAILED
-    assert state["error"] == "unreadable state record"
+    def apply_then_fail(self, row, changes):
+        real(self, row, changes)
+        raise RuntimeError("the connection went away")
+
+    monkeypatch.setattr(ContentRepository, "_apply", apply_then_fail)
+    with pytest.raises(RuntimeError):
+        analysis._set_state(KEY, status=analysis.STATUS_READY, doc_ids=[])
+
+    after = analysis._read_state_file(KEY)
+    assert after["status"] == before["status"]
+    assert after["doc_ids"] == ["upload-one", "upload-two"], "identity survived"
+    assert after["requested"] == ["structure-only"]
 
 
-def test_a_document_with_no_state_record_at_all_still_starts_cleanly(workspace):
-    """The absent case must stay distinct from the unreadable one: a first
-    stage has no record to merge onto and that is not an error."""
+def test_a_document_with_no_record_at_all_still_starts_cleanly(workspace):
+    """A first stage has no record to merge onto, and that is not an error."""
     assert analysis._read_state_file("doc-brand-new")["status"] == analysis.STATUS_MISSING
     state = analysis._set_state("doc-brand-new", status=analysis.STATUS_PENDING, doc_ids=["x"])
     assert state["status"] == analysis.STATUS_PENDING and state["doc_ids"] == ["x"]
-    assert json.loads((analysis.document_dir("doc-brand-new") / "state.json")
-                      .read_text(encoding="utf-8"))["doc_ids"] == ["x"]
+    # And it is really persisted: read back from the store, not from the
+    # dictionary the write returned.
+    assert analysis._read_state_file("doc-brand-new")["doc_ids"] == ["x"]

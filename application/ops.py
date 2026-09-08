@@ -13,6 +13,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 
+import storage as database
 from components.observability import events, telemetry as T
 from components.query import QUERY_DEADLINE_SEMANTICS, answer_budget
 
@@ -64,7 +65,8 @@ def service_state(services) -> tuple[str, bool, list]:
     except Exception as error:  # noqa: BLE001 - reported, not raised
         status = 'degraded'
         # Redacted: this reason is served by /api/health and /api/ops/metrics,
-        # and a storage error names the deployment's data root in full.
+        # and a storage error names the deployment's database or data root in
+        # full -- a PostgreSQL DSN carries a password.
         reasons.append(
             'the knowledge base records could not be read: '
             + events.redact_message(error)
@@ -138,6 +140,10 @@ def metrics(services, *, recent: int = 10) -> dict:
             'deadline_semantics': QUERY_DEADLINE_SEMANTICS,
         },
         'metrics': T.metrics().snapshot(recent=recent),
+        # Whether this process can reach PostgreSQL, and how much of its
+        # connection pool is checked out. The number an operator wants when
+        # "the console is slow" turns out to be "every connection is held".
+        'database': database.health(),
         'caches': {
             'pipelines': services.pipeline_cache.snapshot(),
             'viewer_boundary_model': workspace.boundary_model_stats(),

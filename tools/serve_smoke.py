@@ -19,11 +19,19 @@ What it checks
   it exits 0 rather than being killed (Windows has no graceful terminate to
   send, so there the exit status is not asserted).
 
-The server is given one setting, ``CHAT_RAG_DATA_DIR``, pointing at a
-throwaway directory. That is the check hiding inside the check: if that one
-setting were not sufficient -- if the checkout's ``.env`` could still supply
-a ``VECTOR_DB_PATH`` -- this smoke would be opening the developer's real
-Chroma store to answer a health request.
+The server is given two settings: ``CHAT_RAG_DATA_DIR``, pointing at a
+throwaway directory, and ``DATABASE_URL``, inherited from the environment. The
+first is the check hiding inside the check: if it were not sufficient on its
+own -- if the checkout's ``.env`` could still supply a ``VECTOR_DB_PATH`` --
+this smoke would be opening the developer's real Chroma store to answer a
+health request.
+
+The second cannot have a throwaway: the production entrypoint refuses to serve
+without a database, which is the behaviour this smoke would otherwise be
+proving by accident. With ``DATABASE_URL`` unset the smoke says so and stops,
+reporting success, because "no database here" is the state of an image build
+and not a fault in the entrypoint. Wherever there *is* one -- a developer's
+machine, CI -- the full check runs.
 
 No model is downloaded and no provider is contacted: the lexical profile
 builds no embedding model, and health touches neither parser nor store.
@@ -62,6 +70,9 @@ def _environment(data_dir: str, port: int) -> dict:
     # store, the parser cache, the ledger and the logs from it, and the
     # checkout's .env is not allowed to move any of them once it is set.
     env["CHAT_RAG_DATA_DIR"] = data_dir
+    # Inherited rather than invented: this smoke starts the real entrypoint,
+    # and the real entrypoint refuses to serve without a reachable database.
+    env["DATABASE_URL"] = os.environ.get("DATABASE_URL", "")
     env["FLASK_HOST"] = "127.0.0.1"
     env["FLASK_PORT"] = str(port)
     # bm25_only builds no embedding model, so no weights are downloaded to
@@ -100,6 +111,14 @@ def _wait_for_health(url: str, process: subprocess.Popen) -> dict:
 
 
 def main() -> int:
+    if not (os.environ.get("DATABASE_URL") or "").strip():
+        # The entrypoint refuses to serve without a database, by design. An
+        # image build has none, so there is nothing here to prove or to fail.
+        print("DATABASE_URL is not set: the production entrypoint needs one, so "
+              "there is no server to smoke here.")
+        print("Set it (docker-compose.test.yml starts one) to run this check.")
+        return 0
+
     data_dir = tempfile.mkdtemp(prefix="chat_rag-serve-smoke-")
     port = _free_port()
     url = f"http://127.0.0.1:{port}/api/health"

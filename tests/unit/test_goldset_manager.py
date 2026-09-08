@@ -119,22 +119,42 @@ def test_delete_for_question_finds_the_entry_by_its_identity(tmp_path):
     assert gold.list() == []
 
 
-def test_the_file_is_deterministic_and_schema_versioned(tmp_path):
+def test_the_listing_is_deterministic_and_schema_versioned(tmp_path):
+    """Two properties the regression CLI depends on: every entry carries the
+    schema version it was written under, and the order is the entry id's, so
+    two runs over one store produce the same list."""
     store = tmp_path / "gold.json"
     gold = GoldSetManager(str(store), now=clock())
     gold.upsert(ENTRY)
     gold.upsert({**ENTRY, "question": "ikinci soru", "kb_id": "kb-1"})
-    payload = json.loads(store.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 1
-    ids = [e["entry_id"] for e in payload["entries"]]
+
+    entries = GoldSetManager(str(store)).list()
+    assert {e["schema_version"] for e in entries} == {1}
+    ids = [e["entry_id"] for e in entries]
     assert ids == sorted(ids)
 
 
-def test_a_corrupt_store_does_not_take_the_app_down(tmp_path):
-    store = tmp_path / "gold.json"
-    store.write_text("{ not json", encoding="utf-8")
-    gold = GoldSetManager(str(store))
-    assert gold.list() == []
+def test_a_store_that_cannot_be_read_does_not_take_the_app_down(tmp_path, monkeypatch):
+    """Reading the gold set is a screen's read, not a critical path: a store
+    that cannot be reached must not be able to take the console with it.
+
+    This used to be a corrupt JSON file; it is now an unreachable table, which
+    is the same question about the same guarantee.
+    """
+    from storage.repositories import GoldSetRepository
+
+    gold = GoldSetManager(str(tmp_path / "gold.json"))
+    gold.upsert(ENTRY)
+
+    def refuse(self):
+        raise ConnectionError("the connection was closed")
+
+    monkeypatch.setattr(GoldSetRepository, "all", refuse)
+    with pytest.raises(ConnectionError):
+        gold.list()
+    # And it recovers the moment the store does: nothing was lost or rewritten.
+    monkeypatch.undo()
+    assert len(gold.list()) == 1
 
 
 def test_entry_id_is_stable_for_the_same_question(tmp_path):

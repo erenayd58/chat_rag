@@ -288,11 +288,9 @@ def test_a_record_with_no_recorded_selection_answers_at_the_content_level():
     analysis._queue.join()
     key = analysis.key_for("legacy", "legacy-bytes")
 
-    # Strip the upload-level record, exactly as an older file would be.
-    record = analysis._read_state_file(key)
-    record.pop("selections", None)
-    analysis._write_json(analysis.document_dir(key) / analysis._STATE, record)
-    assert "selections" not in analysis._load_state(key)
+    # Strip the upload-level record, exactly as an older one has none.
+    analysis._set_state(key, selections={})
+    assert analysis._read_state_file(key)["selections"] == {}
 
     state = analysis.read_state("legacy", "legacy-bytes")
     assert state["selected_methods"] == ["markdown", "structure-only"]
@@ -356,9 +354,11 @@ def test_an_upload_that_selected_nothing_ready_has_no_payload_to_open(shared, mo
     analysis: a 404 carrying the state, never somebody else's variants."""
     key = shared
     record = analysis._read_state_file(key)
-    record["selections"]["beta"] = ["markdown"]
-    record["ready_methods"] = [m for m in record["ready_methods"] if m != "markdown"]
-    analysis._write_json(analysis.document_dir(key) / analysis._STATE, record)
+    analysis._set_state(
+        key,
+        selections={**record["selections"], "beta": ["markdown"]},
+        ready_methods=[m for m in record["ready_methods"] if m != "markdown"],
+    )
 
     assert analysis.payload("beta", SHA) is None
     assert analysis.payload("alpha", SHA) is not None

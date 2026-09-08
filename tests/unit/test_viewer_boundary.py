@@ -350,15 +350,16 @@ def test_the_scratch_files_of_a_killed_process_are_swept(workspace):
     _build()
     key = analysis.key_for("edge-doc")
     directory = analysis.document_dir(key)
-    orphan = directory / "state.json.999.888.tmp"
+    orphan = directory / "viewer-payload.json.999.888.tmp"
     orphan.write_text("{}", encoding="utf-8")
     (directory / "units.jsonl.999.777.tmp").write_text("", encoding="utf-8")
 
     assert analysis.sweep_scratch() == 2
     assert not orphan.exists()
-    # The real records are untouched.
+    # The real artifacts are untouched, and so is the record that names them.
     assert analysis.payload("edge-doc") is not None
-    assert json.loads((directory / "state.json").read_text(encoding="utf-8"))["key"] == key
+    assert (directory / "units.jsonl").is_file()
+    assert analysis.read_state("edge-doc")["key"] == key
     # And a second sweep is a no-op.
     assert analysis.sweep_scratch() == 0
 

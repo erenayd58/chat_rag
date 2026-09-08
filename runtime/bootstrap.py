@@ -12,12 +12,36 @@ import logging
 import os
 import sys
 
+import storage as database
 from components.ingest import sweep_staging
 from config import paths
 
 from application import ingest, workspace
 
 logger = logging.getLogger("RAG.bootstrap")
+
+
+def require_database() -> None:
+    """Refuse to serve without the database, and say which one.
+
+    Called before the container is built, so a wrong or unreachable
+    ``DATABASE_URL`` is a start-up message naming the host rather than a server
+    that binds a port and then fails every request with a stack trace. The
+    application's relational state is PostgreSQL now; there is no degraded mode
+    in which it serves without one.
+
+    The connection string is reported through ``config.database``, which takes
+    the credential out of it: this message goes to a log file.
+    """
+    try:
+        database.require_reachable()
+    except (database.DatabaseNotConfigured, database.DatabaseUnavailable) as error:
+        print("\n" + "=" * 80)
+        print("Cannot start: " + str(error))
+        print("Run `alembic upgrade head` against it once it is reachable; "
+              "see docs/database.md.")
+        print("=" * 80)
+        raise SystemExit(2) from error
 
 
 def enable_console_utf8() -> None:
@@ -86,6 +110,9 @@ def startup_banner(services) -> None:
     # deciding that. One data directory now settles every path below it, so
     # naming them here is what makes a wrong one visible at start-up rather
     # than after something has been written to it.
+    db = effective['database']
+    print(f"Database: {db.get('url') or '(not configured)'}"
+          f"  (pool {db.get('pool_size')}+{db.get('max_overflow')})")
     print(f"Data directory: {effective['data_root'] or '(none: paths are relative to ' + os.getcwd() + ')'}")
     print(f"Vector DB: {effective['vector_db']}")
     print(f"Parser cache: {effective['parser_cache']}")

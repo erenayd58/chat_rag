@@ -37,6 +37,7 @@ import sys
 
 from application.services import Services, default_services
 from config.runtime import runtime_from_env
+import storage as database
 from interfaces.http import v1
 from runtime import bootstrap
 
@@ -50,6 +51,7 @@ def _on_start(services: Services) -> None:
     """What this process picks up from the last one, and what it sizes itself
     against."""
     _size_thread_pool()
+    bootstrap.require_database()
     bootstrap.resume_background_work(services)
 
 
@@ -61,6 +63,10 @@ def _on_stop(services: Services) -> None:
     here would race the jobs that are still draining.
     """
     services.ingest_jobs.close(timeout=SHUTDOWN_TIMEOUT_SECONDS)
+    # The database pool goes last, after the jobs that were still writing to
+    # it have finished. Disposing it first would fail their final ledger write,
+    # which is the one write a job must not lose.
+    database.dispose()
 
 
 def _size_thread_pool() -> None:

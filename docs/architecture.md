@@ -39,8 +39,9 @@ ingest job (queued → running)                     components/ingest/jobs.py
   │     Standard       amsc.chunking.structural
   │     Deep Analysis  amsc.deep.pipeline          proposer → selector → verifier
   ├── embed            chunk text → vectors       components/embedding/
-  ├── index            vectors + lexical rows     components/vectordb/
+  ├── index            vectors + lexical rows     components/vectordb/   (files)
   ├── ledger           the document is registered utils/document_tracker.py
+  │                    -> a row in PostgreSQL     storage/
   └── viewer stage     queue the analysis         components/viewer/analysis.py
         ▼
       background worker packages the run for the Viewer  (never blocks the request)
@@ -97,9 +98,32 @@ application/              The product's behaviour.  Plain functions over a
       │                   no status codes.
       ▼
 components/  config/  core/  pipeline/  utils/  amsc
-                          Stores, models, limits, telemetry, the chunking
-                          library.
+      │                   Stores, models, limits, telemetry, the chunking
+      │                   library.
+      ▼
+storage/                  PostgreSQL, behind repository interfaces.  Every SQL
+                          statement this application runs is in one module;
+                          nothing above it imports SQLAlchemy.
 ```
+
+### Two stores, and what is in each
+
+```
+application / domain
+   ├── PostgreSQL          knowledge bases, documents (the ingest ledger),
+   │                       content identity and analysis state, ingest jobs,
+   │                       the gold set
+   └── vector store        embeddings, chunk rows, the lexical index
+       (Chroma, files)
+```
+
+**PostgreSQL is authoritative for relational state** and the vector store is
+authoritative for embeddings. Nothing dual-writes. The large regenerable
+artifacts of document processing -- the canonical units, each method's packaged
+`chunks.jsonl`, a Deep run tree, the assembled Viewer payload, the caches --
+are still files under the data directory, addressed by a *row*
+(`contents.content_key` names the directory) rather than being the record.
+[database.md](database.md) is the schema, the migrations and the reasoning.
 
 `/api/v1` is **FastAPI** and the console's surface is still **Flask**, in one
 process over one container. `interfaces/http/coexistence.py` mounts the ASGI
@@ -170,7 +194,7 @@ open it.
 | `pipeline/rag_pipeline.py` | the pipeline object: builds the embedder / store / retriever / answer model from settings, and runs a query | changing retrieval or the answer chain end to end |
 | `components/ingest/jobs.py` | the job system: queue, workers, states, retention, cancellation | changing upload concurrency or job lifecycle |
 | `components/ingest/limits.py` | **the one owner of deadlines and provider budgets**: `current_guard()`, `deadline_timeout()`, the Deep and embedding semaphores | adding a transport, or anything that calls out over the network |
-| `components/ingest/journal.py` | the on-disk record of job transitions, so a restart can answer for a job | changing restart semantics |
+| `components/ingest/journal.py` | the record of job transitions (`ingest_jobs`), so a restart can answer for a job | changing restart semantics |
 | `components/ingest/pipelines.py` | the bounded pipeline cache and its leases | changing caching or eviction |
 | `components/query/limits.py` | query admission, the answer budget, `QueryGuard` | changing what a busy server does to a question |
 | `components/observability/` | `telemetry.py` (traces, stages, error categories, the bounded window) and `events.py` (the `RAG.ops` one-line event log) | adding a metric or an operational event |
@@ -180,12 +204,13 @@ open it.
 | `components/retriever/` | the retrieval profiles (`bm25_only`, `hybrid_rrf`, `benchmark_aligned`) | changing how candidates are found or fused |
 | `components/llm/` | the answer transports: OpenAI-compatible, Ollama, Azure, the unavailable carrier and the fallback pair | adding a provider — see [Adding a provider](#adding-a-provider) |
 | `components/parsers/` | file → text/units, and the parser factory that picks one | adding a file type |
-| `config/` | five owners, one each: `paths` (where state goes), `runtime` (server), `ingest`, `query`, `settings` (models, endpoints, retrieval) | any setting — read [configuration.md](configuration.md) first |
+| `storage/` | **PostgreSQL**: `models.py` (the schema and the reasoning behind each edge), `engine.py` (one pooled engine, one session per unit of work), `repositories.py` (every SQL statement this application runs), `migrations/` (Alembic) | changing what is persisted — read [database.md](database.md) first |
+| `config/` | six owners, one each: `paths` (where files go), `database` (`DATABASE_URL` and the pool), `runtime` (server), `ingest`, `query`, `settings` (models, endpoints, retrieval) | any setting — read [configuration.md](configuration.md) first |
 | `utils/logger.py` | the sixth config owner: log levels and rotation, deliberately fail-safe | changing logging |
-| `utils/document_tracker.py` | the ingest ledger, written atomically under a per-file lock | changing what a registered document records |
+| `utils/document_tracker.py` | the ingest ledger, as a façade over `DocumentRepository`: a document is a row addressed by its `doc_id`, never by a path | changing what a registered document records |
 | `cli/` | `python -m cli` — eval, search, qa, inspect, report, gold | offline evaluation of a knowledge base |
-| `tools/` | `import_smoke.py`, `serve_smoke.py`, `verify_reproducibility.py` | proving a build works — see [testing.md](testing.md) |
-| `tests/` | `unit/` (fast, no network), `application/` (the use cases with no Flask at all), `integration/` (the real Flask app), `migration/` (the contracts a platform change must keep), `conftest.py` (moves the process out of the checkout, blanks keys) | always |
+| `tools/` | `import_smoke.py`, `serve_smoke.py`, `verify_reproducibility.py`, `import_legacy_state.py` (a pre-Step-8 installation's JSON records into PostgreSQL) | proving a build works — see [testing.md](testing.md) |
+| `tests/` | `unit/` (fast, no network), `application/` (the use cases with no Flask at all), `integration/` (the real Flask app), `migration/` (the contracts a platform change must keep), `storage/` (the repositories, the invariants, the transactions, the concurrency and the Alembic gate), `conftest.py` (moves the process out of the checkout, blanks keys, builds and truncates the test database) | always |
 | `evaluation/experiment-log.md` | the record of the retrieval experiments behind the shipped context budget and top-k | asking why a number is what it is |
 | `templates/`, `static/` | the console UI | changing a screen |
 | `start-demo.ps1` / `stop-demo.ps1` | the demo launcher: builds the Viewer shell if missing, starts both servers, waits for health | running the demo |

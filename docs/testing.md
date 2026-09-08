@@ -22,9 +22,35 @@ touch your knowledge bases even by accident.
 
 Run both from their own repository root.
 
+The `chat_rag` suite needs a PostgreSQL of its own, because that is where the
+application's records live. Start it once and leave it running:
+
+```bash
+docker compose -f docker-compose.test.yml up -d
+```
+
+It listens on port 55432 so it cannot collide with a PostgreSQL already
+installed on the machine, its credentials guard nothing, and it keeps its data
+in memory — the schema is rebuilt from the migrations at the start of every
+session anyway. `CHAT_RAG_TEST_DATABASE_URL` points the suite somewhere else;
+without a database the session refuses to run and says so, rather than falling
+back to something that would pass for the wrong reason.
+
+Two things follow, and both are deliberate:
+
+* **the schema under test is the deployed one.** `tests/conftest.py` drops the
+  schema and runs `alembic upgrade head` — the same migrations a deployment
+  runs. No fixture calls `create_all`, so a model that has outgrown its
+  migration fails here rather than in production.
+* **isolation is an empty database, not a temporary file.** Every table is
+  truncated before every test. A test that used to isolate itself by pointing a
+  store at its own `tmp_path` still passes that path — the stores still accept
+  it — and gets a fresh database instead.
+
 ```bash
 # chat_rag (this repo) — the venv's interpreter, from the repo root
 python -m pytest -q                       # everything
+python -m pytest tests/storage -q         # the repositories, invariants, transactions, concurrency, Alembic
 python -m pytest tests/unit -q            # fast: no Flask app, no store
 python -m pytest tests/application -q     # the product's behaviour, with no Flask at all
 python -m pytest tests/integration -q     # the real app through its test client

@@ -41,6 +41,7 @@ import signal
 import sys
 
 import app as _app
+import storage as database
 from config.runtime import runtime_from_env
 
 #: The WSGI callable, for `waitress-serve wsgi:application`, gunicorn, uwsgi,
@@ -93,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     # Before the first print: a redirected stream on a non-UTF-8 console would
     # otherwise raise on the banner, and the banner comes before the bind.
     _app.enable_console_utf8()
+    _app.require_database()
     _app.startup_banner()
     _app.resume_background_work()
 
@@ -113,6 +115,9 @@ def main(argv: list[str] | None = None) -> int:
         pass
     finally:
         server.close()
+        # Return every pooled connection before the process exits, so a
+        # restart does not leave backends on the server waiting to time out.
+        database.dispose()
     print("Server stopped.")
     return 0
 

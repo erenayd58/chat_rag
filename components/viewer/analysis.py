@@ -52,6 +52,22 @@ the chunkers, the packager and the payload shape. Nothing here is a copy of
 anything in ``amsc``; where the two must agree (method identity, the payload
 shape), this side reads the library rather than restating it.
 
+Since Step 8 the *record* and the *artifacts* live in different places, and
+the split is the point:
+
+* **PostgreSQL** holds the state -- which uploads share this content, what
+  each of them selected, which variants exist and how each build ended. It
+  used to be a ``state.json`` beside the artifacts, rewritten whole on every
+  change, guarded by a process-local lock that was correct for one process
+  and quietly wrong for two.
+* **The directory** holds what a build produces: the canonical units, the
+  Deep run tree, each method's packaged ``chunks.jsonl`` and the assembled
+  payload. Those are large, regenerable, and read as files by the library's
+  own reader; a row pointing at them would only be a second name for a path.
+
+So ``content_key`` is still the directory's name, but it comes from a row now
+rather than being the record itself.
+
 Nothing here runs at query time, and nothing here writes outside its own
 root -- these are regenerable workspace artifacts, entirely separate from the
 frozen benchmark trees in the chunk repository.
@@ -72,6 +88,7 @@ from typing import Any, Iterable, Sequence
 
 from components.viewer import methods as M
 from config import paths
+from storage import ContentRepository, session_scope
 from utils import get_logger
 
 logger = get_logger("ViewerAnalysis")
@@ -91,7 +108,6 @@ SOURCE_DETERMINISTIC = "deterministic_contract"
 SOURCE_DEEP_STANDARD = "deep_run_standard"
 
 _PAYLOAD = "viewer-payload.json"
-_STATE = "state.json"
 _UNITS = "units.jsonl"
 _RUN = "run"
 _VARIANTS = "variants"
@@ -102,20 +118,19 @@ _lock = threading.Lock()
 _worker: threading.Thread | None = None
 #: One build at a time per document.
 _build_locks: dict[str, threading.Lock] = {}
-#: One reader or writer at a time per document's own JSON records.
+#: One reader or writer at a time per document's own payload file.
 #:
 #: Deliberately not ``_build_locks``: that one is held for a whole build, and a
 #: status poll must not queue behind minutes of chunking. This one is held for
 #: the length of a single read or a single replace.
 #:
 #: It has to cover reads as well as writes. Replacing a file that any other
-#: handle has open fails on Windows with PermissionError, so a poll of
-#: ``state.json`` was enough to break the build's own write; and the reader
-#: that lost the same race got a PermissionError back, which
-#: ``_read_state_file`` reports as an unreadable -- that is, failed -- record.
-#: Everything under one document's directory is written by this module and by
-#: this process alone, so serialising here is the whole fix.
-_state_locks: dict[str, threading.RLock] = {}
+#: handle has open fails on Windows with PermissionError, so a browser polling
+#: the payload was enough to break the build's own write of it. The *record*
+#: no longer needs this: it is a row, and two writers to it are serialised by
+#: the database (``ContentRepository.upsert_state`` takes the row lock) rather
+#: than by a lock only this process can see.
+_artifact_locks: dict[str, threading.RLock] = {}
 #: Documents deleted while their build was running.
 #:
 #: ``discard`` removes the directory, but a build already inside ``_build``
@@ -163,10 +178,28 @@ def key_for(doc_id: str, content_sha: str | None = None) -> str:
     """
     if content_sha:
         return content_key(content_sha)
-    for key, state in _all_states().items():
-        if doc_id in (state.get("doc_ids") or []):
-            return key
-    return _safe_id(doc_id)
+    # An indexed lookup on the membership's unique ``doc_id``, where this used
+    # to read every analysis record there is to find the one naming this
+    # upload.
+    with session_scope() as session:
+        found = ContentRepository(session).key_for_document(doc_id)
+    return found or _safe_id(doc_id)
+
+
+def _record_exists(key: str) -> bool:
+    """Is there still an analysis record under this key?"""
+    with session_scope() as session:
+        return ContentRepository(session).get(key) is not None
+
+
+def _is_content_key(value: str) -> bool:
+    """Is this already a content key, or is it an upload id?
+
+    ``build`` is called by the worker with a key and by a caller with a
+    document id; asking the record which it is costs one indexed lookup and
+    removes the guess.
+    """
+    return _record_exists(value)
 
 
 def document_dir(key: str) -> Path:
@@ -208,67 +241,47 @@ def _write_json(path: Path, payload: Any) -> None:
     os.replace(tmp, path)
 
 
-def _state_lock(key: str) -> threading.RLock:
+def _artifact_lock(key: str) -> threading.RLock:
     with _lock:
-        lock = _state_locks.get(key)
+        lock = _artifact_locks.get(key)
         if lock is None:
-            lock = _state_locks[key] = threading.RLock()
+            lock = _artifact_locks[key] = threading.RLock()
         return lock
 
 
-def _load_state(key: str) -> dict:
-    """This key's state record, read from disk. Raises if it cannot be read."""
-    state = json.loads((document_dir(key) / _STATE).read_text(encoding="utf-8"))
-    if not isinstance(state, dict):
-        raise ValueError("the state record is not a JSON object")
-    return state
-
-
 def _normalise_state(key: str, state: dict) -> dict:
-    state.setdefault("key", key)
-    state.setdefault("doc_ids", [])
-    state.setdefault("methods", {})
-    state.setdefault("requested", [])
-    # doc_id -> the methods that upload asked for. Absent on every record
-    # written before uploads carried their own choice; see ``selection_for``.
-    state.setdefault("selections", {})
+    """The record, reconciled with what is actually on disk.
+
+    The one thing a row cannot know: a build can be recorded ready and its
+    payload be gone -- a wiped workspace, a half-restored volume. The document
+    is then pending again rather than ready and unanswerable, which is what
+    :func:`resume_incomplete` picks up at the next start.
+    """
     if state.get("status") == STATUS_READY and not payload_path(key).is_file():
         state["status"] = STATUS_PENDING
         state["error"] = "the viewer payload is gone; it will be built again"
     return state
 
 
-def _state_for_update(key: str) -> dict:
-    """The record a write merges onto.
-
-    Raises when the file is there and cannot be read. An unreadable record is
-    not a document without state, and merging onto a blank one would drop the
-    ``doc_ids`` that tie this analysis to the console records it answers for --
-    losing the document from the workspace rather than reporting a problem.
-    """
-    if not (document_dir(key) / _STATE).is_file():
-        return {"key": key, "status": STATUS_MISSING}
-    return _normalise_state(key, _load_state(key))
-
-
 def _read_state_file(key: str) -> dict:
-    """One document's state, as a caller may display it. Never raises."""
-    with _state_lock(key):
-        try:
-            return _state_for_update(key)
-        except (ValueError, OSError):
-            return {"key": key, "status": STATUS_FAILED, "error": "unreadable state record"}
+    """One content's analysis state, as a caller may display it."""
+    with session_scope() as session:
+        state = ContentRepository(session).get(key)
+    if state is None:
+        return {"key": key, "status": STATUS_MISSING}
+    return _normalise_state(key, state)
 
 
 def _all_states() -> dict[str, dict]:
-    directory = root()
-    if not directory.is_dir():
-        return {}
-    found: dict[str, dict] = {}
-    for child in sorted(directory.iterdir()):
-        if child.is_dir() and (child / _STATE).is_file():
-            found[child.name] = _read_state_file(child.name)
-    return found
+    """Every analysis record, keyed by its content key.
+
+    One query, where this used to list the workspace root and read a JSON file
+    per document -- and be wrong about any document another process had
+    written since.
+    """
+    with session_scope() as session:
+        found = ContentRepository(session).all()
+    return {key: _normalise_state(key, state) for key, state in found.items()}
 
 
 def selection_for(state: dict, doc_id: str) -> list[str]:
@@ -315,25 +328,21 @@ def read_state(doc_id: str, content_sha: str | None = None) -> dict:
 
 
 def _set_state(key: str, _merge: Any = None, **fields: Any) -> dict:
-    # One critical section for the read and the write. Two writers would
-    # otherwise each merge onto the record they read and the later one would
-    # drop the other's fields; and a reader holding the file open is enough to
-    # make the rename underneath fail outright on Windows.
-    #
-    # ``_merge`` is for a field whose new value is a function of the old one --
-    # the sets of doc_ids, requested methods and per-upload selections. Two
-    # uploads of the same PDF landing together would otherwise each add
-    # themselves to the record they read, and the later write would drop the
-    # earlier one's upload entirely.
-    with _state_lock(key):
-        state = _state_for_update(key)
-        if _merge is not None:
-            fields = {**fields, **_merge(state)}
-        state.update(fields)
-        state["key"] = key
-        state["updated_at"] = datetime.now().isoformat(timespec="seconds")
-        _write_json(document_dir(key) / _STATE, state)
-        return state
+    """Apply one change to this content's record, in one transaction.
+
+    ``_merge`` is for a field whose new value is a function of the old one --
+    the set of memberships, the union of requested methods, one upload's own
+    selection. It is handed the record as the *transaction* sees it, under the
+    row's lock, so two uploads of the same PDF landing together both end up in
+    it. Each would otherwise merge onto the copy it read and the later write
+    would drop the earlier upload outright; the lock this replaced stopped
+    that for one process and for no more than one.
+    """
+    with session_scope() as session:
+        return ContentRepository(session).upsert_state(
+            key, merge=_merge, fields=fields,
+            content_sha=fields.get("content_sha"),
+        )
 
 
 def states() -> dict[str, dict]:
@@ -360,20 +369,26 @@ def discard(doc_id: str, content_sha: str | None = None) -> bool:
     """
     key = key_for(doc_id, content_sha)
     directory = document_dir(key)
-    if not directory.is_dir():
-        return False
-    state = _read_state_file(key)
-    remaining = [d for d in (state.get("doc_ids") or []) if d != doc_id]
-    if remaining:
-        # The upload goes, and its choice with it. The variants it selected
-        # stay: they belong to the content, and another upload may be
-        # showing them.
-        _set_state(key, _merge=lambda current: {
-            "doc_ids": [d for d in (current.get("doc_ids") or []) if d != doc_id],
-            "selections": {d: keys for d, keys in (current.get("selections") or {}).items()
-                           if d != doc_id},
-        })
-        return True
+    # The membership goes and the survivors are counted in one transaction,
+    # under the content's row lock. Two deletions arriving together could
+    # otherwise both read "one other upload remains", both decide to keep the
+    # analysis, and leave it owned by nobody.
+    with session_scope() as session:
+        repository = ContentRepository(session)
+        remaining = repository.detach_document(key, doc_id)
+        if remaining is None:
+            # No such content. A directory may still be there from a build
+            # whose record has already gone; it goes with it.
+            if directory.is_dir():
+                shutil.rmtree(directory, ignore_errors=True)
+                return True
+            return False
+        if remaining:
+            # The upload goes, and its choice with it -- the membership row
+            # carried both. The variants it selected stay: they belong to the
+            # content, and another upload may be showing them.
+            return True
+        repository.delete(key)
     with _lock:
         # Marked before the removal, so a build that is between two writes
         # cannot slip its output in after the directory is gone.
@@ -710,7 +725,7 @@ def _build_lock(key: str) -> threading.Lock:
 
 def build(doc_id_or_key: str, content_sha: str | None = None) -> dict:
     """Package every requested variant and write the payload the Viewer merges."""
-    key = doc_id_or_key if (document_dir(doc_id_or_key) / _STATE).is_file() \
+    key = doc_id_or_key if _is_content_key(doc_id_or_key) \
         else key_for(doc_id_or_key, content_sha)
     with _build_lock(key):
         try:
@@ -945,7 +960,7 @@ def _build(key: str) -> dict:
         "deepSource": deep_variant.get("source"),
         "preparedAt": datetime.now().isoformat(timespec="seconds"),
     }
-    with _state_lock(key):
+    with _artifact_lock(key):
         _write_json(payload_path(key), payload)
 
     failed = [m for m in requested if (variants.get(m) or {}).get("status") == STATUS_FAILED]
@@ -1063,9 +1078,9 @@ def payload(doc_id: str, content_sha: str | None = None) -> dict | None:
     """
     key = key_for(doc_id, content_sha)
     path = payload_path(key)
-    # Same lock as the state record: this file is rewritten at the end of every
-    # build, and a browser polling the document is reading it at the same time.
-    with _state_lock(key):
+    # This file is rewritten at the end of every build, and a browser polling
+    # the document is reading it at the same moment.
+    with _artifact_lock(key):
         if not path.is_file():
             return None
         try:
@@ -1089,9 +1104,12 @@ def _run_worker() -> None:
         except Exception as error:  # noqa: BLE001 - a failed build is a state, not a crash
             logger.error(f"Viewer analysis failed for {key}: {error}", exc_info=True)
             # The document may have been deleted while this build ran, in
-            # which case the build already swept its own output away.
-            # Recording a failure now would recreate what the delete removed.
-            if document_dir(key).is_dir():
+            # which case the build already swept its own output away and its
+            # record is gone. Recording a failure now would recreate what the
+            # delete removed -- so the record, not the directory, is asked:
+            # a document that has never produced a file still has a record,
+            # and a failure is exactly what it needs to be told about.
+            if _record_exists(key):
                 try:
                     _set_state(key, status=STATUS_FAILED,
                                error=f"{type(error).__name__}: {error}",

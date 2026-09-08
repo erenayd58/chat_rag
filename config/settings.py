@@ -235,8 +235,18 @@ class Settings:
         """
         from utils.logger import logging_configuration
 
+        from storage import describe as database_configuration
+
         return {
             "data_root": paths.data_root(),
+            # Where the relational records live and how many connections may
+            # reach them -- the configuration, not a liveness check: this is
+            # printed at start-up and read by an endpoint, and neither should
+            # cost a round trip. Whether it *is* reachable is
+            # ``/api/ops/metrics``'s ``database`` block. The URL is sanitized
+            # in ``config/database.py``, because that endpoint is
+            # unauthenticated and a DSN carries a password.
+            "database": database_configuration(),
             "vector_db": self.vector_db_path,
             "parser_cache": paths.canonical_cache(),
             "viewer_analyses": paths.viewer_live_analysis(),

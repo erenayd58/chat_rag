@@ -1,15 +1,38 @@
-"""
-Knowledge Base manager with JSON persistence.
-Each KB defines: name, chunker config, embedding model, vector db provider/path, retrieval method defaults.
+"""Knowledge Base manager, on PostgreSQL.
+
+Each KB defines: name, chunker config, embedding model, vector db
+provider/path, retrieval method defaults.
+
+Step 8 moved the records from ``.knowledge_bases.json`` into the
+``knowledge_bases`` table. The class did not move: every caller -- the use
+cases, both HTTP surfaces, the CLI and the Viewer's workspace snapshot -- asks
+this object the same questions it always did, and gets the same dictionaries
+back. What changed underneath is worth stating, because two of the rules this
+class enforces were only ever true for a single process:
+
+* **A name is unique.** It used to be checked by scanning the in-memory
+  records and then writing the file, which two requests could both pass
+  before either wrote. It is now a unique index on the normalised name, so
+  the second creation fails on the constraint and is reported as the same
+  ``ValueError`` a caller already handles.
+* **A record either exists or does not.** The file store wrote the whole
+  document on every change, so an interrupted write was the failure mode it
+  spent most of its code defending against. A row is written in a
+  transaction; there is no half-written store to recover from.
+
+The vector store is still a directory (:meth:`storage_path`,
+:meth:`delete_with_storage`); that is Step 9's problem, and deleting a
+knowledge base is still two acts in a fixed order -- the store first, so a
+directory that cannot be removed leaves the record in place rather than
+orphaning itself.
 """
 import os
-import json
 import shutil
 import uuid
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from config import paths
-
+from storage import KnowledgeBaseRepository, session_scope
 
 from components.chunker import registry as chunker_registry
 
@@ -40,57 +63,52 @@ def normalize_chunker_config(chunker: Optional[Dict[str, Any]]) -> Dict[str, Any
     return {"type": resolved.id, "params": dict(params)}
 
 
-def _ensure_parent(path: str) -> None:
-    """Create the directory a store file lives in, if it is not there yet.
+def _is_duplicate_name(error: Exception) -> bool:
+    """Did this failure come from the unique index on the name?
 
-    Historically these files sat in the working directory, which always
-    exists. A configured data directory does not, until something makes it.
+    Asked of a real ``IntegrityError`` rather than guessed from a prior read,
+    which is the whole difference between "unique because we looked" and
+    "unique because it cannot be otherwise".
     """
-    parent = os.path.dirname(os.path.abspath(path))
-    if parent:
-        os.makedirs(parent, exist_ok=True)
+    return "uq_knowledge_bases_name_key" in str(getattr(error, "orig", error))
 
 
 class KnowledgeBaseManager:
     def __init__(self, store_path: Optional[str] = None):
-        # Defaults to the historical file unless a data directory is set.
+        """``store_path`` is accepted and unused.
+
+        It named the JSON file these records lived in until Step 8. Callers
+        that still pass one -- the contract suites point every store at their
+        own ``tmp_path`` -- keep working; the records come from PostgreSQL
+        either way, and the value is kept only so a diagnostic can say what a
+        caller thought it was opening.
+        """
         self.store_path = store_path or paths.knowledge_bases()
-        self.kbs: Dict[str, Dict[str, Any]] = {}
-        self._load()
 
-    def _load(self) -> None:
-        if os.path.exists(self.store_path):
-            try:
-                with open(self.store_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    self.kbs = {
-                        kb_id: {
-                            **cfg,
-                            "chunker": normalize_chunker_config(cfg.get("chunker")),
-                        }
-                        for kb_id, cfg in data.items()
-                        if isinstance(cfg, dict)
-                    }
-            except Exception:
-                self.kbs = {}
-
-    def _save(self) -> None:
-        _ensure_parent(self.store_path)
-        tmp = self.store_path + ".tmp"
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(self.kbs, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, self.store_path)
+    # ------------------------------------------------------------- reading
+    @property
+    def kbs(self) -> Dict[str, Dict[str, Any]]:
+        """Every record, keyed by id. Read from the database on each access:
+        another process may have created one since the last look, and the
+        file-era habit of caching this in the instance is exactly how two
+        requests came to write over each other."""
+        with session_scope() as session:
+            return KnowledgeBaseRepository(session).all()
 
     def list(self) -> List[Dict[str, Any]]:
-        return [
-            {"kb_id": kb_id, **cfg}
-            for kb_id, cfg in self.kbs.items()
-        ]
+        return [{"kb_id": kb_id, **cfg} for kb_id, cfg in self.kbs.items()]
 
     def get(self, kb_id: str) -> Optional[Dict[str, Any]]:
-        return self.kbs.get(kb_id)
+        with session_scope() as session:
+            return KnowledgeBaseRepository(session).get(kb_id)
 
+    def find_by_name(self, name: str) -> Optional[str]:
+        """kb_id of the knowledge base with this name, comparing case- and
+        space-insensitively."""
+        with session_scope() as session:
+            return KnowledgeBaseRepository(session).find_by_name(name)
+
+    # ------------------------------------------------------------- writing
     def create(
         self,
         name: str,
@@ -109,8 +127,6 @@ class KnowledgeBaseManager:
         name = str(name or "").strip()
         if not name:
             raise ValueError("name is required")
-        if self.find_by_name(name) is not None:
-            raise ValueError(f"A knowledge base named {name!r} already exists")
         provider = str(vector_db_provider or "chroma").strip().lower()
         if provider != "chroma":
             raise ValueError("vector_db_provider must be 'chroma'")
@@ -124,18 +140,26 @@ class KnowledgeBaseManager:
             "extra": extra or {}
         }
 
-        kb_id = str(uuid.uuid4())[:8]
-        while kb_id in self.kbs:
-            kb_id = str(uuid.uuid4())[:8]
-        self.kbs[kb_id] = cfg
+        from sqlalchemy.exc import IntegrityError
+
+        # One transaction: the row is there or the name is still free. The
+        # duplicate check is the unique index, not a read followed by a write
+        # -- two requests creating "Yillik raporlar" at the same moment used to
+        # both pass the read.
         try:
-            self._save()
-        except Exception:
-            # Never leave a record that only exists in memory: the next reload
-            # would drop it and the store directory would be orphaned.
-            self.kbs.pop(kb_id, None)
+            with session_scope() as session:
+                repository = KnowledgeBaseRepository(session)
+                kb_id = str(uuid.uuid4())[:8]
+                while repository.get(kb_id) is not None:
+                    kb_id = str(uuid.uuid4())[:8]
+                record = repository.create(kb_id, cfg)
+        except IntegrityError as error:
+            if _is_duplicate_name(error):
+                raise ValueError(
+                    f"A knowledge base named {name!r} already exists"
+                ) from error
             raise
-        return {"kb_id": kb_id, **cfg}
+        return {"kb_id": kb_id, **record}
 
     def create_from_payload(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a KB from the exact JSON contract accepted by POST /api/kb."""
@@ -152,25 +176,14 @@ class KnowledgeBaseManager:
         )
 
     def update(self, kb_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        if kb_id not in self.kbs:
-            return None
         updates = dict(updates)
         if "chunker" in updates:
             updates["chunker"] = normalize_chunker_config(updates["chunker"])
-        self.kbs[kb_id].update(updates)
-        self._save()
-        return {"kb_id": kb_id, **self.kbs[kb_id]}
-
-    def find_by_name(self, name: str) -> Optional[str]:
-        """kb_id of the knowledge base with this name, comparing case- and
-        space-insensitively."""
-        wanted = " ".join(str(name or "").split()).casefold()
-        if not wanted:
+        with session_scope() as session:
+            record = KnowledgeBaseRepository(session).update(kb_id, updates)
+        if record is None:
             return None
-        for kb_id, cfg in self.kbs.items():
-            if " ".join(str(cfg.get("name") or "").split()).casefold() == wanted:
-                return kb_id
-        return None
+        return {"kb_id": kb_id, **record}
 
     def storage_path(self, kb_id: str, root: str = ".") -> Optional[str]:
         """Where this knowledge base keeps its vectors.
@@ -179,14 +192,17 @@ class KnowledgeBaseManager:
         explicit ``vector_db_path`` wins, otherwise the store is named after
         the knowledge base under the provider's root.
         """
-        cfg = self.kbs.get(kb_id)
+        cfg = self.get(kb_id)
         if cfg is None:
             return None
+        return self._storage_path_of(kb_id, cfg, root)
+
+    @staticmethod
+    def _storage_path_of(kb_id: str, cfg: Dict[str, Any], root: str) -> str:
         configured = cfg.get("vector_db_path")
         if configured:
             return os.path.abspath(os.path.join(root, configured))
-        default = paths.vector_store(kb_id)
-        return os.path.abspath(os.path.join(root, default))
+        return os.path.abspath(os.path.join(root, paths.vector_store(kb_id)))
 
     #: The root and the fallback store the app uses when no knowledge base
     #: is selected. Deleting one of these would take every store with it.
@@ -206,11 +222,8 @@ class KnowledgeBaseManager:
 
     def delete(self, kb_id: str) -> bool:
         """Remove the config record only. Storage is left in place."""
-        if kb_id in self.kbs:
-            self.kbs.pop(kb_id)
-            self._save()
-            return True
-        return False
+        with session_scope() as session:
+            return KnowledgeBaseRepository(session).delete(kb_id)
 
     def delete_with_storage(self, kb_id: str, root: str = ".") -> Dict[str, Any]:
         """Remove the record and, when nothing else needs it, its vector store.
@@ -218,50 +231,63 @@ class KnowledgeBaseManager:
         Several records can point at one directory -- that is exactly how eight
         knowledge bases came to share a single empty store here -- so the
         directory goes only once the last record referencing it is gone.
+
+        The record is read and deleted inside one transaction, with the row
+        locked for the length of it, so two deletions of the same knowledge
+        base cannot both decide they are the last owner of its directory. The
+        second waits, then finds no record and reports "not found" -- rather
+        than both removing the same directory, which is what happened when the
+        read and the write were two acts with a file rewrite between them.
         """
-        if kb_id not in self.kbs:
-            return {"deleted": False, "reason": "not found"}
+        with session_scope() as session:
+            repository = KnowledgeBaseRepository(session)
+            cfg = repository.get(kb_id, lock=True)
+            if cfg is None:
+                return {"deleted": False, "reason": "not found"}
+            records = repository.all()
 
-        path = self.storage_path(kb_id, root)
-        note = None
-        removed = False
-
-        # Clear the store *before* the record. If the directory cannot go --
-        # on Windows an open ChromaDB handle is enough to stop it -- the record
-        # stays too, so the two never drift apart. Dropping the record first
-        # would leave exactly the orphaned store this method exists to prevent.
-        if not path:
-            note = "no storage path"
-        elif [o for o in self.kbs if o != kb_id and self.storage_path(o, root) == path]:
-            note = "kept: still used by " + ", ".join(
-                sorted(o for o in self.kbs if o != kb_id
-                       and self.storage_path(o, root) == path)
+            path = self._storage_path_of(kb_id, cfg, root)
+            sharers = sorted(
+                other for other, other_cfg in records.items()
+                if other != kb_id and self._storage_path_of(other, other_cfg, root) == path
             )
-        elif self._is_protected(path, root):
-            note = "kept: shared/default store"
-        elif not os.path.isdir(path):
-            note = "already absent"
-        else:
-            try:
-                shutil.rmtree(path)
-                removed = True
-            except OSError as exc:
-                return {
-                    "deleted": False,
-                    "kb_id": kb_id,
-                    "storage_path": path,
-                    "storage_removed": False,
-                    "reason": f"vector store is in use and could not be removed: {exc}",
-                }
+            note = None
+            removed = False
 
-        self.kbs.pop(kb_id)
-        self._save()
-        return {
-            "deleted": True,
-            "kb_id": kb_id,
-            "storage_path": path,
-            "storage_removed": removed,
-            **({"storage_note": note} if note else {}),
-        }
+            # Clear the store *before* the record. If the directory cannot go
+            # -- on Windows an open ChromaDB handle is enough to stop it -- the
+            # record stays too, so the two never drift apart. Dropping the
+            # record first would leave exactly the orphaned store this method
+            # exists to prevent, and here it would also commit that decision.
+            if not path:
+                note = "no storage path"
+            elif sharers:
+                note = "kept: still used by " + ", ".join(sharers)
+            elif self._is_protected(path, root):
+                note = "kept: shared/default store"
+            elif not os.path.isdir(path):
+                note = "already absent"
+            else:
+                try:
+                    shutil.rmtree(path)
+                    removed = True
+                except OSError as exc:
+                    # The transaction is abandoned by raising nothing and
+                    # returning: nothing was written in it, so there is
+                    # nothing to undo, and the record is still there.
+                    return {
+                        "deleted": False,
+                        "kb_id": kb_id,
+                        "storage_path": path,
+                        "storage_removed": False,
+                        "reason": f"vector store is in use and could not be removed: {exc}",
+                    }
 
-
+            repository.delete(kb_id)
+            return {
+                "deleted": True,
+                "kb_id": kb_id,
+                "storage_path": path,
+                "storage_removed": removed,
+                **({"storage_note": note} if note else {}),
+            }

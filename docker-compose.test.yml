@@ -1,0 +1,38 @@
+# The database the test suite runs against.
+#
+#     docker compose -f docker-compose.test.yml up -d
+#     python -m pytest
+#
+# Deliberately separate from docker-compose.yml. That file is the deployment:
+# one application container and its database, on the default port, with a
+# password an operator is expected to replace. This one is a fixture -- it has
+# no application, its credentials are `chat_rag`/`chat_rag` because they guard
+# nothing, and it listens on 55432 so it cannot collide with a PostgreSQL
+# already installed on the machine or with the deployment's own.
+#
+# The suite creates and truncates its own schema (tests/conftest.py builds it
+# with `alembic upgrade head`, the same migrations a deployment runs), so
+# nothing here initialises anything. Point the suite somewhere else with
+# CHAT_RAG_TEST_DATABASE_URL; the default is the service below.
+#
+# There is no volume: a test database that survived a run would let one run's
+# leftovers explain the next one's result.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: chat-rag-test-db
+    environment:
+      POSTGRES_USER: chat_rag
+      POSTGRES_PASSWORD: chat_rag
+      POSTGRES_DB: chat_rag_test
+    ports:
+      - "55432:5432"
+    tmpfs:
+      # The whole database in memory. It is rebuilt from the migrations at the
+      # start of every session anyway, so durability would only cost disk.
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat_rag -d chat_rag_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

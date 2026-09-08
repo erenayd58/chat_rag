@@ -28,6 +28,7 @@ Start here, then follow the question you have:
 | **[docs/architecture.md](docs/architecture.md)** | What is the system, which repo owns what, where is the code for X |
 | **[docs/operations.md](docs/operations.md)** | How do I run it, what are the limits, and what does *this* 503 mean |
 | **[docs/configuration.md](docs/configuration.md)** | Where does a setting come from, who owns it, what wins |
+| **[docs/database.md](docs/database.md)** | Where the records live, how to create the schema, what is still a file |
 | **[docs/testing.md](docs/testing.md)** | What to run before calling a change done, and the order for cross-repo changes |
 | **[docs/limitations.md](docs/limitations.md)** | What this system does not do, and why |
 | **[../chunk/docs/adding-a-chunker.md](../chunk/docs/adding-a-chunker.md)** | How to add a chunking method, end to end |

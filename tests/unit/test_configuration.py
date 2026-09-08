@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 
+from config import database as database_config
 from config import ingest as ingest_config
 from config import paths, query as query_config, runtime as runtime_config
 
@@ -299,8 +300,10 @@ DELIBERATE_OVERRIDES = {
         "AZURE_ENDPOINT": "a placeholder, not a value",
         "AZURE_API_KEY": "a placeholder, not a value",
         "VECTOR_DB_PATH": "names the store in a developer's own checkout",
+        "DATABASE_URL": "there is no application default and cannot be one -- the only fallback would be a credential in a tracked file; this names the local development database docker-compose.test.yml starts",
     },
     ".env.docker": {
+        "DATABASE_URL": "the same reason, pointing at the compose service; a real password belongs in .env.docker.local",
         "LLM_PROVIDER": "the container talks to Ollama on the host, not Azure",
         "OLLAMA_BASE_URL": "host.docker.internal reaches the host from inside a container",
         "OLLAMA_MODEL": "the small model the demo image expects",
@@ -327,6 +330,13 @@ def _code_default(name: str) -> str | None:
         for field, value in limits.to_dict().items():
             if field.upper() == name or f"{field.upper()}_SECONDS" == name:
                 return str(value)
+    # The database settings are prefixed, and they live in their own module
+    # rather than on ``Settings``: without this the drift guard would silently
+    # skip every DATABASE_* line in both files.
+    for field, value in database_config.database_from_env({}).to_dict().items():
+        prefixed = "DATABASE_" + field.upper()
+        if prefixed == name or prefixed.replace("_SECONDS", "") == name:
+            return "" if value is None else str(value)
     source = (REPO / "config" / "settings.py").read_text(encoding="utf-8")
     match = re.search(rf'getenv\(\s*"{re.escape(name)}"\s*,\s*"([^"]*)"', source)
     if match:

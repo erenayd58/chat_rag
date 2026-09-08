@@ -25,11 +25,12 @@ anything, so import order cannot change what a setting resolves to. It is the
 only place in the application that reads a dotenv file, and a test asserts
 that.
 
-## The owners — five in `config/`, and one outside it
+## The owners — six in `config/`, and one outside it
 
 | owner | what it decides | validation |
 |---|---|---|
-| [config/paths.py](../config/paths.py) | where every piece of runtime state goes, under `CHAT_RAG_DATA_DIR` | resolves; reports refusals |
+| [config/paths.py](../config/paths.py) | where every **file** this process writes goes, under `CHAT_RAG_DATA_DIR` | resolves; reports refusals |
+| [config/database.py](../config/database.py) | the relational store: `DATABASE_URL` and the connection pool | fail fast; unset is refused at the first use, by name |
 | [config/runtime.py](../config/runtime.py) | the server process: `FLASK_HOST`, `FLASK_PORT`, `WAITRESS_THREADS`, `WAITRESS_CHANNEL_TIMEOUT` | fail fast |
 | [config/ingest.py](../config/ingest.py) | ingest workers, queue, deadlines, provider/embedding budgets, pipeline cache | fail fast |
 | [config/query.py](../config/query.py) | query admission, answer budget, deadlines | fail fast |
@@ -44,7 +45,8 @@ the first upload.
 
 | group | variables | what changing them does |
 |---|---|---|
-| **state** | `CHAT_RAG_DATA_DIR`, `VECTOR_DB_PATH`, `STRUCTURED_PARSER_CACHE` | moves where everything the process persists lives. One directory covers all of it |
+| **database** | `DATABASE_URL`, `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`, `DATABASE_POOL_TIMEOUT`, `DATABASE_POOL_RECYCLE`, `DATABASE_CONNECT_TIMEOUT`, `DATABASE_ECHO` | where the relational records live and how many connections may reach them. `DATABASE_URL` has no default and cannot have one — see [database.md](database.md) |
+| **state** | `CHAT_RAG_DATA_DIR`, `VECTOR_DB_PATH`, `STRUCTURED_PARSER_CACHE` | moves where every **file** the process persists lives. One directory covers all of them; the relational records are not among them |
 | **server** | `FLASK_HOST`, `FLASK_PORT`, `WAITRESS_THREADS`, `WAITRESS_CHANNEL_TIMEOUT`, `FLASK_SECRET_KEY` | the process itself. `WAITRESS_THREADS` is the number every other ration is sized against |
 | **ingest limits** | `INGEST_WORKERS`, `INGEST_QUEUE_CAPACITY`, `INGEST_JOB_TIMEOUT`, `INGEST_SYNC_WAIT`, `INGEST_SYNC_WAITERS`, `INGEST_JOB_RETENTION` | how much uploading can happen at once and for how long |
 | **provider budgets** | `PROVIDER_MAX_INFLIGHT`, `DEEP_ANALYSIS_CONCURRENCY`, `EMBEDDING_MAX_INFLIGHT`, `ANSWER_MAX_INFLIGHT` | how many calls may be in flight to each external service. Three separate caps so no path can starve another |

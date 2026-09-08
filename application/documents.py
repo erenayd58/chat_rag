@@ -1,11 +1,12 @@
 """A document: one ingested file, in exactly one knowledge base.
 
-Three stores hold a piece of it -- the ingest ledger holds the record, the
-vector store holds the chunks, the Viewer analysis directory holds the
-packaging -- and the rules about which of them a deletion reaches are the
-product's, not any one store's. They live here so that a schema drawn later
-has one place to read them from (``tests/migration/test_domain_relations.py``
-is the same rules from the outside).
+Three stores hold a piece of it -- PostgreSQL holds the ledger row and the
+analysis record, the vector store holds the chunks, the workspace directory
+holds the packaged artifacts -- and the rules about which of them a deletion
+reaches are the product's, not any one store's. They live here, which is why
+the schema drawn in Step 8 could be read off them
+(``tests/migration/test_domain_relations.py`` is the same rules from the
+outside, and held the schema to them).
 """
 
 from __future__ import annotations
@@ -159,7 +160,10 @@ def delete(services, doc_id: str, *, kb_id: Optional[str] = None,
     pipeline.vector_db.delete_by_doc_id(doc_id)
 
     if record:
-        ledger.remove_document(record['file_path'])
+        # By the document's own identity. It used to be by the path the file
+        # was uploaded from, which was the ledger's key and is now neither a
+        # key nor a file that still exists.
+        ledger.remove_by_doc_id(doc_id)
 
     workspace.discard(doc_id)
 
@@ -171,7 +175,4 @@ def of_ingest_job(services, job_id: str) -> Optional[dict[str, Any]]:
     this job's id is proof the job completed -- which is what lets a restart
     tell "it finished and you missed it" from "it never happened".
     """
-    for record in services.documents().get_all_documents():
-        if (record.get('metadata') or {}).get('ingest_job_id') == job_id:
-            return record
-    return None
+    return services.documents().get_document_by_ingest_job(job_id)

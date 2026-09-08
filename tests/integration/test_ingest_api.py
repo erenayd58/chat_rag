@@ -151,7 +151,15 @@ def poll(test_client, job_id, manager):
 
 
 def ledger():
-    return json.load(open(paths.ingested_documents(), encoding="utf-8"))
+    """The ingest ledger, keyed by upload, read through the store that owns it.
+
+    The records are rows since Step 8; this used to open the JSON file
+    ``paths.ingested_documents()`` named. Every assertion below is about what
+    the ledger holds, not about where it holds it.
+    """
+    from utils import DocumentTracker
+
+    return DocumentTracker().ingested_docs
 
 
 # ---------------------------------------------------------------- async
@@ -175,7 +183,7 @@ def test_an_async_upload_is_accepted_at_once_and_finishes_later(client, jobs, mo
     assert pipeline.started.wait(10)
     running = test_client.get(f"/api/ingest/jobs/{body['job_id']}").get_json()["job"]
     assert running["status"] == J.RUNNING
-    assert ledger() == {} if __import__("os").path.exists(paths.ingested_documents()) else True
+    assert ledger() == {}, "nothing is registered until the job finishes"
     assert len(staged_files(staging)) == 1, "the file lives while the job runs"
 
     gate.set()
@@ -231,7 +239,7 @@ def test_a_failed_job_is_truthful_and_registers_nothing(client, jobs, monkeypatc
     assert job["status"] == J.FAILED
     assert "parser exploded" in job["error"]
     assert job["result"] is None
-    assert not __import__("os").path.exists(paths.ingested_documents()) or ledger() == {}
+    assert ledger() == {}
     assert staged_files(staging) == []
 
 
@@ -264,7 +272,7 @@ def test_a_job_past_its_deadline_ends_timed_out_and_commits_nothing(client, jobs
     assert body["timed_out"] is True and body["success"] is False
     job = manager.get(body["job_id"])
     assert job.status == J.TIMED_OUT
-    assert not __import__("os").path.exists(paths.ingested_documents()) or ledger() == {}
+    assert ledger() == {}
     assert staged_files(staging) == []
 
 

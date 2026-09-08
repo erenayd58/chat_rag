@@ -24,7 +24,7 @@ def test_api_create_contract_persists_every_chunker_across_reload(tmp_path):
         }
     )
 
-    persisted = json.loads(store.read_text(encoding="utf-8"))
+    persisted = {row["kb_id"]: row for row in KnowledgeBaseManager(str(store)).list()}
     assert persisted[structure_first["kb_id"]]["chunker"] == {
         "type": "structure_first",
         "params": {},

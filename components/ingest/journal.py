@@ -9,12 +9,11 @@ a client cannot act on: it cannot tell "your upload never happened" from
 "your upload finished and you missed it".
 
 So every job writes three small records as it goes: when it is accepted,
-when it starts, and when it reaches a terminal state. One file per job,
-written to a temporary name and moved into place, so a reader sees a whole
-record or none. On the next start-up, :meth:`JobJournal.recover` reads what
-is there and settles every record that is still ``queued`` or ``running``:
+when it starts, and when it reaches a terminal state. On the next start-up,
+:meth:`JobJournal.recover` reads what is there and settles every record that
+is still ``queued`` or ``running``:
 
-* if the **ingest ledger** knows a document carrying that job's id, the job
+* if the **document ledger** knows a document carrying that job's id, the job
   did finish -- the ledger write is the last thing a job does, and it is the
   definition of "this document is ingested" -- so the record becomes
   ``succeeded``, marked as recovered from the ledger rather than observed;
@@ -24,32 +23,35 @@ is there and settles every record that is still ``queued`` or ``running``:
 
 That is the whole mechanism. No queue survives a restart, nothing is
 re-run, no broker is involved, and the authority for "was this ingested" is
-the file that was already the authority for it.
+the table that is already the authority for it.
 
 Retention is the same policy as the in-memory registry: a record older than
-``INGEST_JOB_RETENTION`` is deleted, so the directory cannot grow without
-bound any more than the registry can.
+``INGEST_JOB_RETENTION`` is deleted, so the table cannot grow without bound
+any more than the registry can.
 
-**A lost record is safe by construction.** Journalling is best effort -- it
-must never fail an ingest it is only describing -- so it is worth being
-precise about what a lost write costs. Losing the ``running`` record leaves
-the ``queued`` one, which recovery treats identically because both are
-"in flight". Losing the terminal record leaves an in-flight record, which
-recovery settles against the ledger: the same answer, reached the same way.
-Only the ``accepted`` record is load-bearing, and it is written before the
-route ever returns a ``job_id``, on the thread that returns it. The
-retry below exists to make even that unlikely rather than to make it correct.
+**Step 8 moved these records from one JSON file per job into the
+``ingest_jobs`` table.** Three paragraphs of this module went with the files:
+the write-to-a-scratch-name-and-rename, the retry loop around ``os.replace``
+for Windows readers holding the target open, and the "a lost record is safe by
+construction" argument that existed because those writes could fail. A row
+written in a transaction is there or is not. What survives unchanged is the
+policy above -- which states are settled, what settles them, and how long a
+record is kept -- because that is the product's promise and not the storage's.
+
+Journalling is still best effort in one direction only: a database error must
+not fail an ingest it is merely describing, so a failed write is logged and
+the ingest continues. Recovery then treats a missing record exactly as it
+treats an in-flight one, by asking the ledger.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import threading
 import time
 from datetime import datetime
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Optional
+
+from storage import IngestJobRepository, session_scope
 
 logger = logging.getLogger("chat_rag.ingest")
 
@@ -62,96 +64,38 @@ RECOVERED = "recovered_from_ledger"
 
 
 class JobJournal:
-    """One directory of small JSON records, one per job."""
+    """The ``ingest_jobs`` table, as the job manager sees it."""
 
-    def __init__(self, directory: str):
+    def __init__(self, directory: Optional[str] = None):
+        """``directory`` is accepted and unused.
+
+        It named the directory of per-job JSON files until Step 8. The job
+        manager and the restart tests still construct a journal with one;
+        the records are rows either way.
+        """
         self.directory = directory
-        self._lock = threading.Lock()
 
     # ------------------------------------------------------------- writing
-    #: Attempts at the final rename, and the pause between them.
-    #:
-    #: Windows will not let ``os.replace`` overwrite a file that any handle
-    #: has open, and this file has readers: the recovery pass, and anything
-    #: watching the directory. The same contention cost the ingest ledger a
-    #: write in Phase 1B, where the answer was a lock; here a lock would not
-    #: help, because the reader is not always in this process. A few tries
-    #: over a fraction of a second cover it, and a genuine failure is still
-    #: only a lost description (see the module docstring).
-    REPLACE_ATTEMPTS = 5
-    REPLACE_PAUSE_SECONDS = 0.02
-
     def record(self, snapshot: dict[str, Any]) -> None:
         """Write (or replace) one job's record. Never raises: a journal that
         cannot be written must not fail the ingest it is describing."""
         job_id = snapshot.get("job_id")
         if not job_id:
             return
-        tmp = None
         try:
-            os.makedirs(self.directory, exist_ok=True)
-            target = os.path.join(self.directory, f"{job_id}.json")
-            tmp = f"{target}.{os.getpid()}.{threading.get_ident()}.tmp"
-            with open(tmp, "w", encoding="utf-8") as handle:
-                json.dump(snapshot, handle, ensure_ascii=False)
-                handle.flush()
-                os.fsync(handle.fileno())
-            self._replace(tmp, target, job_id)
-        except OSError as error:  # noqa: BLE001 - journalling is best effort
+            with session_scope() as session:
+                IngestJobRepository(session).record(snapshot)
+        except Exception as error:  # noqa: BLE001 - journalling is best effort
             logger.warning("could not journal ingest job %s: %s", job_id, error)
-        finally:
-            if tmp and os.path.exists(tmp):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-
-    def _replace(self, tmp: str, target: str, job_id: str) -> None:
-        for attempt in range(self.REPLACE_ATTEMPTS):
-            try:
-                os.replace(tmp, target)
-                return
-            except PermissionError:
-                # A reader holds the target open. It will not hold it long.
-                if attempt == self.REPLACE_ATTEMPTS - 1:
-                    logger.warning(
-                        "could not replace the journal record for %s after %d attempts; "
-                        "the previous record stands and a restart still settles it",
-                        job_id, self.REPLACE_ATTEMPTS,
-                    )
-                    return
-                time.sleep(self.REPLACE_PAUSE_SECONDS * (attempt + 1))
 
     def forget(self, job_id: str) -> None:
-        path = os.path.join(self.directory, f"{job_id}.json")
         try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
-        except OSError as error:  # noqa: BLE001
-            logger.warning("could not remove the journal record %s: %s", path, error)
+            with session_scope() as session:
+                IngestJobRepository(session).forget(job_id)
+        except Exception as error:  # noqa: BLE001
+            logger.warning("could not remove the journal record %s: %s", job_id, error)
 
     # ------------------------------------------------------------- reading
-    def _records(self) -> Iterable[tuple[str, dict[str, Any]]]:
-        try:
-            names = sorted(os.listdir(self.directory))
-        except FileNotFoundError:
-            return []
-        found = []
-        for name in names:
-            if not name.endswith(".json"):
-                continue
-            path = os.path.join(self.directory, name)
-            try:
-                with open(path, encoding="utf-8") as handle:
-                    record = json.load(handle)
-            except (OSError, ValueError) as error:  # noqa: BLE001
-                logger.warning("unreadable journal record %s: %s", path, error)
-                continue
-            if isinstance(record, dict) and record.get("job_id"):
-                found.append((path, record))
-        return found
-
     def recover(
         self,
         *,
@@ -165,23 +109,36 @@ class JobJournal:
         ``resolve_document`` is asked, for a job that was in flight, whether
         the ledger holds a document that job wrote. It is injected rather than
         imported so this module knows nothing about the tracker.
+
+        The whole pass is one transaction: the records that expired go, the
+        records that were in flight are settled, and either both happened or
+        neither did. A restart interrupted half way through this used to leave
+        some jobs settled and some not.
         """
         now = time.time() if now is None else now
         settled: list[dict[str, Any]] = []
-        with self._lock:
-            for path, record in self._records():
-                stamp = float(record.get("journalled_at") or 0.0)
-                if retention_seconds and stamp and now - stamp > retention_seconds:
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
-                    continue
+        with session_scope() as session:
+            repository = IngestJobRepository(session)
+            if retention_seconds:
+                repository.prune(now - retention_seconds)
+            for record in repository.snapshots():
                 if record.get("status") in active_states:
                     record = self._settle(record, resolve_document)
-                    self.record(record)
+                    repository.record(record)
                 settled.append(record)
         return settled
+
+    def prune(self, retention_seconds: float, *, now: Optional[float] = None) -> int:
+        """Delete records older than the retention window. Returns the count."""
+        if not retention_seconds:
+            return 0
+        now = time.time() if now is None else now
+        try:
+            with session_scope() as session:
+                return IngestJobRepository(session).prune(now - retention_seconds)
+        except Exception as error:  # noqa: BLE001 - pruning is best effort
+            logger.warning("could not prune the ingest journal: %s", error)
+            return 0
 
     @staticmethod
     def _settle(
@@ -226,20 +183,3 @@ class JobJournal:
                 "upload it again."
             )
         return settled
-
-    def prune(self, retention_seconds: float, *, now: Optional[float] = None) -> int:
-        """Delete records older than the retention window. Returns the count."""
-        if not retention_seconds:
-            return 0
-        now = time.time() if now is None else now
-        removed = 0
-        with self._lock:
-            for path, record in self._records():
-                stamp = float(record.get("journalled_at") or 0.0)
-                if stamp and now - stamp > retention_seconds:
-                    try:
-                        os.remove(path)
-                        removed += 1
-                    except OSError:
-                        pass
-        return removed

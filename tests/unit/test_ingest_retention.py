@@ -90,7 +90,7 @@ def test_the_registry_is_capped_however_long_the_window_is(staging, monkeypatch)
 
 
 def test_the_journal_record_goes_when_the_job_does(staging, tmp_path, monkeypatch):
-    import os
+    from storage import IngestJobRepository, session_scope
 
     monkeypatch.setattr(J, "MAX_FINISHED", 1)
     directory = tmp_path / "journal"
@@ -100,7 +100,9 @@ def test_the_journal_record_goes_when_the_job_does(staging, tmp_path, monkeypatc
         assert mgr.wait(first, 10)
         second, _ = submit(mgr, staging, "second")
         assert mgr.wait(second, 10)
-        assert sorted(os.listdir(directory)) == [f"{second.job_id}.json"]
+        with session_scope() as session:
+            held = [r.get("job_id") for r in IngestJobRepository(session).snapshots()]
+        assert held == [second.job_id]
     finally:
         mgr.close()
 

@@ -1,7 +1,41 @@
-# One application container. No database service, no queue, no model server:
-# Ollama stays on the host, and everything else this application needs already
+# One application container and its database. No queue and no model server:
+# Ollama stays on the host, and everything else this application needs still
 # runs in-process.
+#
+# The database is where the knowledge bases, the ingest ledger, the content
+# identities and their analysis state, the ingest journal and the gold set
+# live. The vector stores are still files under the mounted data directory
+# (Step 9 moves them); so are the parser cache, the packaged Viewer artifacts
+# and the logs.
+#
+# The schema is created by a migration, not by the application: run
+#
+#     docker compose run --rm app alembic upgrade head
+#
+# once after `up -d`, and after every upgrade that ships one. Nothing in the
+# application creates a table at start-up, which is what makes that step
+# reviewable rather than a side effect of a deploy.
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: chat-rag-db
+    environment:
+      POSTGRES_USER: chat_rag
+      POSTGRES_DB: chat_rag
+      # Replace this. It is a tracked file, so the value here is a placeholder
+      # for a local run: set POSTGRES_PASSWORD in the shell (or in a .env
+      # beside this file, which compose reads and git ignores) and set the
+      # matching DATABASE_URL in .env.docker.local.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chat_rag}
+    volumes:
+      - ./.docker-data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat_rag -d chat_rag"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   app:
     build:
       context: .
@@ -46,6 +80,14 @@ services:
       # frozen gold sets are read-only inputs rather than runtime state.
       - ./.docker-data/artifacts/runs:/app/artifacts/runs
       - ./.docker-data/artifacts/reports:/app/artifacts/reports
+
+    depends_on:
+      db:
+        # Not merely started: the application refuses to serve without a
+        # reachable database, so starting it against a server still replaying
+        # its write-ahead log would be a container that exits and restarts
+        # until the database happens to be up.
+        condition: service_healthy
 
     extra_hosts:
       # Docker Desktop provides this name already; declaring it means the same

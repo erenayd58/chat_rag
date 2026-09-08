@@ -46,13 +46,33 @@ nothing needs the console. Its request-thread pool is sized from
 `WAITRESS_THREADS`, the same number every ingest and query limit is rationed
 against, so the two entrypoints are configured identically.
 
-### Where state goes
+### The database
 
-One setting decides: `CHAT_RAG_DATA_DIR`. Set it, and the knowledge base
-records, the ingest ledger, the gold set, the vector stores, the parser's
-canonical-unit cache and the logs all live under it. Leave it unset -- a local
-checkout -- and every path stays exactly where it has always been, relative to
-the working directory.
+`python -m wsgi`, `python app.py` and `python -m asgi` all refuse to start
+without a reachable `DATABASE_URL`, and say which host they could not reach.
+That is deliberate: the knowledge bases, the ingest ledger, the content
+identities and their analysis state, the ingest journal and the gold set are
+rows, and every screen begins by listing knowledge bases. There is no degraded
+mode that serves without one.
+
+Create the schema before the first start, and after any upgrade that ships a
+migration:
+
+```bash
+alembic upgrade head
+```
+
+Nothing in the application creates a table. [database.md](database.md) is the
+schema, the migrations, the pool and the import path for an installation whose
+records are still JSON files.
+
+### Where the rest of the state goes
+
+One setting decides: `CHAT_RAG_DATA_DIR`. Set it, and the vector stores, the
+parser's canonical-unit cache, the packaged Viewer artifacts, the embedding
+caches, the upload staging area and the logs all live under it. Leave it
+unset -- a local checkout -- and every path stays exactly where it has always
+been, relative to the working directory.
 
 `VECTOR_DB_PATH` still names the fallback vector store outright, for a
 deployment that really does keep it elsewhere. But it is honoured only from the
@@ -508,6 +528,21 @@ traffic cannot close a store a job is writing to. After an ingest, every
 *other* pipeline for that knowledge base drops its lexical index and rebuilds
 it on the next query — which is why the first question after an upload can be
 slower.
+
+### The process will not start without a database
+
+`Cannot start: DATABASE_URL is not set` -- set it (`env.example` shows the
+form) and run `alembic upgrade head`.
+
+`Cannot start: cannot reach the database at postgresql+psycopg://host:5432/name`
+-- the process could not open a connection within `DATABASE_CONNECT_TIMEOUT`.
+The credential is not in that message; the host and the database name are.
+Check that the server is up, that the network reaches it, and that the
+database named in the URL exists -- `alembic upgrade head` creates the *schema*
+but not the database.
+
+`relation "knowledge_bases" does not exist` at the first request means the
+database is reachable and the migrations have not been run.
 
 ### The process will not start
 

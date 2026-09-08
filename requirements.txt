@@ -1,5 +1,15 @@
 python-dotenv
 sentence-transformers
+
+# Relational persistence. PostgreSQL holds the knowledge bases, the ingest
+# ledger, the content identities and their analysis state, the ingest journal
+# and the gold set (storage/). psycopg 3 is the driver the application is
+# written against and the one config/database.py names explicitly, so a machine
+# with psycopg2 lying around cannot run it on a driver nobody tested. Alembic
+# is how a schema is created -- there is no metadata.create_all() in the source.
+SQLAlchemy>=2.0
+psycopg[binary]>=3.1
+alembic>=1.13
 # amsc-poc is the chunking library, consumed as a versioned dependency and
 # pinned to an immutable commit that must already be pushed. Every
 # `from amsc... import` in product code has to resolve at this revision;

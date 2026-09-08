@@ -30,6 +30,25 @@ def workspace(tmp_path):
     return staging, JobJournal(str(journal)), journal
 
 
+def journalled(job_id):
+    """One job's journal record, read back from the table it lives in."""
+    from storage import IngestJobRepository, session_scope
+
+    with session_scope() as session:
+        found = [r for r in IngestJobRepository(session).snapshots()
+                 if r.get("job_id") == job_id]
+    assert found, f"no journal record for {job_id}"
+    return found[0]
+
+
+def journalled_ids():
+    """Every job the journal still holds, oldest first."""
+    from storage import IngestJobRepository, session_scope
+
+    with session_scope() as session:
+        return [r.get("job_id") for r in IngestJobRepository(session).snapshots()]
+
+
 class Blocking:
     def __init__(self):
         self.release = threading.Event()
@@ -65,22 +84,22 @@ def test_a_job_is_journalled_at_every_transition(workspace):
     mgr = manager(journal, blocking)
     try:
         job, _ = submit(mgr, staging, "a")
-        record = json.load(open(directory / f"{job.job_id}.json", encoding="utf-8"))
+        record = journalled(job.job_id)
         assert record["status"] == J.QUEUED
         assert record["filename"] == "a.txt"
         assert "temp_path" not in record
 
         assert blocking.started.wait(10)
-        # A reader holding this file open is what stops the writer replacing
-        # it on Windows, so the write retries; either value here is truthful
-        # and both settle the same way, which is the property that matters.
-        record = json.load(open(directory / f"{job.job_id}.json", encoding="utf-8"))
+        # Either value is truthful: the transition to running and this read
+        # are two transactions, and both settle the same way, which is the
+        # property that matters.
+        record = journalled(job.job_id)
         assert record["status"] in (J.RUNNING, J.QUEUED)
         assert record["status"] in J.ACTIVE, "in flight, whichever it caught"
 
         blocking.release.set()
         assert mgr.wait(job, 10)
-        record = json.load(open(directory / f"{job.job_id}.json", encoding="utf-8"))
+        record = journalled(job.job_id)
         assert record["status"] == J.SUCCEEDED
         assert record["doc_id"] == f"doc-{job.job_id}"
     finally:
@@ -248,14 +267,13 @@ def test_an_unreadable_journal_record_is_skipped_not_fatal(workspace):
 
 def test_journal_records_older_than_the_window_are_deleted(workspace):
     staging, journal, directory = workspace
-    directory.mkdir(parents=True, exist_ok=True)
     old = {"job_id": "ancient", "status": J.SUCCEEDED, "journalled_at": time.time() - 10_000}
     fresh = {"job_id": "recent", "status": J.SUCCEEDED, "journalled_at": time.time()}
     journal.record(old)
     journal.record(fresh)
 
     assert journal.prune(3600) == 1
-    assert sorted(os.listdir(directory)) == ["recent.json"]
+    assert journalled_ids() == ["recent"]
 
 
 def test_recovery_drops_records_past_the_window(workspace):
@@ -266,6 +284,6 @@ def test_recovery_drops_records_past_the_window(workspace):
     try:
         assert mgr.recover(resolve_document=lambda _id: None) == []
         assert mgr.record_for("ancient") is None
-        assert os.listdir(directory) == []
+        assert journalled_ids() == []
     finally:
         mgr.close()

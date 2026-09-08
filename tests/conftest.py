@@ -20,6 +20,20 @@ the checkout before any application module is imported:
 * the repository root stays importable (``import app`` must keep working
   whichever directory the session runs in).
 
+Since Step 8 there is a third kind, and it is the one that replaced most of
+the first. The knowledge bases, the ingest ledger, the gold set, the ingest
+journal and the Viewer's analysis records are rows in PostgreSQL, so pointing
+a test's store at its own ``tmp_path`` no longer isolates anything. What
+isolates a test now is that the tables are empty when it starts: the schema is
+built once per session by Alembic -- the same migrations a deployment runs,
+never ``create_all`` -- and truncated before every test. A test that used to
+get a fresh file by naming one still gets a fresh database, and the stores
+still accept the path they are handed (see ``DocumentTracker.__init__``).
+
+The database is named by ``CHAT_RAG_TEST_DATABASE_URL``, defaulting to the
+service in ``docker-compose.test.yml``; it is never a developer's own, and the
+session refuses to run rather than guessing at one (``docs/testing.md``).
+
 A second kind of isolation is needed for the same reason, one level down. The
 application publishes its configuration *into the environment*: ``config.paths``
 applies the ``.env`` file by writing the values it accepts into ``os.environ``,
@@ -91,6 +105,18 @@ for _secret in ("OPENROUTER_API_KEY", "AZURE_API_KEY"):
 
 os.chdir(SESSION_ROOT)
 
+#: The database every test in this session runs against.
+#:
+#: Set here, before ``config`` is imported, so it wins under the same rule the
+#: real process environment always wins by -- a ``.env`` naming a developer's
+#: own database cannot reach the suite. ``docker-compose.test.yml`` starts the
+#: default; ``CHAT_RAG_TEST_DATABASE_URL`` overrides it for CI.
+TEST_DATABASE_URL = os.environ.get(
+    "CHAT_RAG_TEST_DATABASE_URL",
+    "postgresql+psycopg://chat_rag:chat_rag@127.0.0.1:55432/chat_rag_test",
+)
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+
 
 def _fingerprint() -> dict[str, tuple[int, float] | None]:
     found = {}
@@ -146,6 +172,84 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             "!", "developer state changed during this session: " + ", ".join(changed)
             + " (a live console instance writes these too; check before blaming a test)",
         )
+
+
+# --------------------------------------------------------------- the database
+
+
+def _build_schema() -> None:
+    """An empty database, built by the migrations and by nothing else.
+
+    The public schema is dropped and recreated first, so what the suite runs
+    against is the result of ``alembic upgrade head`` on an empty database --
+    the same thing a fresh install is, checked on every run rather than
+    asserted once.
+    """
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    import storage
+
+    with storage.engine().connect() as connection:
+        connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+        connection.execute(text("CREATE SCHEMA public"))
+        connection.commit()
+
+    settings = Config(os.path.join(REPO_ROOT, "alembic.ini"))
+    settings.set_main_option("script_location", os.path.join(REPO_ROOT, "storage", "migrations"))
+    command.upgrade(settings, "head")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _database():
+    """One prepared database for the session. Refuses rather than guesses."""
+    import storage
+    from storage.engine import DatabaseUnavailable
+
+    try:
+        storage.require_reachable()
+    except DatabaseUnavailable as error:
+        raise pytest.UsageError(
+            f"{error}\n\nThe suite needs PostgreSQL: this application's "
+            "relational state lives there.\n"
+            "Start it with `docker compose -f docker-compose.test.yml up -d`, "
+            "or set CHAT_RAG_TEST_DATABASE_URL.\nSee docs/testing.md."
+        ) from error
+    _build_schema()
+    yield
+    storage.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _empty_tables(_database):
+    """Give every test empty tables.
+
+    One statement: ``TRUNCATE ... RESTART IDENTITY CASCADE`` over the whole
+    schema. Truncating rather than dropping keeps the schema the migrations
+    built, so no test can pass against a table that ``create_all`` would have
+    made differently.
+    """
+    from sqlalchemy import text
+
+    import storage
+    from storage.models import ALL_TABLES
+
+    with storage.engine().begin() as connection:
+        connection.execute(text(
+            "TRUNCATE TABLE " + ", ".join(ALL_TABLES) + " RESTART IDENTITY CASCADE"
+        ))
+    yield
+
+
+@pytest.fixture
+def db_session():
+    """One session inside its own transaction, for a test that drives a
+    repository directly rather than through a store."""
+    import storage
+
+    with storage.session_scope() as session:
+        yield session
 
 
 @pytest.fixture(autouse=True)

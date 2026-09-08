@@ -63,16 +63,29 @@ def test_a_rejected_payload_leaves_no_record_behind(tmp_path):
     with pytest.raises(ValueError):
         kb.create_from_payload({"name": "bad", "chunker": {"type": "nope"}})
     assert kb.list() == []
-    assert not (tmp_path / "knowledge-bases.json").exists()
+    # And nothing was written under another name either: a rejected payload
+    # leaves the store exactly as it found it.
+    assert manager(tmp_path).list() == []
 
 
-def test_a_failed_save_does_not_leave_an_in_memory_record(tmp_path, monkeypatch):
+def test_a_failed_save_leaves_no_record_behind(tmp_path, monkeypatch):
+    """A creation that fails after the row is written leaves nothing.
+
+    This used to be about an in-memory record surviving a failed file write.
+    It is now the transaction: the insert has happened inside the unit of
+    work when the failure lands, so only a rollback can make this assertion
+    true -- a repository that committed as it went would leave the row.
+    """
+    from storage.repositories import KnowledgeBaseRepository
+
     kb = manager(tmp_path)
+    real = KnowledgeBaseRepository.create
 
-    def boom():
+    def insert_then_fail(self, kb_id, config):
+        real(self, kb_id, config)
         raise OSError("disk full")
 
-    monkeypatch.setattr(kb, "_save", boom)
+    monkeypatch.setattr(KnowledgeBaseRepository, "create", insert_then_fail)
     with pytest.raises(OSError):
         kb.create(name="kb")
     assert kb.list() == []
@@ -151,12 +164,13 @@ def test_deleting_an_unknown_knowledge_base_reports_not_found(tmp_path):
     assert manager(tmp_path).delete_with_storage("nope")["deleted"] is False
 
 
-def test_the_record_is_gone_from_the_file_after_deletion(tmp_path):
-    store_path = tmp_path / "knowledge-bases.json"
-    kb = KnowledgeBaseManager(str(store_path))
+def test_the_record_is_gone_from_the_store_after_deletion(tmp_path):
+    """Not merely gone from this manager's view: a second manager, reading the
+    store fresh, does not find it either."""
+    kb = KnowledgeBaseManager(str(tmp_path / "knowledge-bases.json"))
     created = kb.create(name="kb")
     kb.delete_with_storage(created["kb_id"], str(tmp_path))
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {}
+    assert KnowledgeBaseManager(str(tmp_path / "knowledge-bases.json")).list() == []
 
 
 def test_a_store_that_cannot_be_removed_keeps_its_record(tmp_path, monkeypatch):

@@ -133,8 +133,10 @@ def test_a_confirmed_answer_is_stored_and_read_back(client, tmp_path):
     assert listed[0]["correct_chunk_id"] == GOLD["correct_chunk_id"]
     assert listed[0]["unit_ids"] == ["v-00808"]
 
-    on_disk = json.loads((tmp_path / "gold.json").read_text(encoding="utf-8"))
-    assert on_disk["entries"][0]["question"] == GOLD["question"]
+    # And it is really persisted, not merely echoed: a second manager, over
+    # the same store, reads it back.
+    stored = GoldSetManager(str(tmp_path / "gold.json")).list()
+    assert [entry["question"] for entry in stored] == [GOLD["question"]]
 
 
 def test_marking_the_same_question_again_updates_one_entry(client):

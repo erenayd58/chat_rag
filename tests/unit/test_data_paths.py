@@ -85,39 +85,42 @@ def test_an_empty_setting_counts_as_unset(monkeypatch):
     assert paths.knowledge_bases() == "./.knowledge_bases.json"
 
 
-# ------------------------------------------------------- creating the tree
+# ------------------------------------------------- the records are not files
 
 
-def test_a_knowledge_base_store_creates_the_directory_it_needs(tmp_path):
-    """A configured data directory does not exist until something makes it."""
-    store = str(tmp_path / "data" / "state" / "knowledge_bases.json")
-    manager = KnowledgeBaseManager(store)
-
-    manager.create(name="kb-one")
-
-    assert os.path.isfile(store)
-    assert list(json.load(open(store, encoding="utf-8")).values())[0]["name"] == "kb-one"
-
-
-def test_a_gold_store_creates_the_directory_it_needs(tmp_path):
-    store = str(tmp_path / "data" / "state" / "gold_set.json")
-    GoldSetManager(store).upsert(
-        {"question": "q", "kb_id": "kb-1", "unit_ids": ["u-1"]}
-    )
-    assert os.path.isfile(store)
-
-
-def test_the_ingest_ledger_creates_the_directory_it_needs(tmp_path):
+def _write_one_of_each(tmp_path, store):
     document = tmp_path / "rapor.pdf"
     document.write_bytes(b"%PDF-1.7")
-    store = str(tmp_path / "data" / "state" / "ingested_documents.json")
-
-    DocumentTracker(store).mark_as_ingested(
+    KnowledgeBaseManager(str(store / "knowledge_bases.json")).create(name="kb-one")
+    GoldSetManager(str(store / "gold_set.json")).upsert(
+        {"question": "q", "kb_id": "kb-1", "unit_ids": ["u-1"]}
+    )
+    DocumentTracker(str(store / "ingested_documents.json")).mark_as_ingested(
         file_path=str(document), doc_id="doc-1", chunk_count=1
     )
 
-    assert os.path.isfile(store)
-    assert DocumentTracker(store).get_document_by_doc_id("doc-1")["chunk_count"] == 1
+
+def test_the_three_record_stores_write_no_file_at_all(tmp_path):
+    """These three used to create the directory they were pointed at, because
+    each was a JSON file. They are tables now, and the path they are handed is
+    inert -- a store that quietly went on writing a file beside the database is
+    exactly what a half-finished migration looks like."""
+    store = tmp_path / "data" / "state"
+
+    _write_one_of_each(tmp_path, store)
+
+    assert not store.exists(), "a record store wrote a file beside the database"
+
+
+def test_the_records_are_read_back_from_the_database_not_the_path(tmp_path):
+    """The path is not the identity of anything. A second set of stores,
+    pointed somewhere else entirely, reads back what the first wrote."""
+    _write_one_of_each(tmp_path, tmp_path / "data" / "state")
+
+    elsewhere = str(tmp_path / "somewhere" / "else.json")
+    assert [kb["name"] for kb in KnowledgeBaseManager(elsewhere).list()] == ["kb-one"]
+    assert len(GoldSetManager(elsewhere).list()) == 1
+    assert DocumentTracker(elsewhere).get_document_by_doc_id("doc-1")["chunk_count"] == 1
 
 
 # ------------------------------------------------------- absent generation
