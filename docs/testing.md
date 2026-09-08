@@ -51,8 +51,8 @@ Two things follow, and both are deliberate:
 # chat_rag (this repo) — the venv's interpreter, from the repo root
 python -m pytest -q                       # everything
 python -m pytest tests/storage -q         # the repositories, invariants, transactions, concurrency, Alembic
-python -m pytest tests/unit -q            # fast: no Flask app, no store
-python -m pytest tests/application -q     # the product's behaviour, with no Flask at all
+python -m pytest tests/unit -q            # fast: no server, no store
+python -m pytest tests/application -q     # the product's behaviour, with no framework at all
 python -m pytest tests/integration -q     # the real app through its test client
 python -m pytest tests/unit/test_query_limits.py -q          # one file
 python -m pytest -q -k "ingest and restart"                  # by name
@@ -81,7 +81,7 @@ Two things about the `chunk` suite are worth knowing before the first failure:
 `tests/application` drives the product's use cases directly -- a container of
 test doubles, an ordinary function call, an ordinary dict or an
 `application.errors` exception back. No test client, no request context, no
-Flask object anywhere in it, which is the point: it is the evidence that the
+application object anywhere in it, which is the point: it is the evidence that the
 behaviour under the adapter is reusable, and `test_the_boundary_holds` fails
 if any module under `application/` ever imports a web framework.
 
@@ -118,10 +118,11 @@ of a rewrite, not once at the end. Six files, one contract each:
 
 What it deliberately leaves free: the web framework, the module layout, the
 persistence, the vector store, the Viewer's implementation, and the internal
-call graph. That freedom has been spent three times: `/api/v1` moved from
-Flask to FastAPI, the record stores moved from JSON files to PostgreSQL, and
-the vector store moved from Chroma to pgvector -- each with **no change to any
-assertion in this directory**. The store migration edited two lines of
+call graph. That freedom has been spent four times: `/api/v1` moved from
+Flask to FastAPI, the record stores moved from JSON files to PostgreSQL, the
+vector store moved from Chroma to pgvector, and the Flask surface beside it was
+removed entirely -- each with **no change to any assertion in this directory**
+about what the product does. The store migration edited two lines of
 `test_document_store_contract.py`, both naming which implementations to run
 against; every test body stayed as it was.
 
@@ -207,8 +208,8 @@ Both are cheap enough to run in the image build, and both are run inside it.
 
 ```bash
 python tools/import_smoke.py   # the declared dependencies satisfy every import
-python tools/serve_smoke.py    # `python -m wsgi` binds a socket, answers
-                               # /api/health on waitress, and stops on signal
+python tools/serve_smoke.py    # `python -m asgi` binds a socket, answers
+                               # /api/v1/health on uvicorn, and stops on signal
 ```
 
 A third tool sits beside them but answers a release question rather than a
@@ -253,7 +254,7 @@ python tools/verify_reproducibility.py
 It clones this repository from the remote, checks the clone carries no state
 from your machine, installs the pinned `amsc` revision into a fresh Python 3.11
 environment, imports it, builds the Viewer v3 product shell from it, then
-builds and runs the container and asks it for `/api/health`. Every check
+builds and runs the container and asks it for `/api/v1/health`. Every check
 reports PASS, FAIL or SKIP -- SKIP means a capability is missing (no Docker, no
 Python 3.11, no network) or a tier was not asked for, never that something was
 checked and forgiven.

@@ -1,17 +1,22 @@
-"""Two entrypoints, and which one a deployment reaches.
+"""One entrypoint, and what a deployment reaches when it runs it.
 
-``python app.py`` is the development server: Werkzeug, the reloader, the
-interactive debugger, loopback. It is convenient and it is not a production
-runtime -- and until this phase it was also the container's CMD, so production
-*was* the development server with a flag turned off, and stayed that way for as
-long as everyone remembered the flag.
+There were two. ``python app.py`` was the development server -- Werkzeug, the
+reloader, the interactive debugger, loopback -- and for a while it was also the
+container's CMD, so production *was* the development server with a flag turned
+off and stayed that way for as long as everyone remembered the flag. ``python
+-m wsgi`` was the production one: waitress, one process, a bounded pool of
+request threads. These tests pinned the difference between them, and the two
+things that must not drift: the production entrypoint must never serve with
+debug, and both must serve the same application.
 
-``python -m wsgi`` is the production server: waitress, one process, a bounded
-pool of request threads, no debugger in the image at all. These tests pin the
-difference, and the two things that must not drift: the production entrypoint
-must never serve with debug, and both must serve the same application object.
+Both went with the Flask console (``docs/legacy-removal.md``). ``python -m
+asgi`` is the entrypoint: uvicorn, one process, the same bounded pool. There is
+no second one to drift from and no debug switch to get wrong -- which is a
+stronger version of what this file used to assert, and what it asserts now is
+the rest: the settings it reads, the values it refuses, the start-up it runs,
+and that the image runs it.
 
-Why one process is in the module docstring of ``wsgi.py``; the short version is
+Why one process is in the module docstring of ``asgi.py``; the short version is
 that the Viewer packaging worker is one thread over an in-memory queue and the
 pipeline cache is a module global, so a second process would duplicate both.
 """
@@ -22,14 +27,16 @@ import os
 
 import pytest
 
-import app as flask_app
-import wsgi
+import asgi as entrypoint
+from runtime import bootstrap
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 @pytest.fixture(autouse=True)
 def preserve_signal_handlers():
-    """Installing real handlers is the point of one test and a side effect of
-    another; neither may leave pytest's own process changed."""
+    """Installing real handlers is a side effect of some start-up paths;
+    none of them may leave pytest's own process changed."""
     import signal
 
     names = [n for n in ("SIGTERM", "SIGINT") if hasattr(signal, n)]
@@ -44,208 +51,170 @@ def preserve_signal_handlers():
 
 @pytest.fixture
 def clean_server_env(monkeypatch):
-    for name in ("FLASK_HOST", "FLASK_PORT", "FLASK_DEBUG", "WAITRESS_THREADS",
+    for name in ("FLASK_HOST", "FLASK_PORT", "WAITRESS_THREADS",
                  "WAITRESS_CHANNEL_TIMEOUT"):
         monkeypatch.delenv(name, raising=False)
 
 
-# ------------------------------------------------------------ the two servers
+# --------------------------------------------------------------- one server
+def test_the_entrypoint_serves_the_application_the_process_composed():
+    """``application`` is what any ASGI host is handed, and it is built over
+    the one container this process made."""
+    assert entrypoint.application.state.services is entrypoint.services
 
 
-def test_the_production_entrypoint_serves_the_same_application():
-    assert wsgi.application is flask_app.app
+def test_there_is_no_second_entrypoint_to_drift_from():
+    """The pair this file was written about. A file back in the tree is a
+    second way to start the product, and the first thing that happens then is
+    that the two disagree about a setting."""
+    for gone in ("app.py", "wsgi.py"):
+        assert not os.path.exists(os.path.join(REPO, gone)), f"{gone} is back"
 
 
-def test_an_imported_application_is_never_in_debug():
-    """Importing the app must not turn anything on by itself."""
-    assert flask_app.app.debug is False
-
-
-def test_the_production_server_has_no_debug_setting_to_get_wrong(clean_server_env, monkeypatch):
+def test_the_server_has_no_debug_setting_to_get_wrong(clean_server_env, monkeypatch):
     """Not "debug defaults to off" -- there is no debug switch on this path.
 
-    FLASK_DEBUG=true, the developer default, must not reach the production
-    server: waitress does not run Werkzeug's debugger, and nothing in
-    ``server_options`` consults the variable.
+    ``FLASK_DEBUG=true`` was the developer default and it must not reach a
+    deployment. Nothing reads it any more, here or anywhere.
     """
     monkeypatch.setenv("FLASK_DEBUG", "true")
 
-    options = wsgi.server_options()
-
-    assert "debug" not in options
+    options = entrypoint.server_options()
+    assert set(options) == {"host", "port"}
     assert not any("debug" in str(value).lower() for value in options.values())
+
+    for module in ("asgi.py", "runtime/bootstrap.py", "config/runtime.py"):
+        source = open(os.path.join(REPO, module), encoding="utf-8").read()
+        assert "FLASK_DEBUG" not in source, f"{module} still reads FLASK_DEBUG"
 
 
 # ------------------------------------------------------------------ defaults
-
-
-def test_production_defaults(clean_server_env):
-    options = wsgi.server_options()
+def test_server_defaults(clean_server_env):
+    options = entrypoint.server_options()
 
     assert options["host"] == "0.0.0.0", "a container's port mapping needs every interface"
     assert options["port"] == 5005
-    assert options["threads"] == 8
-    assert options["clear_untrusted_proxy_headers"] is True
 
 
-def test_production_options_are_configurable(clean_server_env, monkeypatch):
+def test_server_options_are_configurable(clean_server_env, monkeypatch):
     monkeypatch.setenv("FLASK_HOST", "127.0.0.1")
     monkeypatch.setenv("FLASK_PORT", "9001")
     monkeypatch.setenv("WAITRESS_THREADS", "2")
 
-    options = wsgi.server_options()
+    from config.runtime import runtime_from_env
 
-    assert (options["host"], options["port"], options["threads"]) == ("127.0.0.1", 9001, 2)
+    options = entrypoint.server_options()
+    assert (options["host"], options["port"]) == ("127.0.0.1", 9001)
+    assert runtime_from_env().request_threads == 2
 
 
 @pytest.mark.parametrize("blank", ["", "   "])
 def test_an_empty_thread_count_means_unset(clean_server_env, monkeypatch, blank):
     """A variable set to nothing is a variable that was not set."""
+    from config.runtime import runtime_from_env
+
     monkeypatch.setenv("WAITRESS_THREADS", blank)
 
-    assert wsgi.server_options()["threads"] == 8
+    assert runtime_from_env().request_threads == 8
 
 
 @pytest.mark.parametrize("bad", ["0", "-4", "eight"])
 def test_a_nonsense_thread_count_is_refused_by_name(clean_server_env, monkeypatch, bad):
-    """It used to fall back to eight here, silently.
+    """It used to fall back to eight in the server and not in the limits.
 
     That looked safe and was not: ``config.ingest`` and ``config.query`` read
     the same variable *without* the fallback, so ``WAITRESS_THREADS=-4`` gave a
     server with eight threads and upload/query rations sized against minus
-    four -- and ``WAITRESS_THREADS=eight`` made ``import app`` raise anyway, so
-    the fallback never protected a deployment from a typo either. One reader
-    owns it now (``config.runtime``) and refuses a value it cannot use, by
-    name, which is what every other limit in this application already did.
+    four. One reader owns it now (``config.runtime``) and refuses a value it
+    cannot use, by name, which is what every other limit already did.
     """
+    from config.runtime import runtime_from_env
+
     monkeypatch.setenv("WAITRESS_THREADS", bad)
 
     with pytest.raises(ValueError, match="WAITRESS_THREADS"):
-        wsgi.server_options()
+        runtime_from_env()
 
 
-def test_development_defaults_to_loopback_with_debug(clean_server_env):
-    """The developer keeps the reloader; the network does not get the debugger."""
-    options = flask_app.development_server_options()
+def test_the_worker_pool_is_sized_from_the_one_reader(clean_server_env, monkeypatch):
+    """Every handler on this surface is a synchronous ``def``, so Starlette
+    runs it in a worker thread. That pool is the request concurrency the
+    ingest and query rations are sized against, and sizing it from anything
+    else would leave them describing a thread count that does not exist."""
+    import anyio
+    import anyio.to_thread
 
-    assert options["host"] == "127.0.0.1", "0.0.0.0 exposed the debugger to the LAN"
-    assert options["port"] == 5005
-    assert options["debug"] is True
+    monkeypatch.setenv("WAITRESS_THREADS", "3")
 
+    async def size():
+        entrypoint._size_thread_pool()
+        return anyio.to_thread.current_default_thread_limiter().total_tokens
 
-@pytest.mark.parametrize("value,expected", [
-    ("false", False), ("False", False), ("0", False), ("no", False), ("off", False),
-    ("true", True), ("1", True), ("anything else", True),
-])
-def test_the_development_server_still_honours_flask_debug(
-    clean_server_env, monkeypatch, value, expected
-):
-    monkeypatch.setenv("FLASK_DEBUG", value)
-    assert flask_app.development_server_options()["debug"] is expected
-
-
-def test_the_development_host_can_still_be_opened_deliberately(clean_server_env, monkeypatch):
-    monkeypatch.setenv("FLASK_HOST", "0.0.0.0")
-    assert flask_app.development_server_options()["host"] == "0.0.0.0"
-
-
-# --------------------------------------------------------------- session key
-
-
-def test_the_session_key_is_not_the_one_printed_in_the_source():
-    """It used to default to a constant literal in app.py.
-
-    Anyone with the source could forge a session cookie signed with it, and
-    every deployment that did not set the variable shared the same one.
-    """
-    assert flask_app.app.secret_key
-    assert flask_app.app.secret_key != 'your-secret-key-change-in-production'
-
-
-def test_a_configured_session_key_is_used(monkeypatch):
-    monkeypatch.setenv("FLASK_SECRET_KEY", "  a-real-deployment-key  ")
-    assert flask_app._session_secret() == "a-real-deployment-key"
-
-
-def test_an_absent_session_key_is_random_per_process(monkeypatch):
-    monkeypatch.delenv("FLASK_SECRET_KEY", raising=False)
-    assert flask_app._session_secret() != flask_app._session_secret()
-
-
-def test_the_session_cookie_is_not_readable_by_a_script():
-    assert flask_app.app.config["SESSION_COOKIE_HTTPONLY"] is True
-    assert flask_app.app.config["SESSION_COOKIE_SAMESITE"] == "Lax"
+    assert anyio.run(size) == 3
 
 
 # --------------------------------------------------------- what main() runs
-
-
-def test_main_starts_waitress_and_stops_cleanly(monkeypatch, clean_server_env, tmp_path):
+def test_main_starts_uvicorn_over_the_application(monkeypatch, clean_server_env):
     """No socket is bound here; this pins how ``main`` wires the server up."""
+    import uvicorn
+
     recorded = {}
 
-    class FakeServer:
-        def __init__(self):
-            self.closed = False
-
-        def run(self):
-            recorded["ran"] = True
-
-        def close(self):
-            self.closed = True
-
-    fake = FakeServer()
-
-    def create_server(application, **kwargs):
+    def run(application, **kwargs):
         recorded["application"] = application
         recorded["kwargs"] = kwargs
-        return fake
 
-    import waitress
+    monkeypatch.setattr(uvicorn, "run", run)
+    monkeypatch.setattr(bootstrap, "startup_banner",
+                        lambda services: recorded.setdefault("banner", True))
 
-    monkeypatch.setattr(waitress, "create_server", create_server)
-    monkeypatch.setattr(flask_app, "startup_banner", lambda: recorded.setdefault("banner", True))
-    monkeypatch.setattr(
-        flask_app, "resume_background_work", lambda: recorded.setdefault("resumed", True)
-    )
+    assert entrypoint.main() == 0
 
-    assert wsgi.main() == 0
-
-    assert recorded["application"] is flask_app.app
-    assert recorded["kwargs"] == wsgi.server_options()
-    assert recorded["ran"] is True
-    assert fake.closed is True, "the listening socket has to be released on the way out"
-    # A restart has to pick up an interrupted Viewer packaging job, and that
-    # used to happen only under `python app.py`.
-    assert recorded["resumed"] is True
+    assert recorded["application"] is entrypoint.application
+    assert recorded["kwargs"]["host"] == entrypoint.server_options()["host"]
+    assert recorded["kwargs"]["port"] == entrypoint.server_options()["port"]
     assert recorded["banner"] is True
 
 
-def test_a_sigterm_handler_is_installed_where_the_platform_has_one():
-    """``docker stop`` sends SIGTERM, and Python's default for it is to die."""
-    import signal
+def test_the_lifespan_is_what_picks_up_the_previous_process(monkeypatch):
+    """A restart has to settle the last process's ingest jobs and resume an
+    interrupted Viewer packaging job. It used to be the entrypoint's own
+    start-up; it is the application's lifespan now, so it happens under every
+    ASGI host rather than only under the one that remembered to call it."""
+    seen = []
+    monkeypatch.setattr(bootstrap, "require_database", lambda: seen.append("database"))
+    monkeypatch.setattr(bootstrap, "resume_background_work",
+                        lambda services: seen.append("resumed"))
+    monkeypatch.setattr(entrypoint, "_size_thread_pool", lambda: seen.append("threads"))
 
-    if not hasattr(signal, "SIGTERM"):  # pragma: no cover - platform without it
-        pytest.skip("no SIGTERM on this platform")
+    entrypoint._on_start(entrypoint.services)
 
-    wsgi._install_shutdown_handlers()
+    assert seen == ["threads", "database", "resumed"]
 
-    installed = signal.getsignal(signal.SIGTERM)
-    assert callable(installed)
-    with pytest.raises(SystemExit):
-        installed(signal.SIGTERM, None)
+
+def test_a_stop_drains_the_jobs_before_it_returns_the_pool(monkeypatch):
+    """The one write a job must not lose is its final ledger row, so the
+    database pool goes after the jobs that were still writing to it."""
+    order = []
+    monkeypatch.setattr(entrypoint.services.ingest_jobs, "close",
+                        lambda timeout=None: order.append("jobs"))
+    import storage as database
+
+    monkeypatch.setattr(database, "dispose", lambda: order.append("database"))
+
+    entrypoint._on_stop(entrypoint.services)
+
+    assert order == ["jobs", "database"]
 
 
 # ------------------------------------------------- start-up on any console
-
-
 def test_the_banner_survives_a_console_that_cannot_spell_it():
     """Start-up must not depend on who launched the process.
 
     On Windows a redirected stream falls back to the machine's code page --
     cp1254 on a Turkish install -- and anything outside it raises
     UnicodeEncodeError. The banner is printed before the server binds, so
-    ``python -m wsgi > server.log`` died at start-up with a traceback rather
+    ``python -m asgi > server.log`` died at start-up with a traceback rather
     than serving. It never showed here because the demo launcher sets
     PYTHONIOENCODING and the image sets it too: the application was relying on
     being started by something that knew to.
@@ -262,8 +231,8 @@ def test_the_banner_survives_a_console_that_cannot_spell_it():
     original = sys.stdout
     sys.stdout = narrow
     try:
-        flask_app.enable_console_utf8()
-        flask_app.startup_banner()
+        bootstrap.enable_console_utf8()
+        bootstrap.startup_banner(entrypoint.services)
         sys.stdout.flush()
     finally:
         sys.stdout = original
@@ -275,13 +244,13 @@ def test_the_banner_survives_a_console_that_cannot_spell_it():
 def test_the_widening_is_not_done_on_import():
     """It changes a global, so only an entrypoint may ask for it.
 
-    Importing ``app`` happens in every test in this suite and in anything that
+    ``asgi`` is imported by every test in this suite and by anything that
     embeds the application; reconfiguring the process's streams as a side
     effect of an import would be a surprise none of them asked for.
     """
     import inspect
 
-    source = inspect.getsource(flask_app)
+    source = inspect.getsource(entrypoint)
     calls = [line for line in source.splitlines()
              if "enable_console_utf8()" in line and not line.strip().startswith("def ")]
     assert calls, "nothing calls it"
@@ -291,25 +260,21 @@ def test_the_widening_is_not_done_on_import():
         )
 
 
-def test_the_production_entrypoint_widens_before_it_prints():
+def test_the_entrypoint_widens_before_it_prints():
     import inspect
 
-    source = inspect.getsource(wsgi.main)
+    source = inspect.getsource(entrypoint.main)
     assert "enable_console_utf8()" in source
-    assert source.index("enable_console_utf8()") < source.index("startup_banner()"), (
+    assert source.index("enable_console_utf8()") < source.index("startup_banner("), (
         "the banner is printed before the stream can carry it"
     )
 
 
 # ------------------------------------------------------------- the container
-
-
-def test_the_image_runs_the_production_entrypoint():
+def test_the_image_runs_the_entrypoint():
     """The Dockerfile's CMD, read as the deployment contract it is."""
-    dockerfile = open(
-        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__)))), "Dockerfile"), encoding="utf-8"
-    ).read()
+    dockerfile = open(os.path.join(REPO, "Dockerfile"), encoding="utf-8").read()
 
-    assert 'CMD ["python", "-m", "wsgi"]' in dockerfile
+    assert 'CMD ["python", "-m", "asgi"]' in dockerfile
+    assert 'CMD ["python", "-m", "wsgi"]' not in dockerfile
     assert 'CMD ["python", "app.py"]' not in dockerfile

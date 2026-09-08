@@ -462,7 +462,7 @@ def check_smokes(report: Report, work: Path, clone: Path | None, python: Path | 
 
     serve = run([str(python), "tools/serve_smoke.py"], cwd=clone, env=env, timeout=1800)
     report.add(PASS if serve.returncode == 0 else FAIL, "serve.smoke",
-               "python -m wsgi binds, answers /api/health on waitress, and stops"
+               "python -m asgi binds, answers /api/v1/health on uvicorn, and stops"
                if serve.returncode == 0 else "serve_smoke.py failed",
                tail(serve))
 
@@ -524,7 +524,7 @@ def check_docker(report: Report, clone: Path | None, docker: str | None,
         while time.monotonic() < deadline:
             try:
                 with urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}/api/health", timeout=5
+                    f"http://127.0.0.1:{port}/api/v1/health", timeout=5
                 ) as response:
                     health = (response.status, response.headers.get("Server", ""),
                               json.loads(response.read().decode("utf-8") or "{}"))
@@ -533,14 +533,14 @@ def check_docker(report: Report, clone: Path | None, docker: str | None,
                 time.sleep(1)
         if health is None:
             logs = run(["docker", "logs", "--tail", "40", name], timeout=120)
-            report.add(FAIL, "docker.run", "the container never answered /api/health", tail(logs))
+            report.add(FAIL, "docker.run", "the container never answered /api/v1/health", tail(logs))
             return
         status, server, body = health
-        if status != 200 or body.get("status") != "healthy":
-            report.add(FAIL, "docker.run", f"/api/health answered {status} {body!r}")
+        if status != 200 or body.get("ready") is not True:
+            report.add(FAIL, "docker.run", f"/api/v1/health answered {status} {body!r}")
             return
-        if "waitress" not in server.lower():
-            report.add(FAIL, "docker.run", f"served by {server!r}, not the production server")
+        if "uvicorn" not in server.lower():
+            report.add(FAIL, "docker.run", f"served by {server!r}, not the entrypoint the image runs")
             return
         report.add(PASS, "docker.run", f"health 200 on {server}, in a container built from the clone")
 

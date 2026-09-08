@@ -189,7 +189,7 @@ def test_the_dependencies_the_product_imports_are_declared():
         if line.strip() and not line.strip().startswith("#")
     }
     # Each of these is imported unconditionally by a module the application
-    # loads: the Azure client, the web framework, and the production server.
-    for required in ("openai", "flask", "waitress"):
+    # loads: the Azure client, the web framework, and the server that hosts it.
+    for required in ("openai", "fastapi", "uvicorn"):
         assert required in declared, f"{required} is imported but no longer declared"
 

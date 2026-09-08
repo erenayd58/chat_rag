@@ -415,7 +415,7 @@ def test_the_console_needs_no_built_viewer_page_to_run():
     console having an opinion about it.
     """
     repo = Path(__file__).resolve().parents[2]
-    for module in ("app.py", "components/viewer/analysis.py", "components/viewer/methods.py"):
+    for module in ("asgi.py", "components/viewer/analysis.py", "components/viewer/methods.py"):
         source = (repo / module).read_text(encoding="utf-8")
         assert "viewer-v3" not in source and "viewer-v2" not in source, module
         assert "index.html" not in source, module

@@ -38,7 +38,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
+
+V1 = http.v1.PREFIX
 from components.knowledgebase.manager import KnowledgeBaseManager
 from components.viewer import analysis
 from components.viewer import methods as M
@@ -84,18 +89,18 @@ def world(tmp_path, monkeypatch):
     ledger_file = str(tmp_path / "ledger.json")
     store = RecordingStore()
 
-    monkeypatch.setattr(flask_app.services, "kb_manager", kbs)
-    monkeypatch.setattr(flask_app.services, "documents", lambda *a, **k: DocumentTracker(ledger_file))
-    monkeypatch.setattr(flask_app.services, "get_pipeline",
+    monkeypatch.setattr(entrypoint.services, "kb_manager", kbs)
+    monkeypatch.setattr(entrypoint.services, "documents", lambda *a, **k: DocumentTracker(ledger_file))
+    monkeypatch.setattr(entrypoint.services, "get_pipeline",
                         lambda *a, **k: SimpleNamespace(vector_db=store))
-    monkeypatch.setattr(flask_app.services, "default_pipeline", SimpleNamespace(vector_db=store))
+    monkeypatch.setattr(entrypoint.services, "default_pipeline", SimpleNamespace(vector_db=store))
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
     # No build: this file is about which records survive a deletion, not
     # about producing a variant. The packager has its own suite.
     monkeypatch.setattr(analysis, "enqueue", lambda key: key)
 
-    flask_app.app.config.update(TESTING=True)
-    with flask_app.app.test_client() as client:
+    with TestClient(http.create_app(entrypoint.services),
+                    raise_server_exceptions=False) as client:
         yield SimpleNamespace(
             client=client, kbs=kbs, store=store,
             ledger=lambda: DocumentTracker(ledger_file),
@@ -166,8 +171,8 @@ def test_deleting_a_document_takes_its_chunks_its_ledger_row_and_its_choice(worl
     _ingest(world, "doc-1", kb_id=kb, name="one.pdf")
     _ingest(world, "doc-2", kb_id=kb, name="two.pdf", sha="d" * 48)
 
-    response = world.client.delete("/api/documents/doc-1")
-    assert response.status_code == 200
+    response = world.client.delete(f"{V1}/documents/doc-1")
+    assert response.status_code == 204
 
     assert world.store.deleted == ["doc-1"]
     assert [row["doc_id"] for row in world.ledger().get_all_documents()] == ["doc-2"]
@@ -183,7 +188,7 @@ def test_deleting_one_upload_leaves_the_shared_content_for_the_other(world):
     _ingest(world, "doc-1", kb_id=kb, name="one.pdf", methods=(M.STANDARD,))
     _ingest(world, "doc-2", kb_id=kb, name="two.pdf", methods=(M.MARKDOWN,))
 
-    assert world.client.delete("/api/documents/doc-1").status_code == 200
+    assert world.client.delete(f"{V1}/documents/doc-1").status_code == 204
 
     survivor = analysis.read_state("doc-2", SHA)
     assert survivor["status"] != analysis.STATUS_MISSING
@@ -203,16 +208,16 @@ def test_deleting_the_last_upload_of_a_content_takes_the_content_with_it(world):
     _ingest(world, "doc-1", kb_id=kb, name="one.pdf")
     _ingest(world, "doc-2", kb_id=kb, name="two.pdf")
 
-    assert world.client.delete("/api/documents/doc-1").status_code == 200
+    assert world.client.delete(f"{V1}/documents/doc-1").status_code == 204
     assert analysis.read_state("doc-2", SHA)["status"] != analysis.STATUS_MISSING
-    assert world.client.delete("/api/documents/doc-2").status_code == 200
+    assert world.client.delete(f"{V1}/documents/doc-2").status_code == 204
     assert analysis.read_state("doc-2", SHA)["status"] == analysis.STATUS_MISSING
 
 
 # ------------------------------------------------- deleting a knowledge base
 def test_deleting_a_knowledge_base_removes_its_record_and_frees_its_name(world):
     kb = world.kbs.create(name="Yillik raporlar")["kb_id"]
-    assert world.client.delete("/api/kb/" + kb).status_code == 200
+    assert world.client.delete(f"{V1}/knowledge-bases/{kb}").status_code == 204
     assert world.kbs.get(kb) is None
     # The name is free again, which is what makes deletion a real deletion.
     assert world.kbs.create(name="Yillik raporlar")["kb_id"] != kb
@@ -222,10 +227,10 @@ def test_deleting_a_knowledge_base_does_not_delete_its_documents_ledger_rows(wor
     """**Characterisation, not endorsement.**
 
     The knowledge base goes, its vector store goes, and the ingest ledger
-    keeps the rows of the documents that were in it. They become orphans:
-    ``/api/demo/workspace`` groups them under an unknown knowledge base
-    rather than dropping them, which is the behaviour
-    ``tests/unit/test_demo_workspace.py`` holds from the other side.
+    keeps the rows of the documents that were in it. They become orphans: a
+    document whose knowledge base was deleted is still a document that was
+    ingested, and losing that record would be losing the only evidence a file
+    was ever here.
 
     A schema drawn with ``ON DELETE CASCADE`` from knowledge base to document
     would change this silently, and a user would lose the record that a file
@@ -235,7 +240,7 @@ def test_deleting_a_knowledge_base_does_not_delete_its_documents_ledger_rows(wor
     kb = world.kbs.create(name="A")["kb_id"]
     _ingest(world, "doc-1", kb_id=kb, name="one.pdf")
 
-    assert world.client.delete("/api/kb/" + kb).status_code == 200
+    assert world.client.delete(f"{V1}/knowledge-bases/{kb}").status_code == 204
 
     rows = world.ledger().get_all_documents()
     assert [row["doc_id"] for row in rows] == ["doc-1"]
@@ -249,7 +254,7 @@ def test_deleting_a_knowledge_base_does_not_delete_its_documents_analyses(world)
     kb = world.kbs.create(name="A")["kb_id"]
     _ingest(world, "doc-1", kb_id=kb, name="one.pdf")
 
-    assert world.client.delete("/api/kb/" + kb).status_code == 200
+    assert world.client.delete(f"{V1}/knowledge-bases/{kb}").status_code == 204
     assert analysis.read_state("doc-1", SHA)["status"] != analysis.STATUS_MISSING
 
 

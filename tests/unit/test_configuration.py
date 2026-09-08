@@ -128,25 +128,36 @@ def test_only_one_module_reads_a_dotenv_at_all():
 #: The request-thread count is what every other ration is sized against, so it
 #: is the one most likely to be read in a second place.
 def test_the_thread_count_has_exactly_one_reader():
-    import wsgi
-
-    assert wsgi.server_options()["threads"] == runtime_config.runtime_from_env().request_threads
-    for module in ("wsgi.py", "config/ingest.py", "config/query.py"):
+    for module in ("asgi.py", "config/ingest.py", "config/query.py"):
         source = (REPO / module).read_text(encoding="utf-8")
         assert '"WAITRESS_THREADS"' not in source, (
             f"{module} reads WAITRESS_THREADS itself; config/runtime.py owns it"
         )
+    assert runtime_config.runtime_from_env().request_threads >= 1
 
 
 def test_the_server_and_the_limits_agree_about_the_thread_pool(monkeypatch, clean_env):
     """The bug this replaced: a server with eight threads and limits sized
-    against a different number."""
+    against a different number. One reader now, and the server's worker pool
+    is sized from it (``asgi._size_thread_pool``)."""
     monkeypatch.setenv("WAITRESS_THREADS", "4")
-    import wsgi
 
-    assert wsgi.server_options()["threads"] == 4
+    assert runtime_config.runtime_from_env().request_threads == 4
     assert query_config.query_limits_from_env().request_threads == 4
     assert ingest_config.limits_from_env().sync_waiters == 2
+
+
+def test_the_sync_waiter_ration_is_still_half_the_request_threads(clean_env):
+    """It reserves request threads for a wait that no route makes any more --
+    the synchronous upload went with the Flask-era surface -- and it is kept,
+    because it is subtracted from the ``QUERY_MAX_ACTIVE`` default and
+    removing it would raise the number of questions a deployment answers at
+    once (``docs/legacy-removal.md``)."""
+    assert ingest_config.limits_from_env({"WAITRESS_THREADS": "8"}).sync_waiters == 4
+    assert ingest_config.limits_from_env({"WAITRESS_THREADS": "2"}).sync_waiters == 1
+    assert ingest_config.limits_from_env({"WAITRESS_THREADS": "1"}).sync_waiters == 1
+    assert ingest_config.limits_from_env(
+        {"INGEST_SYNC_WAITERS": "3", "WAITRESS_THREADS": "8"}).sync_waiters == 3
 
 
 def test_the_dataclass_field_is_the_only_place_a_default_is_written():
@@ -265,11 +276,13 @@ def test_the_settings_dump_redacts_credentials(monkeypatch):
 
 
 def test_the_ops_endpoint_reports_configuration_without_secrets(monkeypatch):
-    import app as flask_app
+    from fastapi.testclient import TestClient
 
-    flask_app.app.config.update(TESTING=True)
-    with flask_app.app.test_client() as client:
-        payload = client.get("/api/ops/metrics").get_json()
+    import asgi as entrypoint
+    import interfaces.http as http
+
+    with TestClient(http.create_app(entrypoint.services)) as client:
+        payload = client.get("/api/ops/metrics").json()
 
     configuration = payload["configuration"]
     assert set(configuration) >= {"data_root", "runtime", "ingest", "query", "logging"}
@@ -409,15 +422,20 @@ def test_no_configuration_file_names_a_developers_checkout():
 # ---------------------------------------------------------------- entrypoints
 
 
-def test_the_entrypoints_resolve_one_configuration():
-    """Development, production and the import smoke read the same settings."""
-    import app as flask_app
-    import wsgi
+def test_the_entrypoint_resolves_one_configuration():
+    """There is one entrypoint, and what it binds is what the banner reports.
 
-    assert wsgi.application is flask_app.app
-    effective = flask_app.settings.effective_configuration()
-    assert wsgi.server_options()["threads"] == effective["runtime"]["request_threads"]
-    assert flask_app.development_server_options()["port"] == effective["runtime"]["port"]
+    There were two -- ``python app.py`` and ``python -m wsgi`` -- and the risk
+    this test was written for was that they read the settings differently.
+    They went with the Flask console; what is left is that ``asgi.py`` and the
+    effective configuration cannot disagree."""
+    import asgi as entrypoint
+
+    effective = entrypoint.services.settings.effective_configuration()
+    assert entrypoint.server_options()["port"] == effective["runtime"]["port"]
+    assert entrypoint.server_options()["host"] == effective["runtime"]["host"]
+    assert (runtime_config.runtime_from_env().request_threads
+            == effective["runtime"]["request_threads"])
 
 
 def test_the_smoke_tools_declare_their_own_data_root():

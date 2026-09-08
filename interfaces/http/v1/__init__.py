@@ -2,12 +2,12 @@
 
 The surface a client is meant to build against, and the one that has to keep
 working while everything under it is replaced: files by PostgreSQL, Chroma by
-pgvector, the templates by a Next.js front end. Flask has already been
-replaced here -- these routes are FastAPI, over the same use cases the Flask
-ones called, with the same URLs, statuses and bodies, held to that by
+pgvector, the console's own templates by a Next.js front end. All three have
+happened underneath it, and the Flask-era surface it was written beside is
+gone; what a client sees is held still by
 ``tests/migration/test_api_v1_contract.py``.
 
-It is not a renamed copy of the Flask-era surface. What is here is the product
+It was never a renamed copy of that surface. What is here is the product
 -- knowledge bases, documents and their analyses, ingest jobs, questions and
 searches, and enough discovery for a client to know what this deployment can
 do. What is deliberately not here is listed in ``docs/api-v1.md``, with the
@@ -22,8 +22,9 @@ Four kinds of module, and nothing else:
 ``errors.py``    the one table that turns a refusal into a status code.
 ``application``  the FastAPI object, and the lifespan a deployment runs.
 
-No product decision is taken in any of them, and none is duplicated from the
-legacy adapter: both surfaces call the same use cases, over the same container.
+No product decision is taken in any of them: a router calls a use case in
+:mod:`application`, over the container the process composed, and nothing here
+holds behaviour of its own.
 """
 
 from __future__ import annotations

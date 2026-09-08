@@ -67,8 +67,8 @@ USER app
 # amsc revision the product code has outgrown. This is invisible in a developer
 # checkout, where amsc is an editable install of the sibling chunk repository,
 # and it is exactly how a clean image came to build and then not start.
-# The serve smoke then starts the production server the CMD below starts,
-# answers /api/health over a real socket and stops it -- which is what tells
+# The serve smoke then starts the server the CMD below starts, answers
+# /api/v1/health over a real socket and stops it -- which is what tells
 # the difference between 'the modules import' and 'the container serves'.
 # The data directory is overridden for both steps: /data is the volume mount
 # point, and a build must not leave a vector store in that layer.
@@ -78,13 +78,14 @@ RUN CHAT_RAG_DATA_DIR=/tmp/import-smoke python tools/import_smoke.py \
 
 EXPOSE 5005
 
-# Deliberately cheap: it answers from the Flask app itself and touches no
-# model, parser or vector store. Python is already here, so no curl is added
-# just to call one URL.
+# Deliberately cheap: it loads no model, parses nothing and does not touch the
+# vector store. Python is already here, so no curl is added just to call one
+# URL.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5005/api/health', timeout=4).status == 200 else 1)"
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5005/api/v1/health', timeout=4).status == 200 else 1)"
 
-# The production entrypoint: waitress, one process, WAITRESS_THREADS request
-# threads. Not `python app.py` -- that is the development server, and it must
-# not be what a deployment reaches by default.
-CMD ["python", "-m", "wsgi"]
+# The entrypoint: uvicorn, one process, WAITRESS_THREADS request threads in the
+# pool Starlette runs the synchronous handlers in. There is no second one --
+# `python -m wsgi` and `python app.py` were the Flask console's, and the
+# console is a Next.js application over this contract now.
+CMD ["python", "-m", "asgi"]

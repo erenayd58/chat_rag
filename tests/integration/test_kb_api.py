@@ -15,7 +15,12 @@ import pytest
 
 from types import SimpleNamespace
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
+
+V1 = http.v1.PREFIX
 from application import workspace as app_workspace
 from components.goldset import GoldSetManager
 from components.knowledgebase.manager import KnowledgeBaseManager
@@ -53,10 +58,10 @@ class StubPipeline:
 def client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        flask_app.services, "kb_manager", KnowledgeBaseManager(str(tmp_path / "kbs.json"))
+        entrypoint.services, "kb_manager", KnowledgeBaseManager(str(tmp_path / "kbs.json"))
     )
     monkeypatch.setattr(
-        flask_app.services, "gold_manager", GoldSetManager(str(tmp_path / "gold.json"))
+        entrypoint.services, "gold_manager", GoldSetManager(str(tmp_path / "gold.json"))
     )
     # The upload tests below drive the route, not the Viewer packager. That
     # packager runs on a background thread which outlives the request and asks
@@ -64,14 +69,14 @@ def client(tmp_path, monkeypatch):
     # pipelines here deliberately do not have. Stubbed so this file exercises
     # one contract at a time.
     monkeypatch.setattr(app_workspace, "stage_analysis", lambda *a, **k: {"status": "queued"})
-    flask_app.app.config.update(TESTING=True)
-    with flask_app.app.test_client() as test_client:
+    with TestClient(http.create_app(entrypoint.services),
+                    raise_server_exceptions=False) as test_client:
         yield test_client
 
 
 def use_retriever(monkeypatch, retriever):
     monkeypatch.setattr(
-        flask_app.services, "get_pipeline", lambda *a, **k: StubPipeline(retriever)
+        entrypoint.services, "get_pipeline", lambda *a, **k: StubPipeline(retriever)
     )
 
 
@@ -86,21 +91,19 @@ def lexical(monkeypatch):
 
 def test_a_lexical_profile_advertises_bm25_only(client, monkeypatch):
     lexical(monkeypatch)
-    body = client.get("/api/retrieval/capabilities").get_json()
+    body = client.get(f"{V1}/meta/retrieval-methods").json()
 
-    assert body["success"] is True
     assert body["default"] == "bm25"
-    assert body["dense"] is False
-    offered = {m["name"] for m in body["methods"] if m["available"]}
+    offered = {m["name"] for m in body["items"] if m["available"]}
     assert offered == {"bm25"}
-    for entry in body["methods"]:
-        assert entry["available"] or entry["reason"]
+    for entry in body["items"]:
+        assert entry["available"] or entry["unavailable_reason"]
 
 
 def test_a_dense_profile_advertises_every_method(client, monkeypatch):
     use_retriever(monkeypatch, DenseRetriever())
-    body = client.get("/api/retrieval/capabilities").get_json()
-    assert {m["name"] for m in body["methods"] if m["available"]} == {
+    body = client.get(f"{V1}/meta/retrieval-methods").json()
+    assert {m["name"] for m in body["items"] if m["available"]} == {
         "hybrid", "vector", "bm25"
     }
 
@@ -109,119 +112,68 @@ def test_an_unsupported_method_is_refused_with_an_explanation(client, monkeypatc
     """It used to surface the retriever's raw exception text in the UI."""
     lexical(monkeypatch)
     response = client.post(
-        "/api/experiment/search_chunks",
-        json={"query": "findeks", "method": "vector", "top_k": 3},
+        f"{V1}/searches",
+        json={"query": "findeks", "method": "vector", "limit": 3},
     )
-    body = response.get_json()
+    error = response.json()["error"]
 
     assert response.status_code == 400
-    assert body["success"] is False
-    assert body["unsupported_method"] is True
-    assert "embedding" in body["error"].lower()
-    assert "RetrieverException" not in body["error"]
-    assert body["capabilities"]["default"] == "bm25"
+    assert error["type"] == "invalid_request"
+    assert error["details"]["unsupported_method"] is True
+    assert "embedding" in error["message"].lower()
+    assert "RetrieverException" not in error["message"]
+    assert error["details"]["capabilities"]["default"] == "bm25"
 
 
-# ------------------------------------------------------------- gold set
-
-
-GOLD = {
-    "question": "2024 Findeks Risk Raporu sorgu adedi kac?",
-    "kb_id": "kb-1",
-    "document_id": "upload_abc_pdf",
-    "correct_chunk_id": "doc:s-chunk-0172",
-    "section": "KOSGEB",
-    "pages": [36],
-    "unit_ids": ["v-00808"],
-    "evidence": "FINDEKS RISK RAPORU SORGU ADEDI | 11.000.144",
-    "found_at_rank": 1,
-}
-
-
-def test_a_confirmed_answer_is_stored_and_read_back(client, tmp_path):
-    saved = client.post("/api/goldset", json=GOLD).get_json()
-    assert saved["success"] is True
-
-    listed = client.get("/api/goldset?kb_id=kb-1").get_json()["entries"]
-    assert len(listed) == 1
-    assert listed[0]["correct_chunk_id"] == GOLD["correct_chunk_id"]
-    assert listed[0]["unit_ids"] == ["v-00808"]
-
-    # And it is really persisted, not merely echoed: a second manager, over
-    # the same store, reads it back.
-    stored = GoldSetManager(str(tmp_path / "gold.json")).list()
-    assert [entry["question"] for entry in stored] == [GOLD["question"]]
-
-
-def test_marking_the_same_question_again_updates_one_entry(client):
-    client.post("/api/goldset", json=GOLD)
-    client.post("/api/goldset", json={**GOLD, "correct_chunk_id": "doc:s-chunk-0002"})
-
-    entries = client.get("/api/goldset").get_json()["entries"]
-    assert len(entries) == 1
-    assert entries[0]["correct_chunk_id"] == "doc:s-chunk-0002"
-
-
-def test_an_entry_without_a_locator_is_rejected(client):
-    response = client.post("/api/goldset", json={"question": "s", "kb_id": "kb-1"})
-    assert response.status_code == 400
-    assert "locator" in response.get_json()["error"]
-
-
-def test_an_entry_can_be_removed(client):
-    entry = client.post("/api/goldset", json=GOLD).get_json()["entry"]
-    assert client.delete(f"/api/goldset/{entry['entry_id']}").status_code == 200
-    assert client.get("/api/goldset").get_json()["entries"] == []
-    assert client.delete(f"/api/goldset/{entry['entry_id']}").status_code == 404
-
-
-def test_entries_are_filtered_by_knowledge_base(client):
-    client.post("/api/goldset", json=GOLD)
-    client.post("/api/goldset", json={**GOLD, "kb_id": "kb-2"})
-    assert len(client.get("/api/goldset?kb_id=kb-1").get_json()["entries"]) == 1
-    assert len(client.get("/api/goldset").get_json()["entries"]) == 2
+#: The gold set had three routes on the Flask-era surface -- list, upsert and
+#: delete -- and no ``/api/v1`` answer, deliberately: it is an offline input to
+#: ``python -m cli`` rather than a product operation (``docs/api-v1.md``,
+#: *Not here, on purpose*). Step 13 removed those routes with the rest of that
+#: surface, and the use case that translated for them. What the entries have
+#: to do is unchanged and is driven where it lives, over the manager itself:
+#: ``tests/unit/test_goldset_manager.py``.
 
 
 # -------------------------------------------------------- kb lifecycle
 
 
 def test_a_knowledge_base_can_be_created_and_deleted(client):
-    created = client.post("/api/kb", json={"name": "kkb-final"}).get_json()
-    assert created["success"] is True
-    kb_id = created["kb"]["kb_id"]
+    created = client.post(f"{V1}/knowledge-bases", json={"name": "kkb-final"})
+    assert created.status_code == 201, created.text
+    kb_id = created.json()["id"]
 
     # Which collection this knowledge base's chunks are in, asked of the same
     # resolver the deletion route asks -- not rebuilt from a literal that
     # happens to match today's default.
-    collection = flask_app.services.kb_manager.collection(kb_id)
+    collection = entrypoint.services.kb_manager.collection(kb_id)
     store = _fill(collection, kb_id)
     assert store.count() == 1
 
-    body = client.delete(f"/api/kb/{kb_id}").get_json()
+    assert client.delete(f"{V1}/knowledge-bases/{kb_id}").status_code == 204
 
-    assert body["success"] is True
-    assert body["vectors_removed"] == 1
-    assert body["vector_collection"] == collection
+    # The corpus went with the record, in the same transaction. The counts are
+    # read from the store rather than from a response body: the contract
+    # answers 204, and how many rows a deletion took is not a promise it makes.
     assert store.count() == 0
-    assert client.get("/api/kb").get_json()["knowledge_bases"] == []
+    assert client.get(f"{V1}/knowledge-bases").json()["items"] == []
 
 
 def test_creating_a_duplicate_name_is_refused(client):
-    assert client.post("/api/kb", json={"name": "kkb-final"}).get_json()["success"]
-    response = client.post("/api/kb", json={"name": "kkb-final"})
-    body = response.get_json()
+    assert client.post(f"{V1}/knowledge-bases",
+                       json={"name": "kkb-final"}).status_code == 201
+    response = client.post(f"{V1}/knowledge-bases", json={"name": "kkb-final"})
 
     # A rejected payload is a client error, not a server fault.
     assert response.status_code == 400
-    assert body["success"] is False
-    assert "already exists" in body["error"]
-    assert len(client.get("/api/kb").get_json()["knowledge_bases"]) == 1
+    assert "already exists" in response.json()["error"]["message"]
+    assert client.get(f"{V1}/knowledge-bases").json()["page"]["total"] == 1
 
 
 def test_an_invalid_chunker_is_a_client_error_and_creates_nothing(client):
-    response = client.post("/api/kb", json={"name": "kb", "chunker": {"type": "nope"}})
+    response = client.post(f"{V1}/knowledge-bases",
+                           json={"name": "kb", "chunker": {"type": "nope"}})
     assert response.status_code == 400
-    assert client.get("/api/kb").get_json()["knowledge_bases"] == []
+    assert client.get(f"{V1}/knowledge-bases").json()["items"] == []
 
 
 def test_a_failed_clearance_keeps_the_record(client, monkeypatch):
@@ -236,24 +188,24 @@ def test_a_failed_clearance_keeps_the_record(client, monkeypatch):
 
     from storage.repositories import ChunkVectorRepository
 
-    created = client.post("/api/kb", json={"name": "locked"}).get_json()["kb"]
-    collection = flask_app.services.kb_manager.collection(created["kb_id"])
-    _fill(collection, created["kb_id"])
+    created = client.post(f"{V1}/knowledge-bases", json={"name": "locked"}).json()
+    collection = entrypoint.services.kb_manager.collection(created["id"])
+    _fill(collection, created["id"])
 
     def refuse(*_args, **_kwargs):
         raise OperationalError("DELETE FROM vector_collections", {}, Exception("in use"))
 
     monkeypatch.setattr(ChunkVectorRepository, "delete_collection", refuse)
-    response = client.delete(f"/api/kb/{created['kb_id']}")
+    response = client.delete(f"{V1}/knowledge-bases/{created['id']}")
 
     assert response.status_code == 409
-    assert "in use" in response.get_json()["error"]
-    assert len(client.get("/api/kb").get_json()["knowledge_bases"]) == 1
+    assert "in use" in response.json()["error"]["message"]
+    assert client.get(f"{V1}/knowledge-bases").json()["page"]["total"] == 1
     assert PgVectorStore(collection=collection).count() == 1
 
 
 def test_deleting_an_unknown_knowledge_base_is_a_404(client):
-    assert client.delete("/api/kb/nope").status_code == 404
+    assert client.delete(f"{V1}/knowledge-bases/nope").status_code == 404
 
 
 def test_deleting_one_knowledge_base_leaves_anothers_vectors_alone(client):
@@ -261,30 +213,28 @@ def test_deleting_one_knowledge_base_leaves_anothers_vectors_alone(client):
     deleting either had to decide whether the other still needed it. A
     collection is named by the knowledge base's own id, so the question cannot
     be asked -- which is what this pins."""
-    first = client.post("/api/kb", json={"name": "one"}).get_json()["kb"]
-    second = client.post("/api/kb", json={"name": "two"}).get_json()["kb"]
-    _fill(flask_app.services.kb_manager.collection(first["kb_id"]), first["kb_id"])
-    kept = _fill(flask_app.services.kb_manager.collection(second["kb_id"]),
-                 second["kb_id"])
+    first = client.post(f"{V1}/knowledge-bases", json={"name": "one"}).json()
+    second = client.post(f"{V1}/knowledge-bases", json={"name": "two"}).json()
+    gone = _fill(entrypoint.services.kb_manager.collection(first["id"]), first["id"])
+    kept = _fill(entrypoint.services.kb_manager.collection(second["id"]), second["id"])
 
-    body = client.delete(f"/api/kb/{first['kb_id']}").get_json()
+    assert client.delete(f"{V1}/knowledge-bases/{first['id']}").status_code == 204
 
-    assert body["vectors_removed"] == 1
+    assert gone.count() == 0
     assert kept.count() == 1
 
 
 def test_deleting_drops_the_cached_pipeline(client, monkeypatch):
     """A live Chroma client holds the store's sqlite open."""
-    created = client.post("/api/kb", json={"name": "kb"}).get_json()["kb"]
-    kb_id = created["kb_id"]
-    monkeypatch.setattr(flask_app.services.pipeline_cache, "_build",
+    kb_id = client.post(f"{V1}/knowledge-bases", json={"name": "kb"}).json()["id"]
+    monkeypatch.setattr(entrypoint.services.pipeline_cache, "_build",
                         lambda session_id, kb: SimpleNamespace(vector_db=None))
-    flask_app.services.pipeline_cache.get("global", kb_id)
-    assert kb_id in flask_app.services.pipeline_cache.snapshot()["knowledge_bases"]
+    entrypoint.services.pipeline_cache.get("global", kb_id)
+    assert kb_id in entrypoint.services.pipeline_cache.snapshot()["knowledge_bases"]
 
-    client.delete(f"/api/kb/{kb_id}")
+    client.delete(f"{V1}/knowledge-bases/{kb_id}")
 
-    assert kb_id not in flask_app.services.pipeline_cache.snapshot()["knowledge_bases"]
+    assert kb_id not in entrypoint.services.pipeline_cache.snapshot()["knowledge_bases"]
 
 
 def test_the_store_holds_no_handle_that_could_outlive_a_deletion():
@@ -349,18 +299,24 @@ class IngestedChunk:
 
 
 def upload(client, monkeypatch, pipeline):
+    """One upload, settled. The answer is the job, so the ingest is finished
+    where the job is, not where the response is."""
     import io
 
-    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: pipeline)
-    kb = json.loads(client.post("/api/kb", json={
+    monkeypatch.setattr(entrypoint.services, "get_pipeline", lambda *a, **k: pipeline)
+    kb = client.post(f"{V1}/knowledge-bases", json={
         "name": "ingest-kb", "chunker": {"type": "structure_first"},
-    }).data)
-    return client.post(
-        "/api/documents/upload",
-        data={"file": (io.BytesIO(b"%PDF-1.7 pretend"), "rapor.pdf"),
-              "kb_id": kb["kb"]["kb_id"]},
-        content_type="multipart/form-data",
+    }).json()
+    response = client.post(
+        f"{V1}/documents",
+        files={"file": ("rapor.pdf", io.BytesIO(b"%PDF-1.7 pretend"), "application/pdf")},
+        data={"knowledge_base_id": kb["id"]},
     )
+    assert response.status_code == 202, response.text
+    manager = entrypoint.services.ingest_jobs
+    job = manager.get(response.json()["id"])
+    assert manager.wait(job, 30), "the job did not settle"
+    return job.snapshot()
 
 
 def tracked():
@@ -378,10 +334,8 @@ def tracked():
 def test_a_successful_ingest_records_how_the_pipeline_was_configured(
     client, monkeypatch
 ):
-    response = upload(
-        client, monkeypatch, IngestingPipeline(chunks=[IngestedChunk()])
-    )
-    assert response.status_code == 200
+    job = upload(client, monkeypatch, IngestingPipeline(chunks=[IngestedChunk()]))
+    assert job["status"] == "succeeded", job
 
     documents = tracked()
     assert len(documents) == 1
@@ -399,9 +353,8 @@ def test_a_successful_ingest_records_how_the_pipeline_was_configured(
 def test_a_failed_ingest_leaves_no_document_and_no_snapshot(
     client, monkeypatch
 ):
-    response = upload(
-        client, monkeypatch, IngestingPipeline(error=RuntimeError("parser blew up"))
-    )
+    job = upload(client, monkeypatch,
+                 IngestingPipeline(error=RuntimeError("parser blew up")))
 
-    assert response.status_code == 500
+    assert job["status"] == "failed"
     assert tracked() == []

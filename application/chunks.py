@@ -1,14 +1,21 @@
-"""Chunk inspection, and the Lab's read-only searches over a stored corpus.
+"""Browsing a stored corpus, and searching it.
 
-Two kinds of work, kept together because they read the same rows. Browsing and
-editing a chunk touches the store and nothing else. Searching runs the front
-half of a query -- embedding the question, scoring, building the lexical index
-if this pipeline has not built it yet -- and therefore runs under the query
-bounds (:func:`application.query.bounded`), not beside them.
+Two kinds of work, kept together because they read the same rows. Browsing
+touches the store and nothing else. Searching runs the front half of a query
+-- embedding the question, scoring, building the lexical index if this
+pipeline has not built it yet -- and therefore runs under the query bounds
+(:func:`application.query.bounded`), not beside them.
 
-Every search here refuses a method the configured retriever cannot serve
-rather than letting a retriever exception reach the caller as a fault: a
-lexical-only profile has no vectors, and saying so is the answer.
+:func:`search` refuses a method the configured retriever cannot serve rather
+than letting a retriever exception reach the caller as a fault: a lexical-only
+profile has no vectors, and saying so is the answer.
+
+There used to be more here, for a screen that is gone. Reading, editing and
+deleting one indexed chunk were the Flask-era Lab's own affordances, never
+promoted to the contract -- editing an indexed chunk changes the corpus behind
+the ingest ledger's back -- and two of the three searches were separate
+endpoints that differed only in which retriever leg they called, which is a
+parameter (``docs/legacy-removal.md``).
 """
 
 from __future__ import annotations
@@ -96,101 +103,16 @@ def browse(services, *, kb_id: Optional[str], session_id: str, offset: int = 0,
     }
 
 
-def read(services, chunk_id: str, *, kb_id: Optional[str], session_id: str) -> dict:
-    """One chunk, with the first ten dimensions of its embedding for display."""
-    chunk = services.get_pipeline(session_id, kb_id).vector_db.get_chunk_by_id(chunk_id)
-    if not chunk:
-        raise NotFound('Chunk not found')
-    embedding = chunk.get('embedding')
-    return {
-        'chunk_id': chunk['chunk_id'],
-        'content': chunk['content'],
-        'metadata': chunk['metadata'],
-        'embedding_snippet': embedding[:10] if embedding else None,
-        'embedding_dimension': len(embedding) if embedding else 0,
-    }
-
-
-def update(services, chunk_id: str, *, content: Optional[str], metadata: Optional[dict],
-           kb_id: Optional[str], session_id: str) -> None:
-    """Edit a chunk. Changing its content re-embeds it, or the vector would
-    no longer stand for the text."""
-    if content is None and metadata is None:
-        raise InvalidRequest('Content or metadata is required')
-    pipeline = services.get_pipeline(session_id, kb_id)
-    embedding = None
-    if content is not None:
-        embedding = pipeline.embedding_model.encode(content).tolist()
-    pipeline.vector_db.update_chunk(chunk_id=chunk_id, content=content,
-                                    metadata=metadata, embedding=embedding)
-
-
-def delete(services, chunk_id: str, *, kb_id: Optional[str], session_id: str) -> None:
-    services.get_pipeline(session_id, kb_id).vector_db.delete_chunk(chunk_id)
-
-
-# ------------------------------------------------------------- the searches
-def search_vector(services, *, query: str, kb_id: Optional[str], session_id: str,
-                  offset: int = 0, limit: int = 20) -> dict:
-    """Dense search over the stored vectors, paginated after scoring."""
-    with query_bounds.bounded(services, mode='lab.search_vector',
-                              session_id=session_id, kb_id=kb_id) as run:
-        with _reported('Vector search'):
-            text = _require_query(query)
-            _require_kb(kb_id)
-            metadata = _search_metadata(services, run.pipeline, kb_id,
-                                        method='vector', query=text)
-            embedding = run.pipeline.embedding_model.encode(text).tolist()
-            hits = run.pipeline.vector_db.query(query_embedding=embedding,
-                                                top_k=offset + limit)
-            rows = [{
-                'chunk_id': hit['chunk_id'],
-                'content': hit['content'],
-                'metadata': hit['metadata'],
-                # Cosine distance runs 0 (identical) to 2 (opposite) --
-                # pgvector's ``<=>`` and the range every store this product
-                # has shipped reported; the raw distance is kept for
-                # debugging.
-                'similarity_score': 1 - (hit['distance'] / 2),
-                'distance': hit['distance'],
-                'search_metadata': metadata,
-            } for hit in hits[offset:offset + limit]]
-            return {'chunks': rows, 'total': len(hits), 'offset': offset,
-                    'limit': limit, 'search_metadata': metadata}
-
-
-def search_bm25(services, *, query: str, kb_id: Optional[str], session_id: str,
-                offset: int = 0, limit: int = 20) -> dict:
-    """Lexical search over the knowledge base's BM25 index, paginated after
-    scoring -- the index is built on demand if this pipeline has none."""
-    with query_bounds.bounded(services, mode='lab.search_bm25',
-                              session_id=session_id, kb_id=kb_id) as run:
-        with _reported('BM25 search'):
-            text = _require_query(query)
-            _require_kb(kb_id)
-            metadata = _search_metadata(services, run.pipeline, kb_id,
-                                        method='bm25', query=text)
-            hits = run.pipeline.hybrid_retriever.keyword_search(text, top_k=offset + limit)
-            rows = [{
-                'chunk_id': hit.chunk.chunk_id,
-                'content': hit.chunk.content,
-                'metadata': hit.chunk.metadata,
-                'score': hit.score,
-                'retrieval_method': 'bm25',
-                'search_term': text,
-                'search_metadata': metadata,
-            } for hit in hits[offset:offset + limit]]
-            return {'chunks': rows, 'total': len(hits), 'offset': offset,
-                    'limit': limit, 'search_metadata': metadata}
-
-
+# -------------------------------------------------------------- the search
 def experiment_search(services, *, query: str, method: str, kb_id: Optional[str],
                       session_id: str, top_k: int = 20) -> dict:
-    """One retrieval, by the method the reviewer picked.
+    """One retrieval, by the method the caller picked.
 
-    The capability check comes first and is the same one the review screen
-    reads, so 'vector' on a lexical-only profile is refused with the reason
-    rather than surfacing a retriever exception as a fault.
+    One function for every method, because the three differ only in which leg
+    of the retriever they call. The capability check comes first and is the
+    same one ``GET /api/v1/meta/retrieval-methods`` reads, so 'vector' on a
+    lexical-only profile is refused with the reason rather than surfacing a
+    retriever exception as a fault.
     """
     with query_bounds.bounded(services, mode='lab.experiment_search',
                               session_id=session_id, kb_id=kb_id) as run:

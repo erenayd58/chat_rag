@@ -1,35 +1,34 @@
 """The HTTP surface, and what its refusals mean.
 
-The console is Flask today and will not be. A framework port is proven by
-parity, and parity needs a list of what there is to be at parity with --
-which nothing in this repository had. Ninety tests drove individual routes;
-none said how many routes there are, so a route lost in a port would be
-found only if some unrelated test happened to use it, and a route quietly
-added would never be found at all.
+This module was written when the console was Flask and was going to stop
+being Flask. A framework port is proven by parity, and parity needs a list of
+what there is to be at parity with -- which nothing in this repository had.
+Ninety tests drove individual routes; none said how many routes there are, so
+a route lost in a port would be found only if some unrelated test happened to
+use it, and a route quietly added would never be found at all.
 
-So this module pins the surface itself, in two halves.
+The port is done and the Flask-era surface is gone (``docs/legacy-removal.md``),
+so what this module pins is the surface that is left, in two halves.
 
-**What exists.** Two published lists, held against the application's real
-routing table: the README's *console API* table (the Flask-era surface the
-console still speaks) and the endpoint tables in ``docs/api-v1.md`` (the
-product contract). Neither may drift from the routing table in either
-direction: a new endpoint is documented in the same commit that adds it, and
-a removal is a removal from both. Those tables are also the input to the
-migration -- the set of paths and methods a FastAPI application has to answer
--- and to the cleanup before it, because a route no screen and no client calls
-is visible here as a row nobody claims.
+**What exists.** The endpoint tables in ``docs/api-v1.md`` are the contract and
+are held against the application's real routing table in both directions: a
+new endpoint is documented in the same commit that adds it, and a removal is a
+removal from both. Exactly one route is served that the contract does not
+publish -- ``GET /api/ops/metrics``, the operator surface -- and it is declared
+here and published in ``docs/operations.md``, because a route no document
+claims is a route nobody decided to support.
 
-**What a refusal means.** The distinctions the product makes are a contract:
-a malformed request, an unknown resource, a rejected payload and a server
-fault are four different answers, and a client (the console's own
-JavaScript, the Viewer's relay) branches on them. They are asserted here as
-a taxonomy rather than one at a time, because the failure mode of a rewrite
-is not losing one code -- it is collapsing several into 500 or into 400.
+**What a refusal means.** The distinctions the product makes are a contract: a
+malformed request, an unknown resource, a rejected payload and a server fault
+are four different answers, and a client branches on them. They are asserted
+here as a taxonomy rather than one at a time, because the failure mode of a
+rewrite is not losing one code -- it is collapsing several into 500 or into
+400.
 
 What this module does **not** pin: any error *message*, the internals of the
-routing table, Flask's own behaviour (its automatic ``HEAD``/``OPTIONS``, its
-static endpoint, its 405), or the JSON body of a success. Those belong to the
-implementation and may all change.
+routing table, the framework's own behaviour (its automatic ``HEAD``, its
+405), or the JSON body of a success. Those belong to the implementation and
+may all change.
 """
 
 from __future__ import annotations
@@ -38,32 +37,20 @@ import re
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
-import app as flask_app
+import asgi as entrypoint
+import interfaces.http as http
 
 REPO = Path(__file__).resolve().parents[2]
+V1 = http.v1.PREFIX
 
-#: The rendered screens. Not part of the API contract -- they are the ones
-#: Next.js replaces -- but they are routes, so they are declared here rather
-#: than left to make the comparison below fail.
-PAGES = {
-    ("GET", "/"),
-    ("GET", "/chat"),
-    ("GET", "/lab"),
-    ("GET", "/kb/<kb_id>"),
-}
-
-#: Redirects kept so an old bookmark still works. Empty: the two that were
-#: here (``/documents`` -> ``/``, ``/chunks`` -> ``/lab``) were linked from
-#: no screen and no client, and were removed. The group stays declared so the
-#: next one is classified when it is added rather than archaeologically.
-LEGACY_REDIRECTS: set[tuple[str, str]] = set()
-
-#: Flask's own endpoint, not the product's.
-FRAMEWORK_ROUTES = {("GET", "/static/<path:filename>")}
-
-#: Verbs Flask adds by itself. A port is free to add or not add them.
-IMPLICIT_METHODS = {"HEAD", "OPTIONS"}
+#: The one served route that is not on the contract. It is an operator
+#: surface: its *contents* are deliberately free to change with the internals
+#: they report on, which is why it was never promoted to a versioned path, and
+#: it kept that path and that body through the removal of the Flask surface
+#: that used to serve it. Published in ``docs/operations.md``.
+OPERATOR_ROUTES = {("GET", "/api/ops/metrics")}
 
 
 def _endpoints(text: str) -> set[tuple[str, str]]:
@@ -75,22 +62,11 @@ def _endpoints(text: str) -> set[tuple[str, str]]:
     return found
 
 
-def _documented_legacy() -> set[tuple[str, str]]:
-    """The endpoints the README's *console API* table publishes."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    section = readme.split("## The console API", 1)
-    assert len(section) == 2, "the README no longer has a console API section"
-    found = _endpoints(section[1].split("\n## ", 1)[0])
-    assert found, "the console API table listed no endpoints"
-    return found
-
-
 def _documented_v1() -> set[tuple[str, str]]:
     """The endpoints ``docs/api-v1.md`` publishes as the product contract.
 
     A document that *is* the contract has to be the whole list rather than a
-    sample of it, so it is held against the routing table in both directions
-    exactly as the README's table is.
+    sample of it, so it is held against the routing table in both directions.
     """
     doc = REPO / "docs" / "api-v1.md"
     assert doc.exists(), "the /api/v1 contract has no published endpoint list"
@@ -99,28 +75,18 @@ def _documented_v1() -> set[tuple[str, str]]:
     return found
 
 
-def _documented_api() -> set[tuple[str, str]]:
-    return _documented_legacy() | _documented_v1()
-
-
 def _live_routes() -> set[tuple[str, str]]:
-    """Every route the application actually serves."""
-    live: set[tuple[str, str]] = set()
-    for rule in flask_app.app.url_map.iter_rules():
-        for method in rule.methods - IMPLICIT_METHODS:
-            live.add((method, str(rule.rule)))
-    return live
+    """Every route the application actually serves, in the documents' spelling."""
+    return http.surface(entrypoint.application)
 
 
 # --------------------------------------------------------- what exists
 def test_the_documented_api_is_exactly_the_api_that_is_served():
-    """The list a FastAPI port has to reproduce, and the list a cleanup has
-    to justify. Drift in either direction is a failure: an undocumented
-    endpoint is one nobody decided to support, and a documented one that is
-    gone is a promise the product no longer keeps."""
-    served = {row for row in _live_routes()
-              if row not in PAGES | LEGACY_REDIRECTS | FRAMEWORK_ROUTES}
-    documented = _documented_api()
+    """Drift in either direction is a failure: an undocumented endpoint is one
+    nobody decided to support, and a documented one that is gone is a promise
+    the product no longer keeps."""
+    served = _live_routes()
+    documented = _documented_v1() | OPERATOR_ROUTES
 
     undocumented = sorted(served - documented)
     missing = sorted(documented - served)
@@ -131,73 +97,80 @@ def test_the_documented_api_is_exactly_the_api_that_is_served():
     )
 
 
-def test_the_product_contract_and_the_compatibility_surface_stay_apart():
-    """``/api/v1`` is the contract; the rest of ``/api`` is the surface the
-    console still speaks and the one a port is free to drop.
+def test_the_product_contract_and_the_operator_surface_stay_apart():
+    """``/api/v1`` is the contract; the operator route deliberately is not.
 
     Each served route belongs to exactly one of them and is published in that
     one's own place, so "is this supported long term?" is answered by the path
-    rather than by asking somebody. It is also what stops the two drifting into
-    each other: a v1 endpoint quietly added to the README's compatibility
-    table, or a legacy endpoint listed as contract, fails here.
+    rather than by asking somebody. It is also what stops the two drifting
+    into each other: an operator endpoint quietly added under ``/api/v1``, or
+    a contract endpoint served outside it, fails here.
     """
-    served = {row for row in _live_routes()
-              if row not in PAGES | LEGACY_REDIRECTS | FRAMEWORK_ROUTES}
-    versioned = {row for row in served if row[1].startswith("/api/v1/")}
+    served = _live_routes()
+    versioned = {row for row in served if row[1].startswith(f"{V1}/")}
     assert versioned, "the product contract serves nothing"
 
     assert versioned == _documented_v1(), (
         "docs/api-v1.md and the served /api/v1 disagree: "
         + repr(sorted(versioned ^ _documented_v1()))
     )
-    assert (served - versioned) == _documented_legacy(), (
-        "the README's console API table and the legacy surface disagree: "
-        + repr(sorted((served - versioned) ^ _documented_legacy()))
+    assert (served - versioned) == OPERATOR_ROUTES, (
+        "something outside /api/v1 is served that this file has not been told "
+        "about: " + repr(sorted((served - versioned) ^ OPERATOR_ROUTES))
     )
 
 
-def test_every_route_is_either_api_page_or_a_declared_legacy_redirect():
-    """Nothing is served that this file has not been told about. The point is
-    the moment a route is added: it is classified then, by the person adding
-    it, rather than archaeologically before a migration."""
-    unclassified = sorted(
-        _live_routes() - _documented_api() - PAGES - LEGACY_REDIRECTS - FRAMEWORK_ROUTES
-    )
-    assert unclassified == [], (
-        "these routes belong to no declared group: " + repr(unclassified)
-    )
+def test_the_operator_surface_is_published_where_an_operator_would_look():
+    """It is off the contract, which is a reason for it not to be versioned --
+    not a reason for it to be undocumented."""
+    operations = (REPO / "docs" / "operations.md").read_text(encoding="utf-8")
+    for _, path in sorted(OPERATOR_ROUTES):
+        assert path in operations, f"{path} is served and docs/operations.md does not mention it"
 
 
-def test_a_declared_legacy_redirect_redirects_rather_than_renders(client):
-    """A redirect carries no content of its own. Vacuous while the group is
-    empty, and the check the next one has to pass."""
-    for _, path in sorted(LEGACY_REDIRECTS):
-        response = client.get(path)
-        assert response.status_code in (301, 302, 308), path
-        assert response.headers["Location"].endswith(("/", "/lab")), path
+def test_the_operator_surface_is_not_on_the_generated_contract(client):
+    """``/api/v1/openapi.json`` is the list a client may build against, and
+    this route is not on it -- deliberately, because its body is free to
+    change with what it reports on."""
+    document = client.get(http.v1.OPENAPI_PATH).json()
+    for _, path in sorted(OPERATOR_ROUTES):
+        assert path not in document["paths"], f"{path} was promoted by accident"
 
 
-def test_the_two_routes_that_can_refuse_under_load_are_the_documented_two():
-    """``/api/documents/upload`` and ``/api/query`` are the bounded pair, and
-    the README says so. Every other endpoint is expected to answer."""
+def test_the_operator_surface_answers_where_it_always_did(client):
+    """The path and the body did not move when the surface under them was
+    removed: a script polling it sees no difference."""
+    response = client.get("/api/ops/metrics")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is True
+    for key in ("state", "ready", "reasons", "ingest", "query", "metrics",
+                "database", "caches", "configuration"):
+        assert key in body, key
+
+
+def test_the_one_route_that_can_refuse_under_load_is_the_documented_one():
+    """``POST /api/v1/queries`` is the bounded one, and the README says so.
+    The other half of the old pair -- a synchronous upload -- went with the
+    surface that offered it: ``POST /api/v1/documents`` always answers 202."""
     readme = (REPO / "README.md").read_text(encoding="utf-8")
-    assert "`POST /api/documents/upload` and `POST /api/query` are the two" in readme
-    assert ("POST", "/api/documents/upload") in _documented_api()
-    assert ("POST", "/api/query") in _documented_api()
+    assert "`POST /api/v1/queries` is the one that can refuse" in readme
+    assert ("POST", f"{V1}/queries") in _documented_v1()
+    assert ("POST", f"{V1}/documents") in _documented_v1()
 
 
 # ---------------------------------------------------- what a refusal means
 @pytest.fixture
 def client():
-    flask_app.app.config.update(TESTING=True)
-    with flask_app.app.test_client() as made:
+    with TestClient(http.create_app(entrypoint.services),
+                    raise_server_exceptions=False) as made:
         yield made
 
 
-def _json(response):
-    body = response.get_json()
-    assert isinstance(body, dict), response.data[:200]
-    return body
+def _error(response) -> dict:
+    body = response.json()
+    assert isinstance(body, dict) and "error" in body, response.text
+    return body["error"]
 
 
 def test_a_malformed_request_is_a_400_and_reaches_nothing(client):
@@ -206,42 +179,49 @@ def test_a_malformed_request_is_a_400_and_reaches_nothing(client):
     admission, and why a rewrite that validates after admission would be a
     regression this catches (``tests/integration/test_query_api.py`` holds
     the slot half)."""
-    response = client.post("/api/query", json={"question": "   "})
+    response = client.post(f"{V1}/queries", json={"question": "   "})
     assert response.status_code == 400
-    assert "error" in _json(response)
+    assert _error(response)["type"] == "invalid_request"
 
 
 def test_an_unknown_resource_is_a_404_and_says_which_kind(client):
-    """Four different resources, one code, and a body that names the kind.
+    """Three different resources, one code, and a body that names the kind.
     A rewrite that turns any of these into 500 loses the client's ability to
     tell "you asked for something that is not here" from "we broke"."""
-    for path in ("/api/kb/kb-that-does-not-exist",
-                 "/api/ingest/jobs/job-that-does-not-exist",
-                 "/api/demo/viewer-analysis/doc-that-does-not-exist/payload"):
+    for path in (f"{V1}/knowledge-bases/kb-that-does-not-exist",
+                 f"{V1}/ingest-jobs/job-that-does-not-exist",
+                 f"{V1}/documents/doc-that-does-not-exist"):
         response = client.get(path)
         assert response.status_code == 404, path
-        assert "error" in _json(response), path
+        assert _error(response)["type"] == "not_found", path
 
-    deleted = client.delete("/api/goldset/entry-that-does-not-exist")
-    assert deleted.status_code == 404
-    assert "error" in _json(deleted)
+
+def test_a_resource_that_is_here_but_not_built_yet_is_a_409(client):
+    """The distinction a client polling for a build needs: "not here" and "not
+    ready" are different answers, and the second carries the state."""
+    response = client.get(f"{V1}/documents/doc-that-does-not-exist/analysis/payload")
+    assert response.status_code == 409
+    error = _error(response)
+    assert error["type"] == "not_ready"
+    assert "state" in error["details"]
 
 
 #: A rejected payload is a 400 that creates nothing. Not repeated here: it is
 #: already driven at the level it belongs to, over the real managers --
-#: ``tests/integration/test_kb_and_goldset_api.py`` (an invalid chunker is a
+#: ``tests/integration/test_kb_api.py`` (an invalid chunker is a
 #: client error and creates nothing) and ``tests/unit/test_kb_lifecycle.py``
 #: (a rejected payload leaves no record behind, in memory or on disk).
 
 
 def test_a_health_check_answers_without_a_model_a_store_or_a_provider(client):
-    """The container's healthcheck and the Viewer's console probe both call
-    this, so it has to stay cheap and always answerable -- including while
-    the service is degraded, which it reports rather than fails on."""
-    response = client.get("/api/health")
-    assert response.status_code in (200, 503)
-    body = _json(response)
-    assert "status" in body
+    """The container's healthcheck and the demo launcher both call this, so it
+    has to stay cheap and always answerable -- including while the service is
+    degraded, which it reports rather than fails on."""
+    response = client.get(f"{V1}/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] in {"ok", "overloaded", "degraded"}
+    assert body["ready"] is True
 
 
 #: What each refusal means to a client. The failure mode of a rewrite is not
@@ -250,7 +230,7 @@ def test_a_health_check_answers_without_a_model_a_store_or_a_provider(client):
 REFUSALS = {
     400: "the request or its payload is wrong",
     404: "the resource is not here",
-    409: "the resource is here and in use",
+    409: "the resource is here and in use, or not built yet",
     500: "the server failed",
     503: "capacity, or a capability, is unavailable now",
     504: "the deadline passed",
@@ -258,21 +238,20 @@ REFUSALS = {
 
 
 def test_the_product_still_makes_every_distinction_in_its_refusal_taxonomy():
-    """Each of these codes is a decision some adapter reaches deliberately.
+    """Each of these codes is a decision the adapter reaches deliberately.
 
-    ``409`` (a store another knowledge base still uses), ``503`` (overload, or
-    an unavailable answer model) and ``504`` (a passed deadline) are *caused*
-    by other suites, which is where they belong -- reaching them here would
-    mean faking the condition rather than provoking it. What is checked here
-    is that they have not silently left the codebase, which is what a
-    framework port collapsing its error handling looks like from the outside.
+    ``503`` (overload, or an unavailable answer model) and ``504`` (a passed
+    deadline) are *caused* by other suites, which is where they belong --
+    reaching them here would mean faking the condition rather than provoking
+    it. What is checked here is that they have not silently left the codebase,
+    which is what a framework port collapsing its error handling looks like
+    from the outside.
 
-    The codes live in the HTTP adapter and nowhere else: two tables
-    (``responses.STATUS``, which maps an application refusal to a status, and
-    ``ingest.OUTCOMES``, which maps a settled job to one) plus the few
-    literals the upload path returns directly. A port replaces this package
-    and has to reproduce the same six distinctions in whatever it writes
-    instead.
+    The codes live in the HTTP adapter and nowhere else: one table
+    (``v1.errors.REFUSALS``, which maps an application refusal to a status and
+    a name) plus the few literals the routers declare on their decorators. A
+    port replaces this package and has to reproduce the same six distinctions
+    in whatever it writes instead.
     """
     import ast
 
@@ -295,6 +274,11 @@ def test_the_product_still_makes_every_distinction_in_its_refusal_taxonomy():
                         first = value.elts[0]
                         if isinstance(first, ast.Constant) and isinstance(first.value, int):
                             returned.add(first.value)
+            # ... or one a handler builds directly.
+            elif isinstance(node, ast.Call):
+                for argument in list(node.args) + [kw.value for kw in node.keywords]:
+                    if isinstance(argument, ast.Constant) and isinstance(argument.value, int):
+                        returned.add(argument.value)
 
     lost = sorted(code for code in REFUSALS if code not in returned)
     assert lost == [], (

@@ -1,16 +1,16 @@
 """The production runtime, started the way a deployment starts it.
 
 Everything else about this phase is checked by reading configuration. This
-starts the real thing: a separate process running ``python -m wsgi``, given one
+starts the real thing: a separate process running ``python -m asgi``, given one
 setting -- where its state lives -- and asked one cheap question over a real
 socket.
 
 It proves the three claims that only a running process can:
 
-* the production entrypoint binds and serves, so an image whose CMD is this
-  will answer rather than crash at the first request;
-* it is waitress answering, not Werkzeug -- the development server does not
-  become the production server by having a flag set;
+* the entrypoint binds and serves, so an image whose CMD is this will answer
+  rather than crash at the first request;
+* it is the process a deployment runs that answered -- uvicorn, over the
+  contract -- rather than something a test wired up in memory;
 * one ``CHAT_RAG_DATA_DIR`` is sufficient isolation on its own. The server runs
   from the checkout, where ``.env`` says ``VECTOR_DB_PATH=./chroma_db``, and
   the developer's store, ledger and knowledge base records must be exactly as
@@ -68,7 +68,7 @@ def free_port() -> int:
 
 @pytest.fixture
 def server(tmp_path):
-    """``python -m wsgi``, in the checkout, with its state somewhere else."""
+    """``python -m asgi``, in the checkout, with its state somewhere else."""
     data_root = tmp_path / "data-root"
     port = free_port()
 
@@ -90,7 +90,7 @@ def server(tmp_path):
 
     before = fingerprint()
     process = subprocess.Popen(
-        [sys.executable, "-m", "wsgi"],
+        [sys.executable, "-m", "asgi"],
         cwd=REPO_ROOT,
         env=environment,
         stdout=subprocess.PIPE,
@@ -124,7 +124,11 @@ def get(url: str, process: subprocess.Popen):
             )
         try:
             with urllib.request.urlopen(url, timeout=5) as response:
-                return response.status, dict(response.headers), json.loads(
+                # Header names are case-insensitive; this server sends them
+                # lowercase, so they are folded rather than matched as typed.
+                return response.status, {
+                    name.lower(): value for name, value in response.headers.items()
+                }, json.loads(
                     response.read().decode("utf-8") or "{}"
                 )
         except (urllib.error.URLError, OSError, ValueError) as error:
@@ -133,22 +137,21 @@ def get(url: str, process: subprocess.Popen):
     raise AssertionError(f"{url} did not answer within {READY_TIMEOUT_SECONDS:.0f}s ({last})")
 
 
-def test_the_production_entrypoint_serves_health_on_waitress(server):
+def test_the_entrypoint_serves_health_on_the_server_the_image_runs(server):
     process, base, data_root = server
 
-    status, headers, body = get(base + "/api/health", process)
+    status, headers, body = get(base + "/api/v1/health", process)
 
     assert status == 200
-    assert body["status"] == "healthy"
-    server_name = headers.get("Server", "")
-    assert "waitress" in server_name.lower(), f"served by {server_name!r}, not waitress"
-    assert "werkzeug" not in server_name.lower()
+    assert body["ready"] is True and body["state"] in {"ok", "overloaded", "degraded"}
+    server_name = headers.get("server", "")
+    assert "uvicorn" in server_name.lower(), f"served by {server_name!r}, not uvicorn"
 
 
 def test_the_running_server_keeps_its_state_in_the_data_root(server):
     process, base, data_root = server
 
-    get(base + "/api/health", process)
+    get(base + "/api/v1/health", process)
 
     assert data_root.is_dir(), "the data root was never used"
     assert (data_root / "logs").is_dir(), "the log file did not land in the data root"

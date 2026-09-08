@@ -12,19 +12,26 @@ What it owns
 ------------
 
 ``FLASK_HOST`` / ``FLASK_PORT``
-    Where the production server listens. ``0.0.0.0`` because a container's
-    port mapping only reaches a process listening on every interface; the
-    development server in ``app.py`` binds loopback and is not configured
-    here.
+    Where the server listens. ``0.0.0.0`` because a container's port mapping
+    only reaches a process listening on every interface.
 ``WAITRESS_THREADS``
     Request threads, and the number every other limit is sized against: at
     most ``INGEST_SYNC_WAITERS`` of them may wait on a synchronous upload and
     at most ``QUERY_MAX_ACTIVE`` may be inside a query, so the rest stay free
-    for ``/api/health`` and job polling.
+    for ``/api/v1/health`` and job polling. Under uvicorn this sizes the
+    thread pool Starlette runs the synchronous handlers in (``asgi.py``).
 ``WAITRESS_CHANNEL_TIMEOUT``
-    How long a connection may be held. ``INGEST_SYNC_WAIT`` must stay below
-    it: a synchronous upload that waits longer than the server will hold the
-    connection answers into a socket the client has already lost.
+    How long a request may be held. ``INGEST_SYNC_WAIT`` must stay below it:
+    an upload that waits longer than the server will hold the connection
+    answers into a socket the client has already lost.
+
+**The four names are the deployment's, not this module's.** Flask and waitress
+are gone -- ``asgi.py`` is uvicorn -- and these variables are still spelled the
+way every ``.env``, compose file and container image already spells them.
+Renaming a setting is a change to somebody's deployment, and a silent one: an
+old name simply stops being read and the default takes over. It is left to
+whoever decides to make it, with a migration note, rather than folded into a
+cleanup.
 
 What it does not own
 --------------------
@@ -71,9 +78,8 @@ def _text(env: Mapping[str, str], name: str, default: str) -> str:
 class RuntimeLimits:
     """The production server's own configuration. One default each, here."""
 
-    #: Every interface, unlike the development server in ``app.py``: a
-    #: container's port mapping only reaches a process listening on all of
-    #: them, and this server has no debugger to expose.
+    #: Every interface: a container's port mapping only reaches a process
+    #: listening on all of them.
     host: str = "0.0.0.0"
     port: int = 5005
     #: One thread serves one request. Eight is enough for a console with a
@@ -85,6 +91,8 @@ class RuntimeLimits:
     #: Long enough for an upload that parses a large PDF on the request
     #: thread, short enough that a dead connection is not held forever. It has
     #: to stay above ``INGEST_SYNC_WAIT``; :func:`cross_check` enforces that.
+    #: Declared rather than handed to the server: uvicorn has no equivalent
+    #: knob, so what this bounds today is the relationship below.
     channel_timeout_seconds: int = 900
 
     def validate(self) -> "RuntimeLimits":
@@ -100,20 +108,6 @@ class RuntimeLimits:
         if problems:
             raise ValueError("invalid runtime configuration: " + "; ".join(problems))
         return self
-
-    def server_options(self) -> dict[str, Any]:
-        """Exactly what ``waitress.create_server`` is given."""
-        return {
-            "host": self.host,
-            "port": self.port,
-            "threads": self.request_threads,
-            "channel_timeout": self.channel_timeout_seconds,
-            # The application is behind nothing that would set them; trusting
-            # a client's X-Forwarded-* headers would let a browser choose its
-            # own apparent address. A reverse-proxy deployment turns this on
-            # deliberately, with the proxy named.
-            "clear_untrusted_proxy_headers": True,
-        }
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -13,9 +13,8 @@ one (`tools/migrate_chroma_to_pgvector.py`, which imports it lazily and tells
 you to install it).
 
 ```
-                 FastAPI /api/v1        legacy Flask console
-                        \                    /
-                         \                  /
+                        FastAPI /api/v1
+                                 |
                       application / domain
                                  |
                             PostgreSQL
@@ -48,7 +47,7 @@ cp env.example .env                                  # DATABASE_URL is in there
 alembic upgrade head
 
 # 4. run
-python -m wsgi
+python -m asgi
 ```
 
 Step 3 is not optional and is not done for you. Nothing in the application
@@ -58,10 +57,9 @@ is what makes the schema reviewable, repeatable and reversible.
 `tests/storage/test_migrations.py` fails if any source file grows a
 `create_all`.
 
-With `DATABASE_URL` unset or unreachable, `python -m wsgi`, `python app.py` and
-`python -m asgi` refuse to start and say which host they could not reach. There
-is no degraded mode that serves without a database: every screen begins by
-listing knowledge bases.
+With `DATABASE_URL` unset or unreachable, `python -m asgi` refuses to start and
+says which host it could not reach. There is no degraded mode that serves
+without a database: every screen begins by listing knowledge bases.
 
 ---
 
@@ -358,7 +356,7 @@ database, which means they hold for a second process too:
 that start together.
 
 No distributed lock was introduced and none is needed. The runtime is still one
-process with one Viewer packaging worker (`wsgi.py` says why), and the
+process with one Viewer packaging worker (`asgi.py` says why), and the
 correctness above no longer depends on that being true.
 
 ---
@@ -386,9 +384,8 @@ machine with no PostgreSQL at all.
 
 ## Health
 
-`/api/v1/health` and `/api/health` are unchanged: same fields, same status
-codes, same meaning. The database shows up in them the way every other
-dependency does — through `state` and `reasons`. A database that cannot be
+`/api/v1/health` is unchanged: same fields, same status codes, same meaning.
+The database shows up in it the way every other dependency does — through `state` and `reasons`. A database that cannot be
 reached makes `services.kb_manager.list()` raise, which is already reported as
 `degraded` with a redacted reason.
 

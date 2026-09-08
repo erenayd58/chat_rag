@@ -27,7 +27,10 @@ import hashlib
 import numpy as np
 import pytest
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
 from amsc.document.models import EmbeddingBatch, SemanticEmbeddingProvenance
 from components.viewer import analysis
 from components.viewer import methods as M
@@ -107,10 +110,13 @@ def workspace(tmp_path, monkeypatch):
     analysis.release_boundary_model()
 
 
+V1 = http.v1.PREFIX
+
+
 @pytest.fixture
 def client():
-    flask_app.app.config.update(TESTING=True)
-    with flask_app.app.test_client() as test_client:
+    with TestClient(http.create_app(entrypoint.services),
+                    raise_server_exceptions=False) as test_client:
         yield test_client
 
 
@@ -368,30 +374,32 @@ def test_an_upload_that_selected_nothing_ready_has_no_payload_to_open(shared, mo
 
 
 def test_the_payload_route_serves_one_uploads_methods(client, shared):
-    body = client.get("/api/demo/viewer-analysis/beta/payload").get_json()
-    assert body["success"] is True
+    body = client.get(f"{V1}/documents/beta/analysis/payload").json()
     assert sorted(body["payload"]["arms"]) == ["hybrid", "structure-only"]
+    assert body["ready_methods"] == ["structure-only", "hybrid"]
 
-    other = client.get("/api/demo/viewer-analysis/alpha/payload").get_json()
+    other = client.get(f"{V1}/documents/alpha/analysis/payload").json()
     assert sorted(other["payload"]["arms"]) == ["agentic", "markdown", "structure-only"]
 
 
 def test_the_chunks_route_serves_one_uploads_methods(client, shared):
-    arms = client.get("/api/demo/viewer-analysis/beta/chunks").get_json()["arms"]
-    assert sorted(arms) == ["hybrid", "structure-only"]
-    assert all(arm["rows"] for arm in arms.values())
+    for method in ("structure-only", "hybrid"):
+        arm = client.get(f"{V1}/documents/beta/analysis/methods/{method}/chunks?limit=500")
+        assert arm.status_code == 200, arm.text
+        assert arm.json()["items"], method
 
     # Naming a method this upload did not select is not a way round it, even
     # though the content has it packaged.
-    response = client.get("/api/demo/viewer-analysis/beta/chunks?method=agentic")
-    assert response.status_code == 404
-    assert response.get_json()["success"] is False
-    assert client.get("/api/demo/viewer-analysis/alpha/chunks?method=agentic").status_code == 200
+    refused = client.get(f"{V1}/documents/beta/analysis/methods/agentic/chunks")
+    assert refused.status_code == 404
+    assert refused.json()["error"]["type"] == "not_found"
+    assert client.get(
+        f"{V1}/documents/alpha/analysis/methods/agentic/chunks").status_code == 200
 
 
-def test_the_workspace_reports_both_levels_for_each_upload(client, shared, monkeypatch):
-    """The Viewer lists a document's methods from this snapshot, so it carries
-    the upload's own set -- and names the content's separately."""
+def test_the_document_list_reports_both_levels_for_each_upload(client, shared, monkeypatch):
+    """A screen lists a document's methods from its ``analysis`` block, so that
+    block carries the upload's own set -- and names the content's separately."""
     rows = [
         {"doc_id": "alpha", "file_name": "a.pdf", "kb_id": "kb1", "metadata": {}},
         {"doc_id": "beta", "file_name": "b.pdf", "kb_id": "kb1", "metadata": {}},
@@ -401,24 +409,16 @@ def test_the_workspace_reports_both_levels_for_each_upload(client, shared, monke
         def get_all_documents(self, kb_id=None):
             return rows
 
-    monkeypatch.setattr(flask_app.services, "documents", _Tracker)
-    monkeypatch.setattr(flask_app.services.kb_manager, "list",
-                        lambda: [{"kb_id": "kb1", "name": "ortak-kb",
-                                  "chunker": {"type": "structure_first"}}])
+    monkeypatch.setattr(entrypoint.services, "documents", _Tracker)
 
-    documents = {
-        d["doc_id"]: d
-        for d in client.get("/api/demo/workspace").get_json()["knowledge_bases"][0]["documents"]
-    }
+    documents = {d["id"]: d["analysis"]
+                 for d in client.get(f"{V1}/documents").json()["items"]}
     content = ["markdown", "structure-only", "agentic", "hybrid"]
-    assert documents["beta"]["viewer"]["ready_methods"] == ["structure-only", "hybrid"]
-    assert documents["beta"]["viewer"]["requested"] == ["structure-only", "hybrid"]
-    assert documents["alpha"]["viewer"]["ready_methods"] == [
-        "markdown", "structure-only", "agentic"
-    ]
+    assert documents["beta"]["ready_methods"] == ["structure-only", "hybrid"]
+    assert documents["beta"]["selected_methods"] == ["structure-only", "hybrid"]
+    assert documents["alpha"]["ready_methods"] == ["markdown", "structure-only", "agentic"]
     for doc_id in ("alpha", "beta"):
-        assert documents[doc_id]["viewer"]["content_ready_methods"] == content
-        assert documents[doc_id]["viewer"]["content_requested"] == content
-        assert documents[doc_id]["viewer"]["analysis_key"] == shared
-    assert documents["beta"]["viewer"]["shared_with"] == ["alpha"]
-    assert set(documents["beta"]["viewer"]["methods"]) == {"hybrid", "structure-only"}
+        assert documents[doc_id]["content"]["ready_methods"] == content
+        assert documents[doc_id]["content"]["requested_methods"] == content
+        assert documents[doc_id]["content_id"] == shared
+    assert documents["beta"]["content"]["shared_with_document_ids"] == ["alpha", "beta"]

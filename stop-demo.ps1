@@ -5,7 +5,7 @@
 .DESCRIPTION
     Reads .demo\state.json, and for every server the launcher itself started
     checks that the recorded process id still belongs to that server (its
-    command line names app.py or next) before stopping it. A server that was
+    command line names asgi or next) before stopping it. A server that was
     already running when the launcher ran is left alone unless -All is given,
     and no unrelated process is ever touched.
 
@@ -52,7 +52,7 @@ function Warn { param($Name, $Detail) Write-Line -Mark '!' -Name $Name -Detail $
 # What a process's command line has to name before this script will stop it.
 # The console's listener is the `next` worker npm.cmd spawned, so the pattern
 # is the framework's own module rather than the npm script that started it.
-$Signatures = @{ product = 'app.py'; console = 'next' }
+$Signatures = @{ product = 'asgi'; console = 'next' }
 
 function Get-CommandLine {
     param([int]$ProcessId)
@@ -63,7 +63,7 @@ function Get-CommandLine {
 
 function Stop-Tree {
     param([int]$ProcessId)
-    # Children first (a Flask reloader child, should one ever exist), then the server.
+    # Children first (a launcher stub's child, should one ever exist), then the server.
     $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue
     foreach ($child in $children) { Stop-Tree ([int]$child.ProcessId) }
     Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue

@@ -12,7 +12,7 @@ The system is two repositories:
 | repo | what it is |
 |---|---|
 | **`chat_rag`** (this one) | the product — the `/api/v1` contract and the application under it, the Next.js console in [`frontend/`](frontend/README.md), ingest jobs, retrieval, the answer chain, resource limits, observability, configuration |
-| **`chunk`** (`amsc-poc`) | the chunking library, installed from a pinned commit — chunking methods, Deep Analysis, the canonical PDF adapter, the Viewer page builder and server, all research and benchmark code |
+| **`chunk`** (`amsc-poc`) | the chunking library, installed from a pinned commit — chunking methods, Deep Analysis, the canonical PDF adapter, the shared payload reader and the Viewer's retrieval engine, all research and benchmark code |
 
 `chunk` is expected beside this checkout (`../chunk`).
 [docs/architecture.md](docs/architecture.md) is the map: what each repo owns,
@@ -32,7 +32,7 @@ Start here, then follow the question you have:
 | **[docs/database.md](docs/database.md)** | Where the records live, how to create the schema, what is still a file |
 | **[docs/testing.md](docs/testing.md)** | What to run before calling a change done, and the order for cross-repo changes |
 | **[docs/limitations.md](docs/limitations.md)** | What this system does not do, and why |
-| **[docs/legacy-removal.md](docs/legacy-removal.md)** | Which Flask-era endpoint each `/api/v1` route replaces, and the order they come out in |
+| **[docs/legacy-removal.md](docs/legacy-removal.md)** | Which Flask-era endpoint each `/api/v1` route replaced, what was kept and why |
 | **[../chunk/docs/adding-a-chunker.md](../chunk/docs/adding-a-chunker.md)** | How to add a chunking method, end to end |
 | **[../chunk/docs/viewer-architecture.md](../chunk/docs/viewer-architecture.md)** | How the Viewer works across both repos, and how to debug a package |
 | **[../chunk/docs/library-surface.md](../chunk/docs/library-surface.md)** | What is product, research and legacy in the library, and what the console may import |
@@ -61,7 +61,7 @@ cp env.example .env                       # PowerShell: Copy-Item env.example .e
 python tools/verify_reproducibility.py --local
 
 # 4. start the backend and the console
-.\start-demo.ps1                          # or: python app.py + npm run dev --prefix frontend
+.\start-demo.ps1                          # or: python -m asgi + npm run dev --prefix frontend
 ```
 
 Then, in the browser and the terminal:
@@ -76,9 +76,10 @@ Then, in the browser and the terminal:
    select two methods, and step through the boundaries where they disagree.
    Then ask the same question of both on **Sorgu** and compare what each
    chunking found.
-8. **look at the instruments** — `GET /api/health` (three fields: alive,
-   ready, what an operator should do) and `GET /api/ops/metrics` (counters,
-   stage latency, error categories, budgets, caches).
+8. **look at the instruments** — `GET /api/v1/health` (three fields: what
+   state the service is in, whether it may be sent traffic, and why) and
+   `GET /api/ops/metrics` (counters, stage latency, error categories, budgets,
+   caches).
    [docs/operations.md](docs/operations.md) reads them for you.
 9. **run the tests** — `python -m pytest -q` here, `py -3.11 -m pytest` in
    `../chunk`. [docs/testing.md](docs/testing.md).
@@ -137,12 +138,15 @@ all the console still runs — see the table above.
 ### Run it by hand
 
 ```bash
-python app.py        # development: Werkzeug, loopback only, debugger on
-python -m wsgi       # production: waitress, all interfaces, no debugger
+python -m asgi                  # uvicorn, one process, every interface
+npm run dev --prefix frontend   # the console, on http://localhost:3000
 ```
 
-Both serve <http://127.0.0.1:5005>. Which one is running is not a detail —
-[docs/operations.md](docs/operations.md) says why.
+The backend serves <http://127.0.0.1:5005>. There is one entrypoint: `python
+app.py` and `python -m wsgi` were the Flask console's development and
+production servers, and both went with it
+([docs/legacy-removal.md](docs/legacy-removal.md)).
+[docs/operations.md](docs/operations.md) says what it runs under.
 
 ### Common startup failures
 
@@ -152,7 +156,7 @@ Both serve <http://127.0.0.1:5005>. Which one is running is not a detail —
 | `ModuleNotFoundError: amsc` | `pip install -r requirements.txt` did not run, or the pinned commit is unreachable. `python tools/import_smoke.py` says which `amsc` answered |
 | the console will not start | it is a Next.js application and needs Node.js 18+ on `PATH`. The launcher runs `npm install` once when `frontend/node_modules` is missing; by hand it is `npm install --prefix frontend` |
 | a port is already in use | `start-demo.ps1` recognises a server it already started and refuses a port held by something else. `-ProductPort` / `-ConsolePort` move them |
-| the first upload seems to hang | it does not — layout parsing is minutes per document on CPU, and the job is running. Poll `GET /api/ingest/jobs/<job_id>` |
+| the first upload seems to hang | it does not — layout parsing is minutes per document on CPU, and the job is running. Poll `GET /api/v1/ingest-jobs/<job_id>` |
 | answers fail but search works | no provider key, or an unreachable gateway. The answer model carries the reason; retrieval never depended on it |
 
 ---
@@ -336,15 +340,15 @@ script starts what there is to start.
 | | Address | Server |
 |---|---|---|
 | Console (Next.js) | http://localhost:3000 | `npm run dev` in [`frontend/`](frontend/README.md) — every screen, including `/viewer` |
-| Backend (chat_rag) | http://127.0.0.1:5005 | `venv\Scripts\python.exe app.py` (the development server; `FLASK_PORT`, reloader off) |
+| Backend (chat_rag) | http://127.0.0.1:5005 | `venv\Scripts\python.exe -m asgi` (uvicorn, one process; `FLASK_HOST` / `FLASK_PORT`) |
 
-**There is no third process.** The Viewer used to be one: a server in the
-`chunk` repository on `:8765` that served its own HTML page and relayed this
-console over `/api/demo/*`. Step 12 moved it into the console as five screens
-over `/api/v1`, so nothing starts it, nothing links to it, and a demo needs
-only what is in the table. `amsc.viewer.server` still exists in `chunk` as a
-way to serve *that* repository's frozen benchmark corpus, which this product
-has no copy of; it is not part of running the product.
+**There is no third process, and no second backend.** The Viewer used to be
+one: a server in the `chunk` repository on `:8765` that served its own HTML
+page and relayed this console over `/api/demo/*`. Step 12 moved it into the
+console as five screens over `/api/v1`, and Step 13 removed the relay it used,
+the Flask console beside it and the server itself
+([docs/legacy-removal.md](docs/legacy-removal.md)). A demo is the two rows in
+the table.
 
 The browser only ever talks to the console's own origin: `next.config.mjs`
 rewrites `/api/v1/*` to the backend, so there is no CORS grant and exactly one
@@ -438,12 +442,6 @@ have no gold query set, so no Hit@k or MRR is computed for them — the Viewer
 says so rather than inventing numbers — and they never enter the frozen
 benchmark tables or the cross-document contract table.
 
-The Flask-era screens still served beside the console keep their old
-**Tools → Agentic Chunking Viewer** link, pointing at `VIEWER_URL` (default
-`http://127.0.0.1:8765/`; empty hides it). That link and the screens holding
-it go together in Step 13; nothing on the Next.js console uses it, and the
-Viewer it points at is not required for anything.
-
 Presentation order: **1.** Knowledge Bases — a base and its documents;
 **2.** upload a document with **Deep Analysis** and a second method;
 **3.** Sohbet — an answer with sources; **4.** Viewer → **İncele** (the
@@ -490,8 +488,8 @@ parser output, chunk browser) are under `/lab`.
 docker compose down
 ```
 
-The container serves on waitress and shuts down on SIGTERM, draining in-flight
-requests; teardown takes about two seconds, and the compose file allows fifteen
+The container serves on uvicorn and shuts down on SIGTERM, draining in-flight
+requests and the ingest jobs already running; teardown takes about two seconds, and the compose file allows fifteen
 (`stop_grace_period`). A bare `docker stop` uses the daemon's own timeout, which
 on some installations is only one second -- short enough to kill the process
 mid-shutdown and report exit 137. `docker stop -t 10` (Docker's documented
@@ -556,9 +554,8 @@ Reports and runs land in `./.docker-data/artifacts/` on the host.
 
 ### Health
 
-`GET /api/health` answers from the Flask app alone -- it loads no model, parses
-nothing and does not touch the vector store. That is what the container's
-healthcheck calls.
+`GET /api/v1/health` loads no model, parses nothing and does not touch the
+vector store. That is what the container's healthcheck calls.
 
 ```bash
 docker compose ps          # STATUS shows (healthy)
@@ -573,9 +570,15 @@ knowledge bases, documents and their chunking analyses, ingest jobs, questions
 and searches, and enough discovery to know what this deployment can do. It is
 designed to keep working while the implementation under it is replaced —
 PostgreSQL, pgvector, a Next.js front end — so it exposes no file path, no
-store provider and no state-file shape. The first of those replacements has
-already happened underneath it: these routes are **FastAPI**, the console's
-are still Flask, and both run in one process over one application.
+store provider and no state-file shape. All three of those replacements have
+happened underneath it without the wire moving, and the Flask-era surface it
+was written beside is gone
+([docs/legacy-removal.md](docs/legacy-removal.md)).
+
+`POST /api/v1/queries` is the one that can refuse you under load, with **503**
+and a `Retry-After`, or **504** past a deadline; an upload is never refused for
+being slow, because it is always a job.
+[docs/operations.md](docs/operations.md) says what each refusal means.
 
 **[docs/api-v1.md](docs/api-v1.md) is the contract**: every endpoint, the
 request and response shapes, the refusal taxonomy, and what was deliberately
@@ -609,32 +612,21 @@ added to the library's registry appears in the picker without a line changing.
 refusal `type` — not a status code — is what its screens branch on.
 [frontend/README.md](frontend/README.md) is the rest.
 
-## The console API
+## The operator surface
 
-The Flask-era surface. The screens it renders speak it, the Viewer's relay
-speaks it, and it stays until they do not — the Next.js console above speaks
-`/api/v1`, and so should any new client. The screens are `/` (knowledge
-bases), `/kb/<kb_id>`, `/chat` and `/lab`. Everything they do is an HTTP call you can make yourself:
+One route, off the contract on purpose: `GET /api/ops/metrics`. Counters,
+stage and job latency over a bounded window, error categories, the state of
+every cache and the effective non-secret configuration — what an operator
+reads once `GET /api/v1/health` has said to look closer. Its *contents* are
+free to change with the internals they report on, which is why it is not
+versioned and why no client should build against it.
+[docs/operations.md](docs/operations.md) reads it for you.
 
-| group | endpoints |
-|---|---|
-| knowledge bases | `GET|POST /api/kb`, `GET|PUT|DELETE /api/kb/<kb_id>`, `GET /api/kb/<kb_id>/embedding-index`, `POST /api/kb/<kb_id>/reindex-embeddings` |
-| documents | `POST /api/documents/upload`, `GET /api/documents`, `DELETE /api/documents/<doc_id>`, `GET /api/documents/<doc_id>/chunks`, `GET /api/documents/<doc_id>/canonical-units` |
-| ingest jobs | `GET /api/ingest/jobs`, `GET|DELETE /api/ingest/jobs/<job_id>` |
-| asking | `POST /api/query` |
-| the Lab | `POST /api/chunks/search-vector`, `POST /api/chunks/search-bm25`, `POST /api/experiment/search_chunks` |
-| chunks | `GET /api/chunks`, `GET|PUT|DELETE /api/chunks/<chunk_id>` |
-| gold set | `GET|POST /api/goldset`, `DELETE /api/goldset/<entry_id>` |
-| the Viewer bridge | `GET /api/demo/viewer`, `GET /api/demo/workspace`, `GET /api/demo/methods`, `GET|POST /api/demo/viewer-analysis/<doc_id>`, `POST /api/demo/viewer-analysis/<doc_id>/methods`, `GET /api/demo/viewer-analysis/<doc_id>/payload`, `GET /api/demo/viewer-analysis/<doc_id>/chunks` |
-| instruments | `GET /api/health`, `GET /api/ops/metrics`, `GET /api/stats`, `GET /api/models`, `GET /api/retrieval/capabilities` |
-
-`POST /api/documents/upload` and `POST /api/query` are the two that can refuse
-you under load, with **503** and a `Retry-After`, or **504** past a deadline.
-[docs/operations.md](docs/operations.md) says what each refusal means.
-
-Every row above is classified in
-[docs/legacy-removal.md](docs/legacy-removal.md): what on `/api/v1` replaces
-it, who still calls it, and which step removes it.
+There used to be a whole surface here: the Flask-era **console API**, the one
+the rendered screens and the Viewer's relay spoke. It is gone, along with the
+screens, the templates, the static JavaScript and the second entrypoint;
+[docs/legacy-removal.md](docs/legacy-removal.md) is the record of what each of
+its endpoints became.
 
 ## The offline CLI
 

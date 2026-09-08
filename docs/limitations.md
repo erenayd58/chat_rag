@@ -10,17 +10,18 @@ Nothing already fixed is listed. This is not a changelog.
 
 ## Runtime shape
 
-**One process, by design.** `python -m wsgi` runs a single waitress process
-with a bounded thread pool (`WAITRESS_THREADS`, 8) plus one background thread
-that packages documents for the Viewer. Three things make a second worker
-process wrong rather than merely unnecessary: the Viewer packaging queue lives
-in memory, the per-knowledge-base pipeline cache is a module global, and the
-vector store is an embedded database rather than a database server. A second
-process would duplicate all three and they would disagree.
+**One process, by design.** `python -m asgi` runs a single uvicorn process
+with a bounded worker-thread pool (`WAITRESS_THREADS`, 8) plus one background
+thread that packages documents for the Viewer. Three things make a second
+worker process wrong rather than merely unnecessary: the Viewer packaging queue
+lives in memory, the per-knowledge-base pipeline cache is a module global, and
+the provider budgets are semaphores that only mean what they say inside one
+address space. A second process would duplicate all three and they would
+disagree.
 
 *To scale out* you would need an external queue and a shared pipeline
 registry. That is a different deployment shape, not a configuration change;
-`wsgi.py` says the same thing beside the code. The vector store is no longer
+`asgi.py` says the same thing beside the code. The vector store is no longer
 one of the obstacles — it is the database, and it is already a service.
 
 **Horizontal scaling is not a container setting.** Running two containers
@@ -170,8 +171,9 @@ process.
 
 **No authentication, anywhere.** There is no login, no per-user data and no
 access boundary on any endpoint. `/api/ops/metrics` has none for a specific
-reason — everything it serves is aggregate and strictly less than `/api/kb`
-already returns to the same caller — but the honest summary is that this
+reason — everything it serves is aggregate and strictly less than
+`/api/v1/knowledge-bases` already returns to the same caller — but the
+honest summary is that this
 application assumes a trusted network. Putting it on an untrusted one is a
 deployment decision that needs a reverse proxy in front.
 

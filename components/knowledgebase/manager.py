@@ -162,7 +162,7 @@ class KnowledgeBaseManager:
         return {"kb_id": kb_id, **record}
 
     def create_from_payload(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a KB from the exact JSON contract accepted by POST /api/kb."""
+        """Create a KB from a payload of the shape the API accepts."""
         if not isinstance(data, dict):
             raise ValueError("Knowledge-base payload must be an object")
         return self.create(

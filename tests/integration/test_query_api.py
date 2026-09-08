@@ -14,7 +14,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
+
+V1 = http.v1.PREFIX
 from components.ingest import limits as L
 from components.observability import telemetry as T
 from components.query import limits as Q
@@ -64,7 +69,7 @@ def budget(monkeypatch):
 @pytest.fixture
 def admission(monkeypatch):
     fresh = Q.QueryAdmission(2)
-    monkeypatch.setattr(flask_app.services, "query_admission", fresh)
+    monkeypatch.setattr(entrypoint.services, "query_admission", fresh)
     return fresh
 
 
@@ -74,20 +79,30 @@ def app(tmp_path, monkeypatch, registry):
 
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
-    flask_app.app.config.update(TESTING=True)
+    monkeypatch.setattr(entrypoint.services, "kb_manager", manager)
     kb = manager.create("query-kb", chunker={"type": "structure_first"})
     return SimpleNamespace(kb_id=kb["kb_id"])
 
 
+def api():
+    """One client over the process's own application.
+
+    Built per use rather than as a fixture because several tests here drive it
+    from more than one thread at once, which is the condition being tested.
+    """
+    return TestClient(http.create_app(entrypoint.services),
+                      raise_server_exceptions=False)
+
+
 def use_pipelines(monkeypatch, factory):
     """Build one stub per session through the cache, as production does."""
-    flask_app.services.pipeline_cache.clear()
-    monkeypatch.setattr(flask_app.services.pipeline_cache, "_build", lambda session, kb: factory())
+    entrypoint.services.pipeline_cache.clear()
+    monkeypatch.setattr(entrypoint.services.pipeline_cache, "_build", lambda session, kb: factory())
 
 
 def ask(client, kb_id, question="soru"):
-    return client.post("/api/query", json={"question": question, "kb_id": kb_id})
+    return client.post(f"{V1}/queries",
+                       json={"question": question, "knowledge_base_id": kb_id})
 
 
 # -------------------------------------------------------------- success
@@ -95,22 +110,25 @@ def test_a_successful_answer_keeps_its_shape_and_gains_timing(app, monkeypatch, 
     model = GatedAnswerModel()
     model.release()
     use_pipelines(monkeypatch, lambda: StubPipeline(model, budget))
-    with flask_app.app.test_client() as client:
+    with api() as client:
         response = ask(client, app.kb_id)
-    assert response.status_code == 200
-    body = response.get_json()
-    assert body["success"] is True and body["answer"] == model.reply
-    assert body["sources"] == [{"label": "S1"}]
-    assert body["metadata"]["retrieval_method"] == "hybrid_rrf", "existing metadata untouched"
-    timing = body["metadata"]["query"]
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["answer"] == model.reply
+    assert [c["label"] for c in body["citations"]] == ["S1"]
+    assert body["knowledge_base_id"] == app.kb_id
+    assert body["diagnostics"]["retrieval_method"] == "hybrid_rrf", "diagnostics untouched"
+    timing = body["timing"]
     assert set(timing["stages"]) == {"retrieve", "context", "answer"}
-    assert timing["provider"]["calls"] == 1 and timing["query_id"]
+    assert timing["query_id"]
+    assert body["diagnostics"]["query"]["provider"]["calls"] == 1
     assert admission.active == 0 and budget.snapshot()["inflight"] == 0
 
 
 def test_an_empty_question_is_still_a_400_and_takes_no_slot(app, admission):
-    with flask_app.app.test_client() as client:
-        response = client.post("/api/query", json={"question": "  ", "kb_id": app.kb_id})
+    with api() as client:
+        response = client.post(f"{V1}/queries",
+                               json={"question": "  ", "knowledge_base_id": app.kb_id})
     assert response.status_code == 400
     assert admission.snapshot()["accepted_total"] == 0
 
@@ -124,8 +142,8 @@ def test_when_every_query_slot_is_taken_the_next_question_is_refused_at_once(
     outcomes = []
 
     def blocked():
-        with flask_app.app.test_client() as client:
-            outcomes.append(ask(client, app.kb_id).get_json())
+        with api() as client:
+            outcomes.append(ask(client, app.kb_id).json())
 
     threads = [threading.Thread(target=blocked) for _ in range(2)]
     for thread in threads:
@@ -133,24 +151,22 @@ def test_when_every_query_slot_is_taken_the_next_question_is_refused_at_once(
     assert model.full.wait(10), "two queries never got inside the model"
     assert admission.saturated
 
-    with flask_app.app.test_client() as client:
+    with api() as client:
         refused = ask(client, app.kb_id)
-        health = client.get("/api/health").get_json()
-        metrics = client.get("/api/ops/metrics").get_json()
+        health = client.get(f"{V1}/health").json()
+        metrics = client.get("/api/ops/metrics").json()
     assert refused.status_code == 503
-    body = refused.get_json()
-    assert body == {
-        "success": False, "overloaded": True, "reason": "admission",
-        "retry_after_seconds": body["retry_after_seconds"], "error": body["error"],
-    }
-    assert body["retry_after_seconds"] >= Q.RETRY_AFTER_MIN
-    assert refused.headers["Retry-After"] == str(int(body["retry_after_seconds"]))
-    assert "query slot" in body["error"]
+    error = refused.json()["error"]
+    assert error["type"] == "overloaded"
+    assert error["details"]["reason"] == "admission"
+    assert error["details"]["retry_after_seconds"] >= Q.RETRY_AFTER_MIN
+    assert refused.headers["Retry-After"] == str(int(error["details"]["retry_after_seconds"]))
+    assert "query slot" in error["message"]
 
     # Health answers while both slots are busy, and says so.
     assert health["state"] == "overloaded" and health["ready"] is True
     assert "every query slot is in use" in health["reasons"][0]
-    assert health["query"] == {"active": 2, "max_active": 2, "answer_inflight": 2, "answer_limit": 2}
+    assert health["capacity"]["query"] == {"active": 2, "max_active": 2}
     assert metrics["query"]["admission"]["rejected_total"] == 1
     assert metrics["metrics"]["queries"]["active"] == 2
     assert metrics["metrics"]["counters"]["query.rejected"] == 1
@@ -159,10 +175,10 @@ def test_when_every_query_slot_is_taken_the_next_question_is_refused_at_once(
     model.release()
     for thread in threads:
         thread.join(20)
-    assert all(o["success"] for o in outcomes)
+    assert all(o.get("answer") for o in outcomes), outcomes
     assert admission.active == 0 and admission.peak == 2
-    with flask_app.app.test_client() as client:
-        assert client.get("/api/health").get_json()["state"] == "ok"
+    with api() as client:
+        assert client.get(f"{V1}/health").json()["state"] == "ok"
         # And the refused client, trying again, is served.
         assert ask(client, app.kb_id).status_code == 200
 
@@ -179,17 +195,18 @@ def test_when_the_answer_model_is_at_capacity_the_query_is_refused_not_hung(
     outcome = []
 
     def blocked():
-        with flask_app.app.test_client() as client:
+        with api() as client:
             outcome.append(ask(client, app.kb_id).status_code)
 
     thread = threading.Thread(target=blocked)
     thread.start()
     assert holder.full.wait(10)
-    with flask_app.app.test_client() as client:
+    with api() as client:
         refused = ask(client, app.kb_id)
     assert refused.status_code == 503
-    body = refused.get_json()
-    assert body["overloaded"] is True and body["reason"] == "answer_capacity"
+    error = refused.json()["error"]
+    assert error["type"] == "overloaded"
+    assert error["details"]["reason"] == "answer_capacity"
     assert "Retry-After" in refused.headers
     holder.release()
     thread.join(20)
@@ -200,17 +217,18 @@ def test_when_the_answer_model_is_at_capacity_the_query_is_refused_not_hung(
 
 # -------------------------------------------------------------- timeout
 def test_a_query_past_its_deadline_is_a_504(app, monkeypatch, budget, admission, registry):
-    monkeypatch.setattr(flask_app.settings, "query_timeout", 0.0)
+    monkeypatch.setattr(entrypoint.services.settings, "query_timeout", 0.0)
     monkeypatch.setattr(Q.QueryGuard, "for_timeout",
                         classmethod(lambda cls, seconds, clock=None: cls(deadline=-1.0)))
     model = GatedAnswerModel()
     model.release()
     use_pipelines(monkeypatch, lambda: StubPipeline(model, budget))
-    with flask_app.app.test_client() as client:
+    with api() as client:
         response = ask(client, app.kb_id)
     assert response.status_code == 504
-    body = response.get_json()
-    assert body["success"] is False and body["timed_out"] is True
+    error = response.json()["error"]
+    assert error["type"] == "timeout"
+    assert error["details"]["timeout_seconds"] is not None
     assert model.calls == 0, "out of time: no call was made"
     assert admission.active == 0 and budget.snapshot()["inflight"] == 0
     assert registry.snapshot()["queries"]["outcomes"] == {"timed_out": 1}
@@ -219,11 +237,11 @@ def test_a_query_past_its_deadline_is_a_504(app, monkeypatch, budget, admission,
 # -------------------------------------------------------------- failure
 def test_a_provider_failure_releases_everything_and_is_still_a_503(app, monkeypatch, budget, admission):
     use_pipelines(monkeypatch, lambda: StubPipeline(FailingAnswerModel(), budget))
-    with flask_app.app.test_client() as client:
+    with api() as client:
         for _ in range(3):
             response = ask(client, app.kb_id)
             assert response.status_code == 503
-            assert response.get_json()["generation_unavailable"] is True
+            assert response.json()["error"]["details"]["generation_unavailable"] is True
     assert admission.active == 0 and budget.snapshot()["inflight"] == 0
     assert admission.snapshot()["accepted_total"] == 3
 
@@ -231,7 +249,7 @@ def test_a_provider_failure_releases_everything_and_is_still_a_503(app, monkeypa
 def test_a_retrieval_failure_is_a_500_that_releases_capacity(app, monkeypatch, budget, admission, registry):
     model = GatedAnswerModel()
     use_pipelines(monkeypatch, lambda: StubPipeline(model, budget, fail_retrieval=RuntimeError("store broke")))
-    with flask_app.app.test_client() as client:
+    with api() as client:
         response = ask(client, app.kb_id)
     assert response.status_code == 500
     assert admission.active == 0
@@ -247,22 +265,22 @@ def test_the_pipeline_is_leased_for_the_length_of_the_query(app, monkeypatch, bu
     outcome = []
 
     def blocked():
-        with flask_app.app.test_client() as client:
+        with api() as client:
             outcome.append(ask(client, app.kb_id).status_code)
 
     thread = threading.Thread(target=blocked)
     thread.start()
     assert model.full.wait(10)
-    assert flask_app.services.pipeline_cache.snapshot()["leased"] == 1
+    assert entrypoint.services.pipeline_cache.snapshot()["leased"] == 1
     model.release()
     thread.join(20)
     assert outcome == [200]
-    assert flask_app.services.pipeline_cache.snapshot()["leased"] == 0
+    assert entrypoint.services.pipeline_cache.snapshot()["leased"] == 0
 
 
 def test_the_metrics_endpoint_describes_the_query_limits(app):
-    with flask_app.app.test_client() as client:
-        body = client.get("/api/ops/metrics").get_json()
+    with api() as client:
+        body = client.get("/api/ops/metrics").json()
     query = body["query"]
     assert set(query) == {"admission", "answer_budget", "limits", "deadline_semantics"}
     assert query["limits"]["deadline_semantics"] == "cooperative-with-clamped-calls"

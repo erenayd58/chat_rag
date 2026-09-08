@@ -1,33 +1,40 @@
-"""The ASGI entrypoint: `/api/v1`, served by FastAPI, with no Flask under it.
+"""The entrypoint: `/api/v1`, served by FastAPI, on uvicorn.
 
-    python -m asgi                      # uvicorn, one process
+    python -m asgi                      # one process
     uvicorn asgi:application            # or any ASGI host
 
-This is where the product is going. ``python -m wsgi`` is still what a
-deployment runs today, because the console's screens, its JavaScript and the
-Viewer's relay all speak the Flask-era surface and that surface is not gone
-yet; that process serves **both**, with this same FastAPI application mounted
-inside it (``interfaces/http/coexistence.py``). What this module adds is the
-other half of the same application, standing on its own: the moment nothing
-needs the legacy surface, this file is the entrypoint and the coexistence
-bridge is deleted, and no route, schema or status code moves.
+This is the whole server. Until Step 13 there were two -- ``python -m wsgi``
+served the Flask console, its screens and the Viewer's relay with this same
+FastAPI application mounted inside it -- and the removal of that surface left
+this file standing where it always said it would (``docs/legacy-removal.md``).
+No route, schema or status code moved on the way: the contract is what it was,
+and the operator's ``/api/ops/metrics`` kept its path and its body.
 
-**One process, not several workers**, for the reason ``wsgi.py`` gives at
-length: the packaging queue is one background thread over an in-memory queue,
-the pipeline cache holds a built pipeline per session and knowledge base, and
-the vector store is an embedded database opened by the process using it. Two
-worker processes would each resume every unfinished document at start-up, and
-the provider budgets would stop meaning what they say.
+**One process, not several workers.** Three pieces of this application keep
+real state in module globals that processes cannot share: the Viewer packager
+is one background thread over an in-memory queue with a per-document lock (two
+processes would each resume every unfinished document at start-up), the
+pipeline cache holds a built pipeline per session and knowledge base, and the
+provider budgets (``components/ingest/limits.py``) are plain semaphores that
+mean what they say only inside one address space. ``docs/limitations.md`` says
+what scaling out would take instead.
 
-**The request threads are the same number.** Every handler on this surface is
-a synchronous ``def`` -- it retrieves, it reads a store, it waits on a
-provider -- so Starlette runs it in a worker thread rather than on the event
-loop. That pool is sized from ``WAITRESS_THREADS``, which is the number
-``QUERY_MAX_ACTIVE`` and ``INGEST_SYNC_WAITERS`` are already rationed against;
-sizing it from anything else would leave those limits describing a thread
-count that no longer exists. The variable keeps its name while both
-entrypoints exist, because renaming a setting mid-migration is how a
-deployment ends up configured twice.
+**The request threads are the number the limits are sized against.** Every
+handler on this surface is a synchronous ``def`` -- it retrieves, it reads a
+store, it waits on a provider -- so Starlette runs it in a worker thread
+rather than on the event loop. That pool is sized from ``WAITRESS_THREADS``,
+the same variable ``QUERY_MAX_ACTIVE`` and ``INGEST_SYNC_WAITERS`` are
+rationed against (``config/runtime.py``); sizing it from anything else would
+leave those limits describing a thread count that no longer exists. The name
+is the deployment's, not this module's: renaming a setting every ``.env`` and
+compose file already carries is a change to somebody's deployment, not a
+cleanup, so it is left to whoever wants to make it deliberately.
+
+A restart is not a clean slate for clients: a job id handed out before it is
+still answerable afterwards, because jobs journal their transitions and
+start-up settles anything in flight against the ingest ledger. Nothing is
+resumed and nothing was committed, which is what makes that settlement
+truthful.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ from __future__ import annotations
 import logging
 import sys
 
+import interfaces.http as http
 from application.services import Services, default_services
 from config.runtime import runtime_from_env
 import storage as database
@@ -80,18 +88,16 @@ def _size_thread_pool() -> None:
 
         threads = runtime_from_env().request_threads
         anyio.to_thread.current_default_thread_limiter().total_tokens = threads
-        logger.info(f"api v1 request threads: {threads}")
+        logger.info(f"request threads: {threads}")
     except Exception as error:  # noqa: BLE001 - never block start-up on this
         logger.warning(f"Could not size the request thread pool: {error}")
 
 
-#: The application, composed once for this process, exactly as ``app.py``
-#: composes it -- ``default_services()`` returns the same container whichever
-#: entrypoint asks for it first.
+#: The application, composed once for this process.
 services = default_services()
 
 #: The ASGI callable, for `uvicorn asgi:application` or any other host.
-application = v1.create_app(services, on_start=_on_start, on_stop=_on_stop)
+application = http.create_app(services, on_start=_on_start, on_stop=_on_stop)
 
 
 def server_options() -> dict:
@@ -112,9 +118,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     print("=" * 80)
-    print(f"ASGI server (uvicorn): http://{options['host']}:{options['port']}")
+    print(f"Server (uvicorn): http://{options['host']}:{options['port']}")
     print(f"Contract: http://{options['host']}:{options['port']}{v1.OPENAPI_PATH}")
-    print("The console's screens are not served here; run `python -m wsgi` for those.")
+    print("The console is a Next.js application; run it from frontend/.")
     print("=" * 80)
     print()
     sys.stdout.flush()

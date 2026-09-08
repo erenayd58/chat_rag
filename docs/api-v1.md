@@ -8,10 +8,10 @@ These routes were Flask and are now **FastAPI**, at the same URLs, with the
 same statuses and the same bodies; the records and then the vectors moved into
 PostgreSQL underneath them, and this page did not change for either.
 
-The Flask-era surface is still served beside it — see *The console API* in
-[../README.md](../README.md). That one is compatibility, this one is the
-contract. Both call the same application layer, over one container in one
-process, so they cannot disagree about behaviour, only about spelling.
+The Flask-era surface that was served beside it is gone
+([legacy-removal.md](legacy-removal.md)). This is the whole HTTP surface bar
+one route: `/api/ops/metrics`, an operator's reading, deliberately not on
+this contract because its body reports internals that are free to change.
 
 ---
 
@@ -318,16 +318,18 @@ outside the bound would make it the way around it.
 
 ## Not here, on purpose
 
-Each of these is served by the legacy surface and was not promoted:
+Each of these was served by the Flask-era surface and was not promoted. That
+surface is gone, so each row is now a thing the product does not offer at all:
 
 | what | why not |
 |---|---|
-| `PUT`/`DELETE` on a single chunk | editing an indexed chunk changes the corpus behind the ingest ledger's back. It is a lab affordance, not a product operation |
-| the gold set | an offline evaluation input, driven by `python -m cli`. It is not part of what a console client does |
-| `/api/demo/viewer`, `/api/demo/workspace` | a probe of a companion dev server, and a snapshot that `GET /api/v1/documents` and `GET /api/v1/knowledge-bases` now answer truthfully, per document and per base |
-| `/api/ops/metrics` | an operator surface whose contents are deliberately free to change. `GET /api/v1/health` is the stable half |
-| a synchronous upload | it exists on the legacy surface because it always did, and it is the reason that adapter needs a semaphore to stop uploads holding every request thread |
+| `PUT`/`DELETE` on a single chunk | editing an indexed chunk changes the corpus behind the ingest ledger's back. It was a lab affordance, not a product operation |
+| the gold set | an offline evaluation input, driven by `python -m cli`. It is not part of what a console client does — and with the Lab gone, nothing writes a runtime entry any more |
+| `/api/stats` | a count of documents, chunks and bytes. `GET /api/v1/documents` carries every number in it per document, and `GET /api/v1/health` the capacity half |
+| a workspace snapshot | one request answering "every base, every document, every analysis state". It is `GET /api/v1/knowledge-bases` and `GET /api/v1/documents`, the latter already carrying each document's `analysis` block |
+| a synchronous upload | it existed because it always had, and it was why that adapter needed a semaphore to stop uploads holding every request thread. An upload is a job here, always |
+| `/api/ops/metrics` | **still served**, at that path, and deliberately not versioned: its contents are free to change with the internals they report on. `GET /api/v1/health` is the stable half |
 
 [legacy-removal.md](legacy-removal.md) is the other half of this table: every
-endpoint the Flask-era surface still serves, what here replaces it, who still
-calls it, and which step removes it.
+endpoint the Flask-era surface served, what here replaced it, and what was
+kept.

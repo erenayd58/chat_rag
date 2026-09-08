@@ -1,10 +1,10 @@
 """`/api/v1/documents` -- an upload, its corpus, and its chunking analysis.
 
 Uploading is **always asynchronous** here: the answer is the job, and the job
-is polled at ``/api/v1/ingest-jobs/{job_id}``. The legacy surface also has a
-synchronous mode, which exists because it always did and which is the reason
-that adapter needs a semaphore to stop a burst of uploads holding every
-request thread. A contract written now does not inherit that.
+is polled at ``/api/v1/ingest-jobs/{job_id}``. The Flask-era surface also had
+a synchronous mode -- an upload that held its request thread until the job
+settled, which is why that path needed a semaphore of its own. This contract
+never inherited it, and it went with that surface.
 """
 
 from __future__ import annotations
@@ -38,8 +38,8 @@ def _staged(upload: UploadFile):
 
     ``application.ingest.Upload`` takes a ``save(path)`` callable and asks
     nothing about how the bytes arrived -- which is what lets the same
-    submission run from a Flask ``FileStorage``, from this adapter's
-    ``UploadFile`` and from a CLI with a local path.
+    submission run from this adapter's ``UploadFile`` and from a CLI with a
+    local path.
     """
     def save(destination: str) -> None:
         upload.file.seek(0)

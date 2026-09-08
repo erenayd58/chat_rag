@@ -1,17 +1,18 @@
 """The product's behaviour, driven with no web framework anywhere near it.
 
 This is the evidence for the boundary rather than a second copy of the API
-tests. Those prove the Flask adapter still maps correctly; these prove there
-is something underneath it worth adapting -- that a FastAPI router, a queue
-consumer or a script could call the same use cases and get the same answers.
+tests. Those prove the adapter maps correctly; these prove there is something
+underneath it worth adapting -- that a queue consumer, a CLI or the next
+framework could call the same use cases and get the same answers.
 
-The rule every test here follows: **no Flask**. No test client, no request
-context, no ``flask.request``, no application object. A container is composed
-with :func:`application.services.build_services`-shaped doubles, a use case is
+The rule every test here follows: **no framework**. No test client, no request
+object, no application object. A container is composed with
+:func:`application.services.build_services`-shaped doubles, a use case is
 called with ordinary arguments, and what comes back is an ordinary dict or an
 :mod:`application.errors` exception. ``test_the_boundary_holds`` states that
-rule as an assertion, so a use case that starts importing Flask fails here
-before it fails a review.
+rule as an assertion, so a use case that starts importing one fails here
+before it fails a review. It named Flask when Flask was the framework; the
+list is what a use case may not import, whatever is serving today.
 
 Five flows, chosen because they are the ones a migration would break:
 
@@ -32,7 +33,7 @@ from types import SimpleNamespace
 import pytest
 
 from application import (
-    chunks, documents, goldsets, ingest, knowledge_bases, ops, query, workspace,
+    chunks, documents, ingest, knowledge_bases, ops, query, workspace,
 )
 from application.errors import InvalidRequest, NotFound, NotReady, Unavailable
 from application.services import Services
@@ -177,19 +178,20 @@ def test_the_boundary_holds():
                 names = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom):
                 names = [node.module or ""]
-            if any(n.split(".")[0] in {"flask", "flask_cors", "werkzeug"} for n in names):
+            if any(n.split(".")[0] in {"flask", "flask_cors", "werkzeug",
+                                       "fastapi", "starlette"} for n in names):
                 offenders.append(f"{path.name}:{node.lineno}")
     assert offenders == [], f"application code imports a web framework: {offenders}"
 
 
-def test_the_cli_composes_the_same_application_without_loading_flask(tmp_path):
+def test_the_cli_composes_the_same_application_without_loading_a_framework(tmp_path):
     """The boundary, proved by a second caller rather than by a rule.
 
     ``python -m cli`` used to reach its knowledge bases and pipelines through
     ``import app``, so an evaluation run loaded a web framework to read a
     ledger. It now calls ``default_services()``; the same container, the same
     pipeline cache, the same seams -- and, checked here in a real interpreter,
-    no Flask in ``sys.modules`` at all.
+    no web framework in ``sys.modules`` at all.
     """
     import os
     import subprocess
@@ -202,7 +204,7 @@ def test_the_cli_composes_the_same_application_without_loading_flask(tmp_path):
     finished = subprocess.run(
         [sys.executable, "-c",
          "import cli.runtime, sys;"
-         "print('flask' in sys.modules or 'flask_cors' in sys.modules);"
+         "print(any(n in sys.modules for n in ('flask', 'fastapi', 'starlette')));"
          "print(cli.runtime.services.kb_manager is not None)"],
         cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=300,
     )
@@ -221,7 +223,7 @@ def test_the_adapter_is_the_only_place_that_knows_a_status_code():
         path.read_text(encoding="utf-8")
         for path in sorted((REPO / "application").rglob("*.py"))
     )
-    for code in ("jsonify", "make_response", "Response("):
+    for code in ("jsonify", "make_response", "JSONResponse", "Response("):
         assert code not in source, f"{code} reached the application layer"
 
 
@@ -420,18 +422,20 @@ def test_a_missing_answer_model_is_an_unavailable_capability_not_a_fault(tmp_pat
         container.ingest_jobs.close(timeout=20)
 
 
-def test_a_lab_search_runs_under_the_same_bound_a_question_does(container):
+def test_a_search_runs_under_the_same_bound_a_question_does(container):
     """The bound is on the *work*, not on one route: with every slot held, a
     read-only search is refused exactly as a question is."""
     kb_id = knowledge_bases.create(container, {"name": "A"})["kb_id"]
-    found = chunks.search_bm25(container, query="parca", kb_id=kb_id, session_id="s")
+    found = chunks.experiment_search(container, query="parca", method="bm25",
+                                     kb_id=kb_id, session_id="s")
     assert [row["chunk_id"] for row in found["chunks"]] == ["c1"]
-    assert found["search_metadata"]["search_method"] == "bm25"
+    assert found["retrieval_method"] == "bm25"
 
     assert container.query_admission.try_enter() and container.query_admission.try_enter()
     try:
         with pytest.raises(QueryOverloaded):
-            chunks.search_bm25(container, query="parca", kb_id=kb_id, session_id="s")
+            chunks.experiment_search(container, query="parca", method="bm25",
+                                     kb_id=kb_id, session_id="s")
     finally:
         container.query_admission.leave()
         container.query_admission.leave()
@@ -444,7 +448,8 @@ def test_a_search_refusal_is_not_counted_as_a_failed_query(container):
 
     kb_id = knowledge_bases.create(container, {"name": "A"})["kb_id"]
     with pytest.raises(InvalidRequest, match="Query is required"):
-        chunks.search_bm25(container, query="  ", kb_id=kb_id, session_id="s")
+        chunks.experiment_search(container, query="  ", method="bm25",
+                                 kb_id=kb_id, session_id="s")
     recent = T.metrics().snapshot(recent=1)["queries"]["recent"]
     assert recent and recent[0]["status"] == "succeeded"
 
@@ -457,10 +462,14 @@ def _units(count=3):
             for i in range(count)]
 
 
-def test_the_workspace_read_model_is_built_without_a_request(container, tmp_path):
-    """The Viewer's panel is a read model over three stores, and building it
-    needs no host header, no session and no request -- ``console_url`` is the
-    one thing HTTP knows, and it is a parameter."""
+def test_the_viewer_read_model_is_built_without_a_request(container, tmp_path):
+    """What the Viewer needs about a document is a read model over the stores,
+    and building it needs no host header, no session and no request at all.
+
+    It used to be one snapshot of the whole workspace, built for a relay in
+    another process; the Viewer is a screen of this console's own front end
+    now, so a document's analysis state is read per document and the snapshot
+    went with the relay."""
     kb_id = knowledge_bases.create(container, {"name": "Yillik"})["kb_id"]
     path = tmp_path / "rapor.pdf"
     path.write_text("pdf", encoding="utf-8")
@@ -470,17 +479,15 @@ def test_the_workspace_read_model_is_built_without_a_request(container, tmp_path
                              methods=[M.STANDARD, M.MARKDOWN], kb_id=kb_id,
                              content_sha="a" * 48)
 
-    snapshot = workspace.snapshot(container, console_url="http://console:5005")
-    assert snapshot["console_url"] == "http://console:5005"
-    assert snapshot["totals"]["documents"] == 1
-    base = snapshot["knowledge_bases"][0]
-    assert base["kb_id"] == kb_id and base["document_count"] == 1
+    assert [row["doc_id"] for row in documents.list_all(container, kb_id)] == ["doc-1"]
+    states = workspace.analysis_states()
+    assert set(states) == {"doc-1"}
 
-    viewer = base["documents"][0]["viewer"]
+    state = workspace.analysis_state("doc-1")
     # visible = selected ∩ ready. Nothing is built, so the upload may be shown
     # nothing -- while its selection is still recorded in full.
-    assert sorted(viewer["requested"]) == sorted([M.STANDARD, M.MARKDOWN])
-    assert viewer["ready_methods"] == []
+    assert sorted(state["selected_methods"]) == sorted([M.STANDARD, M.MARKDOWN])
+    assert state["available_methods"] == []
 
 
 def test_an_upload_is_only_ever_offered_the_methods_it_chose(container, tmp_path):
@@ -548,23 +555,9 @@ def test_the_service_state_is_readable_without_a_request(container):
     assert health["status"] == "healthy" and "ingest" in health and "query" in health
 
 
-def test_a_gold_set_entry_takes_the_documents_recorded_hash(container, tmp_path):
-    """The application carries the sha the ingest already recorded, rather
-    than hashing the file again -- an entry that knows which bytes it was
-    confirmed against can warn when the corpus is replaced."""
-    kb_id = knowledge_bases.create(container, {"name": "A"})["kb_id"]
-    path = tmp_path / "one.pdf"
-    path.write_text("pdf", encoding="utf-8")
-    container.documents().mark_as_ingested(file_path=str(path), doc_id="doc-1",
-                                           chunk_count=1, kb_id=kb_id)
-    recorded = container.documents().get_document_by_doc_id("doc-1")["file_hash"]
-
-    entry = goldsets.upsert(container, {"kb_id": kb_id, "question": "soru?",
-                                        "document_id": "doc-1",
-                                        "correct_chunk_id": "c1"})
-    assert entry["document_sha256"] == recorded
-    assert len(goldsets.list_all(container, kb_id)) == 1
-
-    goldsets.delete(container, entry["entry_id"])
-    with pytest.raises(NotFound):
-        goldsets.delete(container, entry["entry_id"])
+#: The gold set had a use case here -- list, upsert and delete -- and its only
+#: caller was the Flask-era Lab screen. It had no ``/api/v1`` answer on purpose
+#: (``docs/api-v1.md``), so Step 13 removed the routes and the use case with
+#: them. The entries are still what ``python -m cli eval`` scores against, and
+#: what they have to do is driven over the manager itself in
+#: ``tests/unit/test_goldset_manager.py``.

@@ -8,14 +8,15 @@
     recognises servers that are already up instead of starting duplicates.
     Stop everything it started with .\stop-demo.ps1.
 
-      backend   ->  venv\Scripts\python.exe app.py   (Flask, FLASK_PORT)
-      console   ->  npm run dev                      (Next.js, --port)
+      backend   ->  venv\Scripts\python.exe -m asgi   (uvicorn, FLASK_PORT)
+      console   ->  npm run dev                       (Next.js, --port)
 
-    There is no third process. The Viewer used to be one -- a server in the
-    chunk repository on :8765, serving its own page and relaying this console
-    over /api/demo -- and since Step 12 it is a screen of the console at
-    /viewer, reading /api/v1 like every other screen. Nothing here starts it
-    and nothing in the product needs it.
+    There is no third process, and there is no second backend. The Viewer used
+    to be one -- a server in the chunk repository on :8765, serving its own
+    page and relaying this console over /api/demo -- and since Step 12 it is a
+    screen of the console at /viewer, reading /api/v1 like every other screen;
+    Step 13 removed the relay it used and the Flask console beside it, so the
+    backend below is the one contract and nothing else.
 
     The browser only ever talks to the console's own origin: next.config.mjs
     rewrites /api/v1/* to the backend, so there is no CORS grant and one place
@@ -111,13 +112,17 @@ function Get-PortOwner {
 function Get-Health {
     param([string]$Url)
     try {
-        $response = Invoke-WebRequest -UseBasicParsing -Uri "$Url/api/health" -TimeoutSec 4 -ErrorAction Stop
+        $response = Invoke-WebRequest -UseBasicParsing -Uri "$Url/api/v1/health" -TimeoutSec 4 -ErrorAction Stop
         if ($response.StatusCode -eq 200) { return ($response.Content | ConvertFrom-Json) }
     } catch { }
     return $null
 }
 
-function Test-ProductHealth { param($Health) return ($null -ne $Health -and $Health.PSObject.Properties.Name -contains 'llm_provider') }
+# /api/v1/health answers the resource itself: state, ready, reasons, capacity.
+# `ready` is what says the backend can be sent traffic; it stays true while the
+# service calls itself degraded, which is exactly when the launcher should
+# still print the address rather than time out.
+function Test-ProductHealth { param($Health) return ($null -ne $Health -and $Health.PSObject.Properties.Name -contains 'ready') }
 
 # The console has no health endpoint of its own -- it is a front end. What
 # "ready" means for it is that it serves the Viewer route, which is also the
@@ -233,7 +238,7 @@ if (-not (Test-Path (Join-Path $Frontend 'node_modules'))) {
 # Environment for the children. Saved and restored so the caller's session is
 # left exactly as it was. Values are never echoed.
 $saved = @{}
-foreach ($name in @('FLASK_DEBUG', 'FLASK_PORT', 'PYTHONIOENCODING', 'PYTHONUTF8', 'CHAT_RAG_API_URL')) {
+foreach ($name in @('FLASK_PORT', 'PYTHONIOENCODING', 'PYTHONUTF8', 'CHAT_RAG_API_URL')) {
     $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
@@ -263,15 +268,13 @@ try {
     } else {
         $pOut = Join-Path $LogDir 'product.out.log'
         $pErr = Join-Path $LogDir 'product.err.log'
-        # No reloader: it would build the pipeline twice and hide the real pid.
-        $env:FLASK_DEBUG = 'false'
         $env:FLASK_PORT = "$ProductPort"
-        $productProc = Start-Process -FilePath $productPython -ArgumentList @('app.py') -WorkingDirectory $Root `
+        $productProc = Start-Process -FilePath $productPython -ArgumentList @('-m', 'asgi') -WorkingDirectory $Root `
             -RedirectStandardOutput $pOut -RedirectStandardError $pErr -WindowStyle Hidden -PassThru
         $probe = { Test-ProductHealth (Get-Health $ProductUrl) }.GetNewClosure()
         if (Wait-Ready -Name 'chat_rag' -Probe $probe -Process $productProc -ErrLog $pErr -OutLog $pOut -Timeout $TimeoutSeconds) {
             Ok 'chat_rag' "$ProductUrl  (pid $($productProc.Id))"
-            $state.services += @{ name = 'product'; pid = $productProc.Id; port = $ProductPort; url = $ProductUrl; started_by_launcher = $true; log = $pOut; err = $pErr; command = "$productPython app.py" }
+            $state.services += @{ name = 'product'; pid = $productProc.Id; port = $ProductPort; url = $ProductUrl; started_by_launcher = $true; log = $pOut; err = $pErr; command = "$productPython -m asgi" }
         } else {
             $allReady = $false
             if ($productProc -and -not $productProc.HasExited) {

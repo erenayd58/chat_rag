@@ -21,7 +21,14 @@ from types import SimpleNamespace
 
 import pytest
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
+from components.viewer import methods as M
+from runtime import bootstrap
+
+V1 = http.v1.PREFIX
 from application import workspace as app_workspace
 import tempfile
 from components.knowledgebase.manager import KnowledgeBaseManager
@@ -81,23 +88,38 @@ def leftovers(staging) -> list[str]:
 def client(tmp_path, monkeypatch, temp_dir):
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
+    monkeypatch.setattr(entrypoint.services, "kb_manager", manager)
     # Staging for the Viewer writes under the working directory; the route
     # already treats a failure there as non-fatal, and nothing here asserts on
     # it. Stubbed so a test never reaches the packaging worker.
     monkeypatch.setattr(app_workspace, "stage_analysis", lambda *a, **k: {"status": "queued"})
-    flask_app.app.config.update(TESTING=True)
     kb = manager.create("kb", chunker={"type": "structure_first"})
-    with flask_app.app.test_client() as test_client:
+    with TestClient(http.create_app(entrypoint.services),
+                    raise_server_exceptions=False) as test_client:
         yield test_client, kb["kb_id"]
 
 
 def upload(test_client, content: bytes = b"kucuk bir test belgesi", **fields):
-    data = {"file": (io.BytesIO(content), "belge.txt")}
-    data.update(fields)
     return test_client.post(
-        "/api/documents/upload", data=data, content_type="multipart/form-data"
+        f"{V1}/documents",
+        files={"file": ("belge.txt", io.BytesIO(content), "text/plain")},
+        data={name: value for name, value in fields.items()},
     )
+
+
+def settled(test_client, response):
+    """Wait for an accepted upload's job, and hand back its record.
+
+    Every upload is asynchronous on this contract, so "what happened to the
+    file" is a question about the job rather than about the response -- and
+    the staging directory is only quiet once the job has finished with it.
+    """
+    assert response.status_code == 202, response.text
+    manager = entrypoint.services.ingest_jobs
+    job = manager.get(response.json()["id"])
+    assert job is not None
+    assert manager.wait(job, 30), "the job did not settle"
+    return job.snapshot()
 
 
 # ------------------------------------------------------------------ success
@@ -107,22 +129,25 @@ def test_a_successful_upload_leaves_no_temp_file(client, temp_dir, monkeypatch):
     """The path that never cleaned up at all, and the one that runs every time."""
     test_client, kb_id = client
     pipeline = StubPipeline()
-    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: pipeline)
+    monkeypatch.setattr(entrypoint.services, "get_pipeline", lambda *a, **k: pipeline)
 
-    response = upload(test_client, kb_id=kb_id, deep_analysis="false")
+    job = settled(test_client, upload(test_client, knowledge_base_id=kb_id))
 
-    assert response.status_code == 200
-    assert response.get_json()["success"] is True
-    assert pipeline.seen_paths, "the route never handed a path to ingestion"
+    assert job["status"] == "succeeded", job
+    assert pipeline.seen_paths, "the job never handed a path to ingestion"
     assert leftovers(temp_dir) == []
 
 
 def test_two_uploads_do_not_accumulate(client, temp_dir, monkeypatch):
     test_client, kb_id = client
-    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: StubPipeline())
+    monkeypatch.setattr(entrypoint.services, "get_pipeline", lambda *a, **k: StubPipeline())
 
-    for _ in range(3):
-        assert upload(test_client, kb_id=kb_id).status_code == 200
+    for index in range(3):
+        # Different bytes each time: the same file would attach to the job
+        # already in flight rather than stage a second copy.
+        job = settled(test_client, upload(test_client, f"belge {index}".encode(),
+                                          knowledge_base_id=kb_id))
+        assert job["status"] == "succeeded", job
 
     assert leftovers(temp_dir) == []
 
@@ -139,7 +164,7 @@ def test_a_missing_knowledge_base_leaves_no_temp_file(client, temp_dir):
 
 def test_an_unknown_knowledge_base_leaves_no_temp_file(client, temp_dir):
     test_client, _ = client
-    response = upload(test_client, kb_id="no-such-kb")
+    response = upload(test_client, knowledge_base_id="no-such-kb")
     assert response.status_code == 404
     assert leftovers(temp_dir) == []
 
@@ -147,13 +172,13 @@ def test_an_unknown_knowledge_base_leaves_no_temp_file(client, temp_dir):
 def test_a_refused_deep_analysis_leaves_no_temp_file(client, temp_dir, monkeypatch):
     test_client, kb_id = client
     monkeypatch.setattr(
-        flask_app.services, "get_pipeline", lambda *a, **k: StubPipeline(deep_capable=False)
+        entrypoint.services, "get_pipeline", lambda *a, **k: StubPipeline(deep_capable=False)
     )
 
-    response = upload(test_client, kb_id=kb_id, deep_analysis="true")
+    response = upload(test_client, knowledge_base_id=kb_id, methods=M.DEEP)
 
     assert response.status_code == 400
-    assert response.get_json()["deep_analysis_unavailable"] is True
+    assert response.json()["error"]["details"]["deep_analysis_unavailable"] is True
     assert leftovers(temp_dir) == []
 
 
@@ -163,34 +188,34 @@ def test_a_refused_deep_analysis_leaves_no_temp_file(client, temp_dir, monkeypat
 def test_a_failed_ingest_leaves_no_temp_file(client, temp_dir, monkeypatch):
     test_client, kb_id = client
     monkeypatch.setattr(
-        flask_app.services,
+        entrypoint.services,
         "get_pipeline",
         lambda *a, **k: StubPipeline(ingest_error=RuntimeError("parser exploded")),
     )
 
-    response = upload(test_client, kb_id=kb_id)
+    job = settled(test_client, upload(test_client, knowledge_base_id=kb_id))
 
-    assert response.status_code == 500
+    assert job["status"] == "failed"
     assert leftovers(temp_dir) == []
 
 
 def test_a_store_that_refuses_the_document_leaves_no_temp_file(client, temp_dir, monkeypatch):
-    """The 409 re-index path returns from the outer handler, not the inner one."""
+    """An incompatible index ends the job, and the file goes with it."""
     from core.exceptions import IndexIncompatibleException
 
     test_client, kb_id = client
     monkeypatch.setattr(
-        flask_app.services,
+        entrypoint.services,
         "get_pipeline",
         lambda *a, **k: StubPipeline(
             ingest_error=IndexIncompatibleException("another embedding model")
         ),
     )
 
-    response = upload(test_client, kb_id=kb_id)
+    job = settled(test_client, upload(test_client, knowledge_base_id=kb_id))
 
-    assert response.status_code == 409
-    assert response.get_json()["reindex_required"] is True
+    assert job["status"] == "failed"
+    assert job["error_category"] == "index_incompatible"
     assert leftovers(temp_dir) == []
 
 
@@ -203,7 +228,7 @@ def test_a_refused_upload_leaves_no_temp_file(client, temp_dir, monkeypatch):
     from components.ingest import IngestManager
 
     test_client, kb_id = client
-    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: StubPipeline())
+    monkeypatch.setattr(entrypoint.services, "get_pipeline", lambda *a, **k: StubPipeline())
     gate = __import__("threading").Event()
 
     def hold(job):
@@ -211,14 +236,14 @@ def test_a_refused_upload_leaves_no_temp_file(client, temp_dir, monkeypatch):
         return {"doc_id": "held"}
 
     manager = IngestManager(IngestLimits(workers=1, queue_capacity=0), execute=hold)
-    monkeypatch.setattr(flask_app.services, "ingest_jobs", manager)
+    monkeypatch.setattr(entrypoint.services, "ingest_jobs", manager)
     try:
-        first = upload(test_client, kb_id=kb_id, **{"async": "1"})
+        first = upload(test_client, knowledge_base_id=kb_id)
         assert first.status_code == 202
         # Different bytes: the same file would attach to the running job.
-        second = upload(test_client, b"baska bir belge", kb_id=kb_id, **{"async": "1"})
+        second = upload(test_client, b"baska bir belge", knowledge_base_id=kb_id)
         assert second.status_code == 503
-        assert second.get_json()["overloaded"] is True
+        assert second.json()["error"]["type"] == "overloaded"
         # Only the running job's file may exist; the refused one is gone.
         assert len(leftovers(temp_dir)) == 1
     finally:
@@ -232,7 +257,7 @@ def test_an_attached_duplicate_leaves_no_second_temp_file(client, temp_dir, monk
     from components.ingest import IngestManager
 
     test_client, kb_id = client
-    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: StubPipeline())
+    monkeypatch.setattr(entrypoint.services, "get_pipeline", lambda *a, **k: StubPipeline())
     gate = __import__("threading").Event()
 
     def hold(job):
@@ -240,12 +265,12 @@ def test_an_attached_duplicate_leaves_no_second_temp_file(client, temp_dir, monk
         return {"doc_id": "held"}
 
     manager = IngestManager(IngestLimits(workers=1, queue_capacity=2), execute=hold)
-    monkeypatch.setattr(flask_app.services, "ingest_jobs", manager)
+    monkeypatch.setattr(entrypoint.services, "ingest_jobs", manager)
     try:
-        first = upload(test_client, kb_id=kb_id, **{"async": "1"}).get_json()
-        second = upload(test_client, kb_id=kb_id, **{"async": "1"}).get_json()
-        assert second["attached"] is True
-        assert second["job_id"] == first["job_id"]
+        first = upload(test_client, knowledge_base_id=kb_id).json()
+        second = upload(test_client, knowledge_base_id=kb_id).json()
+        assert second["attached_uploads"] == 1
+        assert second["id"] == first["id"]
         assert len(leftovers(temp_dir)) == 1, "the twin's file was discarded at once"
     finally:
         gate.set()
@@ -262,6 +287,6 @@ def test_a_restart_sweeps_what_a_previous_process_left(temp_dir, monkeypatch):
     open(os.path.join(staging, "upload_deadbeef.pdf"), "wb").write(b"%PDF-1.7")
     assert paths.upload_staging() == staging
 
-    flask_app.resume_background_work()
+    bootstrap.resume_background_work(entrypoint.services)
 
     assert leftovers(temp_dir) == []

@@ -9,9 +9,8 @@ has named yet.
 Every handler here reads its inputs, calls **one** use case in
 :mod:`application`, and returns a schema. It does not catch exceptions
 (``..errors`` holds the whole table), it does not know a status code beyond
-the one its decorator declares, and it takes no product decision -- which is
-what makes it possible for the legacy Flask adapter to answer differently from
-these routes without either being a second implementation of anything.
+the one its decorator declares, and it takes no product decision -- every one
+of those belongs to the use case it calls.
 """
 
 from __future__ import annotations

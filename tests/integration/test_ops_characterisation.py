@@ -24,7 +24,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
+
+V1 = http.v1.PREFIX
 from application import ingest as app_ingest
 from application import workspace as app_workspace
 import tempfile
@@ -153,15 +158,14 @@ def workspace(tmp_path, monkeypatch):
     staging.mkdir()
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(staging))
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
+    monkeypatch.setattr(entrypoint.services, "kb_manager", manager)
     monkeypatch.setattr(app_workspace, "stage_analysis", lambda *a, **k: {"status": "queued"})
-    flask_app.app.config.update(TESTING=True)
     kb = manager.create("load-kb", chunker={"type": "structure_first"})
-    return flask_app.app, kb["kb_id"], staging
+    return kb["kb_id"], staging
 
 
 def test_load_characterisation(workspace, monkeypatch):
-    app, kb_id, staging = workspace
+    kb_id, staging = workspace
     clock = Clock()
     monkeypatch.setattr(T.time, "perf_counter", clock)
     registry = T.MetricsRegistry(window=200)
@@ -179,14 +183,14 @@ def test_load_characterisation(workspace, monkeypatch):
             clock, deep_gate, EmbeddingDouble(embed_gate), budgets),
         max_entries=CACHE_MAX, ttl_seconds=0,
     )
-    monkeypatch.setattr(flask_app.services, "pipeline_cache", cache)
-    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda s, k=None: cache.get(s, k))
+    monkeypatch.setattr(entrypoint.services, "pipeline_cache", cache)
+    monkeypatch.setattr(entrypoint.services, "get_pipeline", lambda s, k=None: cache.get(s, k))
 
     manager = IngestManager(
         IngestLimits(workers=WORKERS, queue_capacity=QUEUE, job_timeout_seconds=300),
-        execute=lambda job: app_ingest.execute_job(flask_app.services, job),
+        execute=lambda job: app_ingest.execute_job(entrypoint.services, job),
     )
-    monkeypatch.setattr(flask_app.services, "ingest_jobs", manager)
+    monkeypatch.setattr(entrypoint.services, "ingest_jobs", manager)
 
     cache_before = cache.snapshot()["size"]
     rss_before = _rss_mb()
@@ -197,19 +201,28 @@ def test_load_characterisation(workspace, monkeypatch):
     started = time.perf_counter
 
     def submit(index: int):
-        """One browser session each: this is what used to grow the cache."""
-        with app.test_client() as client:
-            with client.session_transaction() as session:
-                session["session_id"] = f"session-{index}"
+        """One session each, uploading at once.
+
+        The session id is what selects a cached pipeline, and it is the thing
+        that used to grow the cache without bound: one browser, one entry, per
+        knowledge base. The cache is asked for this session's pipeline
+        directly, because that is the read a request carrying a session makes
+        -- this surface takes the id off the ASGI scope rather than from a
+        cookie of its own, so an anonymous caller shares one entry and the
+        pressure being characterised has to be put on the cache deliberately.
+        """
+        with TestClient(http.create_app(entrypoint.services),
+                        raise_server_exceptions=False) as client:
             barrier.wait(20)
+            cache.get(f"session-{index}", kb_id)
             response = client.post(
-                "/api/documents/upload",
-                data={"file": (io.BytesIO(f"belge {index}".encode()), f"b{index}.txt"),
-                      "kb_id": kb_id, "deep_analysis": "true", "async": "1"},
-                content_type="multipart/form-data",
+                f"{V1}/documents",
+                files={"file": (f"b{index}.txt",
+                                io.BytesIO(f"belge {index}".encode()), "text/plain")},
+                data={"knowledge_base_id": kb_id, "methods": ["agentic"]},
             )
             with lock:
-                outcomes.append((response.status_code, response.get_json()))
+                outcomes.append((response.status_code, response.json()))
 
     wall_started = time.monotonic()
     threads = [threading.Thread(target=submit, args=(index,)) for index in range(SESSIONS)]

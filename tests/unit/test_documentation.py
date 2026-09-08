@@ -35,6 +35,10 @@ DOCUMENTED_AS_REMOVED = {
     "PDF_PARSER_BACKEND": "configuration.md — the same",
     "OCR_LANGUAGE": "configuration.md — the same",
     "LOG_TOKEN_USAGE": "configuration.md — the setting Phase 7B found inert",
+    "FLASK_DEBUG": "operations.md — the development server it switched went "
+                   "with the Flask console in Step 13",
+    "VIEWER_URL": "legacy-removal.md — it addressed the companion Viewer "
+                  "process, and there is no such process",
 }
 
 #: Names shaped like a setting that are really Python constants in the

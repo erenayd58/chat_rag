@@ -104,7 +104,7 @@ services:
         - -c
         - >-
           import urllib.request,sys;
-          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5005/api/health', timeout=4).status == 200 else 1)
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5005/api/v1/health', timeout=4).status == 200 else 1)
       interval: 30s
       timeout: 5s
       # Building the pipeline and reading an existing store takes a moment on
@@ -112,11 +112,10 @@ services:
       start_period: 60s
       retries: 3
 
-    # The default SIGTERM is enough now: wsgi.py turns it into the SystemExit
-    # waitress already drains its request threads on, so `docker compose down`
-    # exits 0 instead of being killed at the end of the grace period. (The
-    # SIGINT override this used to need was a workaround for Werkzeug's
-    # development server, which ignored SIGTERM.)
+    # The default SIGTERM is enough: uvicorn installs its own handler, stops
+    # accepting, runs the lifespan's shutdown -- which drains the ingest jobs
+    # already running and returns the database pool -- and exits 0 rather than
+    # being killed at the end of the grace period.
     stop_grace_period: 15s
 
     restart: unless-stopped

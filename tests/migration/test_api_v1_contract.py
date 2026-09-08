@@ -23,7 +23,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
 from application import ingest as app_ingest
 from application import workspace as app_workspace
 from components.ingest import IngestManager
@@ -146,7 +149,7 @@ def api(tmp_path, monkeypatch):
     store = Store()
     pipeline = Pipeline(store)
     ledger_file = str(tmp_path / "ledger.json")
-    container = flask_app.services
+    container = entrypoint.services
 
     monkeypatch.setattr(container, "kb_manager", KnowledgeBaseManager(str(tmp_path / "kbs.json")))
     monkeypatch.setattr(container, "documents", lambda: DocumentTracker(ledger_file))
@@ -159,16 +162,16 @@ def api(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(container, "ingest_jobs", jobs)
 
-    flask_app.app.config.update(TESTING=True)
-    with flask_app.app.test_client() as client:
+    with TestClient(http.create_app(container),
+                    raise_server_exceptions=False) as client:
         yield SimpleNamespace(client=client, store=store, container=container,
                               ledger=lambda: DocumentTracker(ledger_file), root=tmp_path)
     jobs.close(timeout=20)
 
 
 def _json(response):
-    body = response.get_json()
-    assert isinstance(body, dict), response.data[:300]
+    body = response.json()
+    assert isinstance(body, dict), response.text[:300]
     return body
 
 
@@ -184,7 +187,7 @@ def _kb(api, name="Yillik raporlar", **extra):
     created = api.client.post(f"{V1}/knowledge-bases",
                               json={"name": name, "chunker": {"type": "structure_first"},
                                     **extra})
-    assert created.status_code == 201, created.get_json()
+    assert created.status_code == 201, created.json()
     return _json(created)
 
 
@@ -314,11 +317,11 @@ def test_a_newly_registered_method_appears_with_no_edit_to_this_api(api):
         kb = _kb(api, name="fifth")
         accepted = api.client.post(
             f"{V1}/documents",
-            data={"knowledge_base_id": kb["id"], "file": (io.BytesIO(b"%PDF x"), "f.pdf"),
+            files={"file": ("f.pdf", io.BytesIO(b"%PDF x"), "application/pdf")},
+            data={"knowledge_base_id": kb["id"],
                   "methods": [M.STANDARD, FIXED_WINDOW.key]},
-            content_type="multipart/form-data",
         )
-        assert accepted.status_code == 202, accepted.get_json()
+        assert accepted.status_code == 202, accepted.json()
         assert FIXED_WINDOW.key in _json(accepted)["methods"]
     finally:
         registry.unregister(FIXED_WINDOW.key)
@@ -544,8 +547,8 @@ def test_an_upload_is_always_a_job(api):
     kb = _kb(api)["id"]
     response = api.client.post(
         f"{V1}/documents",
-        data={"knowledge_base_id": kb, "file": (io.BytesIO(b"%PDF rapor"), "rapor.pdf")},
-        content_type="multipart/form-data",
+        files={"file": ("rapor.pdf", io.BytesIO(b"%PDF rapor"), "application/pdf")},
+        data={"knowledge_base_id": kb},
     )
     assert response.status_code == 202
     job = _json(response)
@@ -566,8 +569,7 @@ def test_an_upload_is_always_a_job(api):
 def test_an_upload_without_a_knowledge_base_is_refused_and_writes_nothing(api):
     response = api.client.post(
         f"{V1}/documents",
-        data={"file": (io.BytesIO(b"%PDF rapor"), "rapor.pdf")},
-        content_type="multipart/form-data",
+        files={"file": ("rapor.pdf", io.BytesIO(b"%PDF rapor"), "application/pdf")},
     )
     assert response.status_code == 400
     _error(response, "invalid_request")
@@ -577,8 +579,8 @@ def test_an_upload_without_a_knowledge_base_is_refused_and_writes_nothing(api):
 def test_an_upload_into_an_unknown_knowledge_base_is_a_404(api):
     response = api.client.post(
         f"{V1}/documents",
-        data={"knowledge_base_id": "ghost", "file": (io.BytesIO(b"%PDF x"), "r.pdf")},
-        content_type="multipart/form-data",
+        files={"file": ("r.pdf", io.BytesIO(b"%PDF x"), "application/pdf")},
+        data={"knowledge_base_id": "ghost"},
     )
     assert response.status_code == 404
     _error(response, "not_found")
@@ -632,13 +634,15 @@ def test_an_empty_question_is_refused_before_it_takes_a_query_slot(api):
     assert api.container.query_admission.snapshot()["accepted_total"] == before
 
 
-def test_both_surfaces_answer_from_the_same_application(api):
-    """The parity claim. ``/api/v1`` is a second adapter, not a second
-    implementation: a knowledge base created through one is the same record the
-    other lists, with no synchronisation between them."""
+def test_the_operator_surface_reads_the_same_application(api):
+    """``/api/ops/metrics`` is served beside this contract and deliberately
+    off it -- its body reports internals that are free to change. What it may
+    not be is a second view of a different application: a knowledge base
+    created here is in the pipeline cache it reports on, over one container."""
     created = _kb(api, name="Shared")
-    legacy = api.client.get("/api/kb").get_json()
-    assert [kb["kb_id"] for kb in legacy["knowledge_bases"]] == [created["id"]]
+    api.client.get(f"{V1}/knowledge-bases/{created['id']}/chunks")
 
-    api.client.delete(f"{V1}/knowledge-bases/{created['id']}")
-    assert api.client.get("/api/kb").get_json()["knowledge_bases"] == []
+    metrics = _json(api.client.get("/api/ops/metrics"))
+    assert metrics["success"] is True
+    assert metrics["ingest"]["workers"] == api.container.ingest_jobs.snapshot()["workers"]
+    assert metrics["configuration"], "the effective configuration of this process"

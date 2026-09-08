@@ -18,7 +18,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
+
+V1 = http.v1.PREFIX
 from application import ingest as app_ingest
 from application import ops as app_ops
 from application import workspace as app_workspace
@@ -107,11 +112,11 @@ def client(tmp_path, monkeypatch, registry):
     staging.mkdir()
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(staging))
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
+    monkeypatch.setattr(entrypoint.services, "kb_manager", manager)
     monkeypatch.setattr(app_workspace, "stage_analysis", lambda *a, **k: {"status": "queued"})
-    flask_app.app.config.update(TESTING=True)
     kb = manager.create("ops-kb", chunker={"type": "structure_first"})
-    with flask_app.app.test_client() as test_client:
+    with TestClient(http.create_app(entrypoint.services),
+                    raise_server_exceptions=False) as test_client:
         yield test_client, kb["kb_id"]
 
 
@@ -123,14 +128,28 @@ def jobs(monkeypatch):
         fields = dict(workers=1, queue_capacity=2, job_timeout_seconds=60)
         fields.update(limits)
         manager = IngestManager(IngestLimits(**fields),
-                                execute=lambda job: app_ingest.execute_job(flask_app.services, job))
-        monkeypatch.setattr(flask_app.services, "ingest_jobs", manager)
+                                execute=lambda job: app_ingest.execute_job(entrypoint.services, job))
+        monkeypatch.setattr(entrypoint.services, "ingest_jobs", manager)
         managers.append(manager)
         return manager
 
     yield make
     for manager in managers:
         manager.close(timeout=20)
+
+
+def settle(manager, submitted):
+    """Wait for a submitted job, and hand back the record the manager holds.
+
+    An upload is always asynchronous, so what happened to it is a question
+    about the job. The *timing* of a job is read from that record rather than
+    over HTTP: it is a measurement of the work, not part of what
+    ``/api/v1/ingest-jobs`` promises a client.
+    """
+    job = manager.get(submitted["id"])
+    assert job is not None, submitted
+    assert manager.wait(job, 30), "the job did not settle"
+    return job.snapshot()
 
 
 def use_pipeline(monkeypatch, pipeline):
@@ -140,16 +159,17 @@ def use_pipeline(monkeypatch, pipeline):
     cache is part of what these tests are about -- a job leases the entry the
     cache holds. Building the stub *through* the cache keeps that real.
     """
-    flask_app.services.pipeline_cache.clear()
-    monkeypatch.setattr(flask_app.services.pipeline_cache, "_build", lambda session, kb: pipeline)
+    entrypoint.services.pipeline_cache.clear()
+    monkeypatch.setattr(entrypoint.services.pipeline_cache, "_build", lambda session, kb: pipeline)
     return pipeline
 
 
 def upload(test_client, kb_id, *, content=b"belge", **fields):
-    data = {"file": (io.BytesIO(content), "belge.txt"), "kb_id": kb_id}
-    data.update(fields)
-    return test_client.post("/api/documents/upload", data=data,
-                            content_type="multipart/form-data")
+    return test_client.post(
+        f"{V1}/documents",
+        files={"file": ("belge.txt", io.BytesIO(content), "text/plain")},
+        data={"knowledge_base_id": kb_id, **fields},
+    )
 
 
 # ------------------------------------------------------------- job timing
@@ -160,8 +180,7 @@ def test_a_finished_job_reports_where_its_time_went(client, jobs, monkeypatch, c
     manager = jobs()
     use_pipeline(monkeypatch, TimedPipeline(clock))
 
-    body = upload(test_client, kb_id).get_json()
-    job = test_client.get(f"/api/ingest/jobs/{body['job_id']}").get_json()["job"]
+    job = settle(manager, upload(test_client, kb_id).json())
 
     timing = job["timing"]
     assert timing["stages"]["parse"] == 2.0
@@ -184,14 +203,14 @@ def test_the_queue_wait_is_measured_and_is_not_the_work(client, jobs, monkeypatc
     gate = threading.Event()
     pipeline = use_pipeline(monkeypatch, TimedPipeline(clock, gate=gate))
 
-    first = upload(test_client, kb_id, content=b"one", **{"async": "1"}).get_json()
+    first = upload(test_client, kb_id, content=b"one").json()
     assert pipeline.started.wait(10)
-    second = upload(test_client, kb_id, content=b"two", **{"async": "1"}).get_json()
+    second = upload(test_client, kb_id, content=b"two").json()
     gate.set()
     assert manager.drain(20)
 
-    waited = test_client.get(f"/api/ingest/jobs/{second['job_id']}").get_json()["job"]
-    ran_first = test_client.get(f"/api/ingest/jobs/{first['job_id']}").get_json()["job"]
+    waited = manager.get(second["id"]).snapshot()
+    ran_first = manager.get(first["id"]).snapshot()
     assert waited["timing"]["queue_seconds"] > ran_first["timing"]["queue_seconds"]
     assert waited["timing"]["stages"]["parse"] == 2.0, "queueing is not counted as work"
 
@@ -200,14 +219,13 @@ def test_a_failed_job_says_which_stage_failed_and_why(client, jobs, monkeypatch,
     from core.exceptions import ChunkerException
 
     test_client, kb_id = client
-    jobs()
+    manager = jobs()
     use_pipeline(monkeypatch, TimedPipeline(
         clock, seconds={T.PARSE: 1.0}, error=ChunkerException("bad canonical")))
 
     response = upload(test_client, kb_id)
-    assert response.status_code == 500
-    body = response.get_json()
-    job = test_client.get(f"/api/ingest/jobs/{body['job_id']}").get_json()["job"]
+    assert response.status_code == 202, response.text
+    job = settle(manager, response.json())
     assert job["status"] == J.FAILED
     assert job["error_category"] == "chunking"
     assert job["timing"]["stages"]["parse"] == 1.0, "the work before the failure is kept"
@@ -227,7 +245,7 @@ def test_the_metrics_endpoint_reports_real_counters_and_latency(
         upload(test_client, kb_id, content=f"belge {index}".encode())
     assert manager.drain(20)
 
-    metrics = test_client.get("/api/ops/metrics").get_json()
+    metrics = test_client.get("/api/ops/metrics").json()
     assert metrics["success"] is True
     counters = metrics["metrics"]["counters"]
     assert counters["ingest.accepted"] == 3
@@ -246,13 +264,13 @@ def test_overload_and_failure_counters_are_correct(client, jobs, monkeypatch, cl
     gate = threading.Event()
     pipeline = use_pipeline(monkeypatch, TimedPipeline(clock, gate=gate))
 
-    accepted = upload(test_client, kb_id, content=b"one", **{"async": "1"})
+    accepted = upload(test_client, kb_id, content=b"one")
     assert accepted.status_code == 202
     assert pipeline.started.wait(10)
-    refused = upload(test_client, kb_id, content=b"two", **{"async": "1"})
+    refused = upload(test_client, kb_id, content=b"two")
     assert refused.status_code == 503
 
-    metrics = test_client.get("/api/ops/metrics").get_json()["metrics"]
+    metrics = test_client.get("/api/ops/metrics").json()["metrics"]
     assert metrics["counters"]["ingest.rejected"] == 1
     assert metrics["counters"]["ingest.accepted"] == 1
     assert metrics["errors"]["by_category"]["overloaded"] == 1
@@ -270,8 +288,8 @@ def test_the_metrics_answer_cannot_grow_with_uptime(client, jobs, monkeypatch, c
         upload(test_client, kb_id, content=f"belge {index}".encode())
     assert manager.drain(60)
 
-    small = test_client.get("/api/ops/metrics?recent=5").get_json()
-    big = test_client.get("/api/ops/metrics?recent=1000").get_json()
+    small = test_client.get("/api/ops/metrics?recent=5").json()
+    big = test_client.get("/api/ops/metrics?recent=1000").json()
     assert len(small["metrics"]["recent"]) == 5
     assert len(big["metrics"]["recent"]) <= 25, "capped whatever is asked for"
     assert big["metrics"]["jobs"]["measured"] == 25
@@ -281,7 +299,12 @@ def test_the_metrics_answer_cannot_grow_with_uptime(client, jobs, monkeypatch, c
 def test_a_bad_recent_parameter_does_not_break_the_endpoint(client, jobs):
     test_client, _ = client
     jobs()
-    assert test_client.get("/api/ops/metrics?recent=lots").status_code == 200
+    answered = test_client.get("/api/ops/metrics?recent=lots")
+    assert answered.status_code == 200
+    # Forgiving on purpose: the default, not a refusal. This is the endpoint
+    # somebody curls when something is wrong, and a mangled query string is
+    # not a reason to tell them nothing.
+    assert len(answered.json()["metrics"]["recent"]) <= 10
 
 
 # -------------------------------------------------------------- the health
@@ -290,15 +313,14 @@ def test_a_bad_recent_parameter_does_not_break_the_endpoint(client, jobs):
 def test_health_is_small_and_says_what_state_the_service_is_in(client, jobs):
     test_client, _ = client
     jobs()
-    body = test_client.get("/api/health").get_json()
-    assert body["status"] == "healthy", "the historical field, for existing probes"
+    body = test_client.get(f"{V1}/health").json()
     assert body["state"] == "ok"
     assert body["ready"] is True
     assert body["reasons"] == []
-    assert set(body["ingest"]) == {
-        "running", "queued", "queue_capacity", "workers",
-        "provider_inflight", "provider_limit", "embedding_inflight", "embedding_limit",
-    }
+    assert set(body) == {"state", "ready", "reasons", "checked_at", "capacity"}
+    assert set(body["capacity"]["ingest"]) == {
+        "running", "queued", "queue_capacity", "workers"}
+    assert set(body["capacity"]["query"]) == {"active", "max_active"}
     assert "recent" not in json.dumps(body), "no history on the liveness endpoint"
     assert len(json.dumps(body)) < 1000
 
@@ -312,17 +334,17 @@ def test_health_says_overloaded_while_the_queue_is_full_but_stays_ready(
     manager = jobs(workers=1, queue_capacity=0)
     gate = threading.Event()
     pipeline = use_pipeline(monkeypatch, TimedPipeline(clock, gate=gate))
-    upload(test_client, kb_id, content=b"one", **{"async": "1"})
+    upload(test_client, kb_id, content=b"one")
     assert pipeline.started.wait(10)
 
-    body = test_client.get("/api/health").get_json()
+    body = test_client.get(f"{V1}/health").json()
     assert body["state"] == "overloaded"
     assert body["ready"] is True
     assert "queue is full" in " ".join(body["reasons"])
 
     gate.set()
     assert manager.drain(20)
-    assert test_client.get("/api/health").get_json()["state"] == "ok"
+    assert test_client.get(f"{V1}/health").json()["state"] == "ok"
 
 
 def test_health_is_degraded_when_the_knowledge_base_records_cannot_be_read(
@@ -334,8 +356,8 @@ def test_health_is_degraded_when_the_knowledge_base_records_cannot_be_read(
     def broken():
         raise OSError("the records are unreadable")
 
-    monkeypatch.setattr(flask_app.services.kb_manager, "list", broken)
-    body = test_client.get("/api/health").get_json()
+    monkeypatch.setattr(entrypoint.services.kb_manager, "list", broken)
+    body = test_client.get(f"{V1}/health").json()
     assert body["state"] == "degraded"
     assert "unreadable" in " ".join(body["reasons"])
 
@@ -348,11 +370,11 @@ def test_health_answers_while_the_workers_are_busy(client, jobs, monkeypatch, cl
     gate = threading.Event()
     pipeline = use_pipeline(monkeypatch, TimedPipeline(clock, gate=gate))
     for index in range(4):
-        upload(test_client, kb_id, content=f"belge {index}".encode(), **{"async": "1"})
+        upload(test_client, kb_id, content=f"belge {index}".encode())
     assert pipeline.started.wait(10)
 
     for _ in range(20):
-        assert test_client.get("/api/health").status_code == 200
+        assert test_client.get(f"{V1}/health").status_code == 200
         assert test_client.get("/api/ops/metrics").status_code == 200
 
     gate.set()
@@ -369,27 +391,27 @@ def test_an_ingest_leases_its_pipeline_so_it_cannot_be_evicted(
     manager = jobs()
     gate = threading.Event()
     pipeline = use_pipeline(monkeypatch, TimedPipeline(clock, gate=gate))
-    monkeypatch.setattr(flask_app.services.pipeline_cache, "max_entries", 1)
+    monkeypatch.setattr(entrypoint.services.pipeline_cache, "max_entries", 1)
 
-    upload(test_client, kb_id, **{"async": "1"})
+    upload(test_client, kb_id)
     assert pipeline.started.wait(10)
-    assert flask_app.services.pipeline_cache.snapshot()["leased"] == 1
+    assert entrypoint.services.pipeline_cache.snapshot()["leased"] == 1
 
     # Traffic from other sessions cannot take the running job's pipeline away.
     for index in range(4):
-        flask_app.services.pipeline_cache.get(f"browser{index}", kb_id)
-    assert flask_app.services.pipeline_cache.snapshot()["leased"] == 1
+        entrypoint.services.pipeline_cache.get(f"browser{index}", kb_id)
+    assert entrypoint.services.pipeline_cache.snapshot()["leased"] == 1
 
     gate.set()
     assert manager.drain(20)
-    assert flask_app.services.pipeline_cache.snapshot()["leased"] == 0
+    assert entrypoint.services.pipeline_cache.snapshot()["leased"] == 0
 
 
 def test_the_cache_state_is_visible_to_an_operator(client, jobs):
     test_client, kb_id = client
     jobs()
-    flask_app.services.pipeline_cache.get("someone", kb_id)
-    caches = test_client.get("/api/ops/metrics").get_json()["caches"]
+    entrypoint.services.pipeline_cache.get("someone", kb_id)
+    caches = test_client.get("/api/ops/metrics").json()["caches"]
     assert caches["pipelines"]["size"] >= 1
     assert caches["pipelines"]["max"] >= 1
     assert "loads" in caches["viewer_boundary_model"]
@@ -410,15 +432,15 @@ def test_an_exception_string_does_not_become_a_leak_surface(
     back should say what went wrong and nothing about where.
     """
     test_client, kb_id = client
-    jobs()
+    manager = jobs()
     secret_path = os.path.join("C:" + os.sep, "Users", "alice", "data", "Q3 board minutes.pdf")
     use_pipeline(monkeypatch, TimedPipeline(
         clock, seconds={T.PARSE: 1.0},
         error=OSError("[Errno 13] Permission denied: " + repr(secret_path)
                       + " using sk-abcdefghijklmnopqrstuvwxyz012345")))
 
-    upload(test_client, kb_id)
-    served = json.dumps(test_client.get("/api/ops/metrics").get_json())
+    settle(manager, upload(test_client, kb_id).json())
+    served = json.dumps(test_client.get("/api/ops/metrics").json())
 
     assert "alice" not in served
     assert "Q3 board minutes" not in served
@@ -437,7 +459,7 @@ def test_the_metrics_body_carries_no_content_or_filesystem_path(
     upload(test_client, kb_id, content="gizli sirket belgesi".encode())
     assert manager.drain(20)
 
-    served = json.dumps(test_client.get("/api/ops/metrics?recent=25").get_json())
+    served = json.dumps(test_client.get("/api/ops/metrics?recent=25").json())
     assert "gizli sirket belgesi" not in served, "no document content"
     assert "belge.txt" not in served, "no uploaded filename"
     assert os.sep + "staging" not in served, "no temp path"
@@ -445,7 +467,7 @@ def test_the_metrics_body_carries_no_content_or_filesystem_path(
 
 
 def test_a_broken_store_does_not_publish_the_data_root(client, jobs, monkeypatch):
-    """The same rule on the reason /api/health gives for being degraded."""
+    """The same rule on the reason health gives for being degraded."""
     test_client, _ = client
     jobs()
     root = os.path.join("C:" + os.sep, "srv", "chat_rag", "data", "kbs.json")
@@ -453,8 +475,8 @@ def test_a_broken_store_does_not_publish_the_data_root(client, jobs, monkeypatch
     def broken():
         raise OSError("[Errno 13] Permission denied: " + repr(root))
 
-    monkeypatch.setattr(flask_app.services.kb_manager, "list", broken)
-    body = test_client.get("/api/health").get_json()
+    monkeypatch.setattr(entrypoint.services.kb_manager, "list", broken)
+    body = test_client.get(f"{V1}/health").json()
     reasons = " ".join(body["reasons"])
     assert body["state"] == "degraded"
     assert "chat_rag" not in reasons and "srv" not in reasons
@@ -469,27 +491,27 @@ def test_alive_ready_and_state_are_three_different_answers(
 ):
     """The contract, asserted rather than described.
 
-    ``status`` stays the historical liveness word for probes that predate
-    this; ``ready`` says whether traffic may be sent and stays true in every
-    state, because refusing traffic during an overload makes it worse; and
-    ``state`` is the one an operator reads.
+    ``ready`` says whether traffic may be sent and stays true in every state,
+    because refusing traffic during an overload makes it worse; ``state`` is
+    the one an operator reads. A third word -- ``status``, always "healthy" --
+    was on the Flask-era body for probes that predated the other two, and went
+    with that surface.
     """
     test_client, kb_id = client
     manager = jobs(workers=1, queue_capacity=4)
     use_pipeline(monkeypatch, TimedPipeline(
         clock, seconds={T.PARSE: 1.0}, error=OSError("the store is gone")))
 
-    healthy = test_client.get("/api/health").get_json()
-    assert (healthy["status"], healthy["state"], healthy["ready"]) == ("healthy", "ok", True)
+    healthy = test_client.get(f"{V1}/health").json()
+    assert (healthy["state"], healthy["ready"]) == ("ok", True)
 
     for index in range(app_ops.DEGRADED_AFTER_JOBS):
         upload(test_client, kb_id, content=f"belge {index}".encode())
     assert manager.drain(20)
 
-    broken = test_client.get("/api/health").get_json()
+    broken = test_client.get(f"{V1}/health").json()
     assert broken["state"] == "degraded"
     assert broken["ready"] is True, "a degraded process still serves reads"
-    assert broken["status"] == "healthy", "liveness is not readiness is not state"
     assert "all failed" in " ".join(broken["reasons"])
 
 
@@ -504,9 +526,9 @@ def test_a_service_that_recovers_stops_calling_itself_degraded(
     for index in range(app_ops.DEGRADED_AFTER_JOBS):
         upload(test_client, kb_id, content=f"kotu {index}".encode())
     assert manager.drain(20)
-    assert test_client.get("/api/health").get_json()["state"] == "degraded"
+    assert test_client.get(f"{V1}/health").json()["state"] == "degraded"
 
     use_pipeline(monkeypatch, TimedPipeline(clock))
     upload(test_client, kb_id, content=b"iyi belge")
     assert manager.drain(20)
-    assert test_client.get("/api/health").get_json()["state"] == "ok"
+    assert test_client.get(f"{V1}/health").json()["state"] == "ok"

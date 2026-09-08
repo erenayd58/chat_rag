@@ -11,7 +11,7 @@ routers it mounts, the exception table it installs, and the lifespan. The
 product's behaviour is in :mod:`application`; the wire shapes are in
 :mod:`interfaces.http.v1.schemas`. Neither imports this module, which is what
 lets the same contract be served by something other than FastAPI later --
-exactly as it was served by Flask until this step.
+exactly as it was served by Flask before Step 6.
 
 **The OpenAPI document is generated, not maintained.** ``/api/v1/openapi.json``
 is produced from these routers and their schemas, so it cannot drift from what
@@ -66,14 +66,12 @@ def _lifespan(services: Services,
               on_stop: Optional[Callable[[Services], Any]]):
     """Start-up and shut-down, run once per application.
 
-    Both hooks are what a *standalone* deployment passes: settling the
+    Both hooks are what the deployment passes (``asgi.py``): settling the
     previous process's ingest jobs, resuming interrupted analyses and sweeping
     staged uploads on the way in, stopping the workers on the way out. They
-    are deliberately absent when this application is mounted inside the Flask
-    console, because that process has already done all of it and owns the
-    container -- running the recovery twice would resume every unfinished
-    document a second time, and closing the workers would close them under the
-    legacy surface.
+    are optional because a test builds this application over a container it
+    owns already -- running the recovery there would resume documents the test
+    never uploaded, and the stop would close workers it did not start.
 
     Nothing is logged on the way out. Shutdown runs while the process is
     tearing down, which is exactly when a stream a handler was writing to may

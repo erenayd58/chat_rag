@@ -34,16 +34,11 @@ python-docx  # DOCX parsing
 # Web Framework
 # The product contract (/api/v1) is a FastAPI application: typed request and
 # response models, one exception table, and an OpenAPI document generated from
-# them rather than maintained beside them. uvicorn is its host; while the
-# console's Flask-era screens are still served, that application is also
-# mounted inside the WSGI process (interfaces/http/coexistence.py) and waitress
-# below is what actually binds the socket.
+# them rather than maintained beside them. uvicorn is its host and the whole
+# server -- `python -m asgi`, one process with a bounded thread pool, the same
+# on Windows and Linux. Flask, flask-cors and waitress were the console's own
+# framework and its WSGI server; the console is a Next.js application over this
+# contract now (frontend/), and Step 13 removed all three.
 fastapi
 uvicorn
-flask
-flask-cors
-# The production WSGI server (python -m wsgi). Pure Python, so it needs no
-# build tools in a slim image, and it runs the same on Windows and Linux --
-# which matters here because the runtime is deliberately one process with a
-# bounded thread pool, and gunicorn does not run on Windows at all.
-waitress
+python-multipart  # the multipart parser FastAPI needs for POST /api/v1/documents

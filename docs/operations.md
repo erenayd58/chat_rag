@@ -1,8 +1,8 @@
 # Operations — running it, its limits, and what to do when it says no
 
-The operator's and the on-call developer's doc: the two entrypoints, every
-bound the process places on itself, what `/api/health` and `/api/ops/metrics`
-mean, and a symptom-first troubleshooting table.
+The operator's and the on-call developer's doc: the entrypoint, every bound
+the process places on itself, what `GET /api/v1/health` and
+`GET /api/ops/metrics` mean, and a symptom-first troubleshooting table.
 
 Settings named here are documented once, in
 [configuration.md](configuration.md), which is what decides their defaults.
@@ -13,43 +13,40 @@ second source of truth.
 
 ## Running it
 
-There are two entrypoints, and which one is running is not a detail.
+There is one entrypoint, and it is what the container's `CMD` runs.
 
-| | Command | Server | Binds | Debugger |
-|---|---|---|---|---|
-| Development | `python app.py` | Werkzeug | `127.0.0.1` | on (`FLASK_DEBUG=false` turns it off) |
-| Production | `python -m wsgi` | waitress | `0.0.0.0` | none |
-| The API alone | `python -m asgi` | uvicorn | `0.0.0.0` | none |
+| | Command | Server | Binds |
+|---|---|---|---|
+| The backend | `python -m asgi` | uvicorn | `0.0.0.0` (`FLASK_HOST`) |
+| The console | `npm run dev` / `npm start` in `frontend/` | Next.js | `localhost:3000` |
 
-`python app.py` is for a developer at a keyboard: it keeps the reloader and the
-traceback page, and it listens on loopback only so neither is offered to the
-network the machine has joined. It is not a production runtime and is no longer
-what a deployment reaches -- the container's `CMD` is `python -m wsgi`.
+`python -m asgi` serves `/api/v1` and one operator route: **one process** with a
+bounded pool of worker threads (`WAITRESS_THREADS`, default 8), plus the one
+background thread that packages documents for the Viewer. Every handler on this
+surface is a synchronous `def` -- it retrieves, it reads a store, it waits on a
+provider -- so Starlette runs it in that pool, which is why the pool is the
+request concurrency every ingest and query ration is sized against.
 
-`python -m wsgi` serves the same application on waitress: **one process** with a
-bounded pool of request threads (`WAITRESS_THREADS`, default 8), plus the one
-background thread that packages documents for the Viewer. One process is a
-deliberate choice, not a limitation of the server -- the packaging queue lives
-in memory, the per-knowledge-base pipeline cache is a module global, and the
-vector store is an embedded database rather than a database server, so a second
-worker process would duplicate all three. `wsgi.py` says so in more detail.
+One process is a deliberate choice, not a limitation of the server: the
+packaging queue lives in memory, the per-knowledge-base pipeline cache is a
+module global, and the provider budgets are semaphores that only mean what they
+say inside one address space, so a second worker process would duplicate all
+three. `asgi.py` says so in more detail.
 
 It stops on SIGTERM (what `docker stop` and service managers send) as well as on
-Ctrl+C, draining in-flight requests first.
+Ctrl+C: uvicorn stops accepting, then the lifespan drains the ingest jobs
+already running and returns the database pool.
 
-`python -m asgi` is the third row, and not yet the one to deploy: it serves
-`/api/v1` on uvicorn and **nothing else** -- no screens, no console API, no
-Viewer relay. It is where the product is going, and it runs the same FastAPI
-application that `python -m wsgi` already serves for `/api/v1`, over the same
-container; the difference is only which surfaces are mounted. Run it when
-nothing needs the console. Its request-thread pool is sized from
-`WAITRESS_THREADS`, the same number every ingest and query limit is rationed
-against, so the two entrypoints are configured identically.
+There were two other entrypoints until Step 13 -- `python app.py` (Werkzeug,
+loopback, the debugger) and `python -m wsgi` (waitress) -- and they served the
+Flask console, its rendered screens and the Viewer's relay. Both went with that
+surface ([legacy-removal.md](legacy-removal.md)); nothing reads `FLASK_DEBUG`
+any more, and there is no debug mode to leave on by accident.
 
 ### The database
 
-`python -m wsgi`, `python app.py` and `python -m asgi` all refuse to start
-without a reachable `DATABASE_URL`, and say which host they could not reach.
+`python -m asgi` refuses to start without a reachable `DATABASE_URL`, and says
+which host it could not reach.
 That is deliberate: the knowledge bases, the ingest ledger, the content
 identities and their analysis state, the ingest journal and the gold set are
 rows, and every screen begins by listing knowledge bases. There is no degraded
@@ -89,13 +86,14 @@ own gate: [testing.md](testing.md).
 
 ## Bounded ingest (uploads as jobs)
 
-An upload is an **ingest job**. `POST /api/documents/upload` validates the
+An upload is an **ingest job**. `POST /api/v1/documents` validates the
 request, stages the file and queues the job; the parse, the chunking, any
 Deep Analysis model calls, the embeddings, the store write and the ledger
 write happen on an ingest worker. Two answers are possible:
 
 * `async=1` (what the console sends): **202** at once with `job_id` and the
-  job; poll `GET /api/ingest/jobs/<job_id>` until `status` is terminal.
+  job; poll `GET /api/v1/ingest-jobs/<job_id>` until `status` is terminal.
+  There is no second, synchronous answer: this contract always answers 202.
 * otherwise the request waits for the job (up to `INGEST_SYNC_WAIT` seconds)
   and answers exactly as before: **200** with the document, **409** when the
   store must be re-indexed first, **503** when Deep Analysis cannot run on this
@@ -160,9 +158,9 @@ again" — when it does not. **404** now means only that the job is older than
 the retention window. The staging directory is swept at start-up, because a
 file there belongs to no job.
 
-`GET /api/health` and `GET /api/ingest/jobs` show the capacity picture,
+`GET /api/v1/health` and `GET /api/v1/ingest-jobs` show the capacity picture,
 including both budgets and how many finished jobs are retained;
-`DELETE /api/ingest/jobs/<job_id>` cancels a queued job at once and a running
+`DELETE /api/v1/ingest-jobs/<job_id>` cancels a queued job at once and a running
 one at its next boundary.
 
 ## Bounded queries (chat under limits)
@@ -180,13 +178,13 @@ threads held for the length of a provider call, and three bounds close that
 | `QUERY_TIMEOUT` | 180 s | one question, start to answer |
 | `ANSWER_SLOT_WAIT` | 30 s | how long a question waits for an answer slot before it is refused |
 
-**Admission is immediate and never queues.** `POST /api/query` either enters
+**Admission is immediate and never queues.** `POST /api/v1/queries` either enters
 now or is refused now with **503**, `overloaded: true`, `reason: admission`
 and a `Retry-After` (derived from the median recent query time, within 2–30
 seconds). A queued question would hold the very thread the limit exists to
 keep free. The default is derived so that questions and synchronous uploads
 together can never take every request thread, which is what keeps
-`/api/health`, `/api/ops/metrics` and job polling answerable under any burst
+`/api/v1/health`, `/api/ops/metrics` and job polling answerable under any burst
 of either; `tests/integration/test_query_starvation.py` proves it on the
 real server, and the process warns at start-up when an explicit setting
 gives that guarantee up. The chat page puts the question back in the box
@@ -228,18 +226,17 @@ on model memory. They are now shared process-wide by model name;
 `caches.local_models` on the metrics endpoint shows what is resident and how
 often it was loaded.
 
-**The Lab's search endpoints run under the same limits.** `POST
-/api/chunks/search-vector`, `/api/chunks/search-bm25` and
-`/api/experiment/search_chunks` do the
+**Search runs under the same limits.** `POST /api/v1/searches` does the
 front half of a query on the request thread — embed the question, search the
 store, build the lexical index if this pipeline has not built it yet — so
-under no limit at all they were a way around `QUERY_MAX_ACTIVE`: a burst of
-them could hold every request thread, each waiting an unbounded time for an
-embedding slot. They take the same admission counter (the bound is on
-request threads doing retrieval, whichever endpoint asked), the same
-deadline, the same pipeline lease and the same telemetry, under
-`mode: lab.*` so an operator can tell them from chat. They make no
-answer-model call, so they are given no answer budget. Their answers are
+under no limit at all it was a way around `QUERY_MAX_ACTIVE`: a burst of
+searches could hold every request thread, each waiting an unbounded time for an
+embedding slot. (There were three such endpoints, one per retriever leg, until
+they became one resource with a `method`.) It takes the same admission counter
+(the bound is on request threads doing retrieval, whichever route asked), the
+same deadline, the same pipeline lease and the same telemetry, under
+`mode: lab.*` so an operator can tell a search from a question. It makes no
+answer-model call, so it is given no answer budget. Its answers are
 unchanged apart from the two refusals every query path shares: **503** when
 admission is full, **504** past the deadline.
 
@@ -259,7 +256,7 @@ wrapper. `GET /api/ops/metrics` carries `metrics.queries` — active and peak
 active, p50/p95/max per stage, provider wait, outcomes (`succeeded`,
 `failed`, `timed_out`, `rejected`) and the last few traces — and `query`
 (admission and answer-budget counters, the limits, the deadline semantics
-in one sentence). `/api/health` carries one line: `query.active`,
+in one sentence). `/api/v1/health` carries one line: `query.active`,
 `max_active`, `answer_inflight`, `answer_limit`, and reports `overloaded`
 while every query slot is in use. The response's `metadata.query` carries
 the same timing for that one question, so a slow answer can be correlated
@@ -271,7 +268,7 @@ default gets none of it.
 
 ## Health, metrics and the caches
 
-`GET /api/health` is the small one, for a probe: liveness, readiness and a
+`GET /api/v1/health` is the small one, for a probe: liveness, readiness and a
 line of capacity. It answers three different questions with three fields,
 and they are not the same question:
 
@@ -309,7 +306,7 @@ root lives.
 `?recent=N` (max 25) sets how many individual job traces come back. Every
 part of this answer is bounded by construction, so its size does not grow
 with uptime. A single job's own timing is on its job record, at
-`GET /api/ingest/jobs/<job_id>`.
+`GET /api/v1/ingest-jobs/<job_id>`.
 
 **What this endpoint may contain.** Counts, durations, categories, states,
 and the ids an operator needs to correlate a job with a log line -- job ids,
@@ -323,7 +320,8 @@ stored -- credential shapes blanked, absolute paths replaced by `<path>`,
 length capped -- so what is served says *what* failed and not *where*. The
 endpoint has no access boundary of its own because the application has none
 to reuse: everything it serves is aggregate by construction, and strictly
-less than `/api/kb` and `/api/chunks` already return to the same caller.
+less than `/api/v1/knowledge-bases` and a knowledge base's chunks already
+return to the same caller.
 
 **Where the logs go, and how big they get.** This application owns its file
 sink -- it is not a container's stdout that something else rotates. It writes
@@ -397,7 +395,7 @@ Symptom first. Every entry names where to look before deciding anything.
 `INGEST_QUEUE_CAPACITY` are waiting. Nothing was queued and nothing was kept;
 the staged file is gone.
 
-**Look at:** `GET /api/health` → `ingest.running`, `ingest.queued`,
+**Look at:** `GET /api/v1/health` → `ingest.running`, `ingest.queued`,
 `ingest.queue_capacity`, and `state` (it reads `overloaded`).
 `GET /api/ops/metrics` → `metrics.counters.rejected`, and `metrics.stages` for
 which stage is spending the time.
@@ -417,7 +415,7 @@ Two different refusals, deliberately distinguishable by `reason`:
 | `admission` | every request thread allowed inside a query is in use (`QUERY_MAX_ACTIVE`) | raise `WAITRESS_THREADS` and let `QUERY_MAX_ACTIVE` re-derive, or raise it explicitly — but not past `WAITRESS_THREADS - INGEST_SYNC_WAITERS - 1`, or health and job polling lose their reserved thread. The process warns at start-up if you do. |
 | `answer_capacity` | the query got in, but no answer-model slot came free within `ANSWER_SLOT_WAIT` (`ANSWER_MAX_INFLIGHT`) | raise `ANSWER_MAX_INFLIGHT` if the gateway tolerates it. This is a provider bound, not a thread bound. |
 
-**Look at:** `GET /api/health` → `query.active` / `max_active` and
+**Look at:** `GET /api/v1/health` → `query.active` / `max_active` and
 `query.answer_inflight` / `answer_limit`. `GET /api/ops/metrics` →
 `query.admission`, `query.answer_budget` (including how long callers waited)
 and `metrics.queries.outcomes`.
@@ -441,8 +439,8 @@ being built for the first time; a slow `answer` is the gateway. Raise
 
 ### A job is stuck, or ended `timed_out`
 
-**Look at:** `GET /api/ingest/jobs/<job_id>` — state, stage timings and error
-category. `GET /api/ingest/jobs` lists what is queued and running.
+**Look at:** `GET /api/v1/ingest-jobs/<job_id>` — state, stage timings and error
+category. `GET /api/v1/ingest-jobs` lists what is queued and running.
 
 | state | means |
 |---|---|
@@ -452,7 +450,7 @@ category. `GET /api/ingest/jobs` lists what is queued and running.
 | `interrupted` | the process stopped mid-job and start-up settled it against the ledger: nothing was registered, upload it again. |
 | `failed` | a real error. `error_category` says which kind; `metrics.errors` keeps a few redacted example messages per category. |
 
-**Next:** `DELETE /api/ingest/jobs/<job_id>` cancels — a queued job at once, a
+**Next:** `DELETE /api/v1/ingest-jobs/<job_id>` cancels — a queued job at once, a
 running one at its next stage boundary. A **404** means only that the job is
 older than `INGEST_JOB_RETENTION`.
 
@@ -464,7 +462,7 @@ separate on purpose, so neither path can starve the other.
 
 **Look at:** `/api/ops/metrics` → `ingest.budgets`, which carries the in-flight
 count, the limit and the seconds callers have spent waiting for a slot.
-`/api/health` → `ingest.provider_inflight` / `provider_limit` and
+`/api/v1/health` → `ingest.provider_inflight` / `provider_limit` and
 `ingest.embedding_inflight` / `embedding_limit`.
 
 **Next:** a long wait with jobs still completing is the budget doing its job.

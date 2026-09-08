@@ -29,7 +29,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
+
+V1 = http.v1.PREFIX
 from application import workspace as app_workspace
 from amsc.chunking import registry
 from amsc.chunking.example import FIXED_WINDOW
@@ -88,8 +93,8 @@ def workspace(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(workspace):
-    flask_app.app.config.update(TESTING=True)
-    with flask_app.app.test_client() as test_client:
+    with TestClient(http.create_app(entrypoint.services),
+                    raise_server_exceptions=False) as test_client:
         yield test_client
 
 
@@ -111,19 +116,16 @@ def test_one_registration_is_a_console_method(fifth):
 
 
 def test_the_api_offers_it(client, fifth, monkeypatch):
-    """Both surfaces, because both read the same registry and neither keeps a
-    list. The product contract's own discovery is driven end to end by
+    """One surface, reading the registry and keeping no list of its own. The
+    contract's discovery is driven end to end by
     ``tests/migration/test_api_v1_contract.py``; what is checked here is that
-    a chunker author gets it on the compatibility surface too, with no edit."""
+    a chunker author gets it with no edit to this repository at all."""
     monkeypatch.setattr(M, "embedder_available", lambda: (True, ""))
-    body = client.get("/api/demo/methods").get_json()
-    assert [row["key"] for row in body["methods"]] == list(M.ORDER)
-    fifth_row = body["methods"][-1]
+    body = client.get(f"{V1}/meta/chunking-methods").json()
+    assert [row["key"] for row in body["items"]] == list(M.ORDER)
+    fifth_row = body["items"][-1]
     assert fifth_row["key"] == "fixed-window" and fifth_row["label"] == "Sabit Pencere"
     assert fifth_row["available"] and not fifth_row["default"]
-
-    versioned = client.get("/api/v1/meta/chunking-methods").get_json()
-    assert [row["key"] for row in versioned["items"]] == list(M.ORDER)
 
 
 class _Chunker:
@@ -148,22 +150,25 @@ class _Pipeline:
 
 
 def test_an_upload_can_ask_for_it(tmp_path, monkeypatch, client, fifth):
-    from werkzeug.datastructures import MultiDict
-
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
+    monkeypatch.setattr(entrypoint.services, "kb_manager", manager)
     kb = manager.create("fifth-kb", chunker={"type": "structure_first"})
-    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: _Pipeline())
+    monkeypatch.setattr(entrypoint.services, "get_pipeline", lambda *a, **k: _Pipeline())
     staged = []
     monkeypatch.setattr(app_workspace, "stage_analysis",
                         lambda doc_id, **kw: staged.append(dict(kw, doc_id=doc_id)) or {"status": "pending"})
-    data = MultiDict([("file", (io.BytesIO(b"kucuk bir belge"), "belge.txt")), ("kb_id", kb["kb_id"]),
-                      ("methods", "fixed-window")])
-    response = client.post("/api/documents/upload", data=data, content_type="multipart/form-data")
-    assert response.status_code == 200, response.get_json()
+    response = client.post(
+        f"{V1}/documents",
+        files={"file": ("belge.txt", io.BytesIO(b"kucuk bir belge"), "text/plain")},
+        data={"knowledge_base_id": kb["kb_id"], "methods": ["fixed-window"]},
+    )
+    assert response.status_code == 202, response.text
+    job = entrypoint.services.ingest_jobs.get(response.json()["id"])
+    assert entrypoint.services.ingest_jobs.wait(job, 30)
     assert staged[-1]["methods"] == ["fixed-window"]
-    assert response.get_json()["chunking_mode"] == "standard", "an analysis method never changes the indexing"
+    assert job.snapshot()["result"]["chunking_mode"] == "standard", (
+        "an analysis method never changes the indexing")
 
 
 # --------------------------------------- the packager runs it, the Viewer reads it
@@ -187,62 +192,46 @@ def test_the_packager_runs_it_and_the_viewer_routes_serve_it(client, fifth, tmp_
     assert payload["arms"]["fixed-window"]["kind"] == "fixed_window"
     assert payload["live"]["methods"]["fixed-window"]["status"] == "ready"
 
-    chunks = client.get("/api/demo/viewer-analysis/fifth-doc/chunks?method=fixed-window").get_json()
-    assert chunks["success"] is True
-    arm = chunks["arms"]["fixed-window"]
-    assert arm["kind"] == "fixed_window" and arm["label"] == "Sabit Pencere"
-    assert arm["chunk_count"] == len(arm["rows"]) >= 2
-    assert all(":fw-chunk-" in row["chunk_id"] for row in arm["rows"])
-    assert all({"chunk_id", "text", "unit_ids", "token_count"} <= set(row) for row in arm["rows"])
-
-    # The Viewer v3 shell a fresh clone builds lists it too.
-    from amsc.viewer.build import build_viewer
-
-    output = tmp_path / "v3" / "index.html"
-    build_viewer({}, output, root=tmp_path)
-    html_text = output.read_text(encoding="utf-8")
-    data = re.search(r'<script id="viewer-data" type="application/json">(.*?)</script>', html_text, re.S).group(1)
-    assert '"fixed-window"' in data and "Sabit Pencere" in data
+    arm = client.get(
+        f"{V1}/documents/fifth-doc/analysis/methods/fixed-window/chunks?limit=500").json()
+    assert arm["method"] == "fixed-window" and arm["engine"] == "fixed_window"
+    assert arm["page"]["total"] == len(arm["items"]) >= 2
+    assert all(":fw-chunk-" in row["chunk_id"] for row in arm["items"])
+    assert all({"chunk_id", "text", "unit_ids", "token_count"} <= set(row) for row in arm["items"])
 
 
 def test_a_method_can_be_added_to_an_existing_document_later(client, fifth):
     analysis.stage(doc_id="fifth-doc", label="Besinci.pdf", units=_corpus(),
                    methods=["structure-only"], content_sha="fifth-sha")
     analysis._queue.join()
-    response = client.post("/api/demo/viewer-analysis/fifth-doc/methods", json={"methods": ["fixed-window"]})
-    assert response.status_code == 200, response.get_json()
+    response = client.post(f"{V1}/documents/fifth-doc/analysis/methods",
+                           json={"methods": ["fixed-window"]})
+    assert response.status_code == 202, response.text
     analysis._queue.join()
     assert analysis.read_state("fifth-doc", "fifth-sha")["ready_methods"] == ["structure-only", "fixed-window"]
 
 
 # --------------------------------------------- the Viewer needs no rebuild
-def test_the_viewer_is_told_about_it_without_a_page_rebuild(fifth, tmp_path):
+def test_the_viewer_is_told_about_it_without_a_rebuild_of_anything(client, fifth):
     """The exposure rule: a registered method cannot be invisible in the
-    Viewer because somebody forgot ``python -m amsc.viewer.build``.
+    Viewer because somebody forgot to rebuild something.
 
-    The page embeds the registry at build time, which is all a file opened
-    from disk can carry. Served, it reads the registry from its own server at
-    boot -- so a page built before this method existed still lists it. Both
-    halves are checked here: the stale build, and the live route.
+    It used to be a real risk. The Viewer was a built HTML page with the
+    registry embedded in it at build time, and it only stayed current because
+    the server it was served from re-read the registry at boot. There is no
+    such page and no such server: the Viewer is a screen of the Next.js
+    console, and its method chips come from this route at run time. Registering
+    a method is therefore the whole of exposing it -- which is what is checked
+    here, over the process's own application.
+
+    The front end's half of the same rule -- that it writes no method key down
+    anywhere -- is ``frontend/tests/catalogue.test.tsx``.
     """
-    from amsc.viewer import server as viewer_server
-    from amsc.viewer.build import build_viewer
-
-    registry.unregister(FIXED_WINDOW.key)
-    output = tmp_path / "v3" / "index.html"
-    build_viewer({}, output, root=tmp_path)
-    registry.register(FIXED_WINDOW)
-
-    page = output.read_text(encoding="utf-8")
-    embedded = re.search(r'<script id="viewer-data" type="application/json">(.*?)</script>',
-                         page, re.S).group(1)
-    assert "fixed-window" not in embedded, "the page really was built without it"
-
-    served = viewer_server.method_registry_payload()
-    assert served["order"][-1] == "fixed-window"
-    assert served["labels"]["fixed-window"] == M.METHODS["fixed-window"].label
-    assert served["meta"]["fixed-window"]["kind"] == M.METHODS["fixed-window"].engine
-    assert "/api/methods" in page and "refreshMethods" in page
+    listed = client.get(f"{V1}/meta/chunking-methods").json()["items"]
+    row = listed[-1]
+    assert row["key"] == "fixed-window"
+    assert row["label"] == M.METHODS["fixed-window"].label
+    assert row["engine"] == M.METHODS["fixed-window"].engine
 
 
 # ------------------------------------------------------- and gone again
@@ -258,28 +247,17 @@ def test_once_unregistered_the_console_forgets_it(client):
     analysis.stage(doc_id="fifth-doc", label="Besinci.pdf", units=_corpus(),
                    methods=["structure-only"], content_sha="fifth-sha")
     analysis._queue.join()
-    refused = client.get("/api/demo/viewer-analysis/fifth-doc/chunks?method=fixed-window")
-    assert refused.status_code == 400 and "unknown chunking method" in refused.get_json()["error"]
+    refused = client.get(f"{V1}/documents/fifth-doc/analysis/methods/fixed-window/chunks")
+    assert refused.status_code == 400
+    assert "unknown chunking method" in refused.json()["error"]["message"]
 
 
 # ------------------------------------------------------ drift guards
-def test_the_frontend_mode_labels_are_the_registry_labels():
-    """``chunkingModeLabel`` maps an ingest mode to a product name; the names
-    are the registry's, held here so a rename there cannot leave the badge
-    behind."""
-    script = (ROOT / "static" / "js" / "api.js").read_text(encoding="utf-8")
-    assert f"chunking_mode === 'deep_analysis') return '{M.label(M.DEEP)}'" in script
-    assert f"chunking_mode === 'standard') return '{M.label(M.STANDARD)}'" in script
-
-
-def test_the_upload_form_hard_codes_no_method_key():
-    script = (ROOT / "static" / "js" / "kb_detail.js").read_text(encoding="utf-8")
-    # ``'hybrid'`` also names a *retrieval* method on this page, so the guard
-    # is on how a chunking method is picked, not on the bare word.
-    assert "m.key ===" not in script and "m.key ==" not in script
-    for key in ("structure-only", "agentic", "markdown"):
-        assert f"'{key}'" not in script and f'"{key}"' not in script, key
-    assert "m.default" in script, "the default comes from the catalogue"
+#: The front end's own drift guards moved with the front end. A method key
+#: written down in the console's source, and a picker that knows a real one,
+#: are ``frontend/tests/catalogue.test.tsx``; a Flask-era path anywhere in it
+#: is ``frontend/tests/surface.test.ts``. Both read that source, which is where
+#: the risk is, and neither can be written here.
 
 
 def test_the_viewer_builders_and_the_console_share_one_identity():

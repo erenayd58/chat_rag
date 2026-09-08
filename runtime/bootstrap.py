@@ -1,9 +1,8 @@
 """What a process does before it serves, and what it picks up from the last one.
 
-Both entrypoints run this -- the development server in ``app.py`` and the
-production server in ``wsgi.py`` -- because the first question about a running
-instance is always which models and which state directory it is on, and the
-second is whether that is the directory somebody meant.
+``asgi.py`` runs this, because the first question about a running instance is
+always which models and which state directory it is on, and the second is
+whether that is the directory somebody meant.
 """
 
 from __future__ import annotations
@@ -53,7 +52,7 @@ def enable_console_utf8() -> None:
     stream falls back to the machine's code page -- cp1254 on a Turkish
     install, which is what this is developed on. Anything outside it then
     raises UnicodeEncodeError, and the banner below is printed before the
-    server binds, so `python -m wsgi > server.log` died at start-up with a
+    server binds, so `python -m asgi > server.log` died at start-up with a
     traceback instead of serving. It was invisible here only because the demo
     launcher sets PYTHONIOENCODING and the container image sets it too: the
     application depended on being launched by something that knew.
@@ -127,7 +126,7 @@ def startup_banner(services) -> None:
 
     if stats['total_documents'] == 0:
         print("\n⚠️  Warning: No documents ingested yet!")
-        print("   Upload one at /, or POST /api/documents/upload")
+        print("   Upload one from the console, or POST /api/v1/documents")
 
 
 def resume_background_work(services) -> None:
@@ -137,7 +136,7 @@ def resume_background_work(services) -> None:
     every input it needs; picking it up here is what makes the integration
     survive a stop/start rather than needing the document re-uploaded.
 
-    This is also why the runtime is one process (see ``wsgi.py``): the
+    This is also why the runtime is one process (see ``asgi.py``): the
     packaging queue lives in memory and its worker is one thread, so a second
     process running this would resume the same documents a second time.
     """
@@ -172,27 +171,3 @@ def resume_background_work(services) -> None:
             print(f"🧹 Removed {len(swept)} staged upload(s) left by a previous process")
     except Exception as e:  # noqa: BLE001 - never block start-up on this
         logger.warning(f"Could not sweep the upload staging directory: {e}")
-
-
-def development_server_options() -> dict:
-    """How `python app.py` runs: the development server, and only that.
-
-    Debug stays on by default, because a developer at a keyboard wants the
-    reloader and the traceback page and has always had them; FLASK_DEBUG=false
-    turns them off, which is what the demo launcher does to stop the reloader
-    building the pipeline twice.
-
-    The host default is loopback, not 0.0.0.0. A server with an interactive
-    debugger attached should not be reachable from whatever network the laptop
-    has joined, and this one is a development server by definition -- a
-    deployment runs `python -m wsgi`, which binds every interface because it
-    has no debugger to expose. FLASK_HOST still overrides it for anyone who
-    wants that deliberately.
-    """
-    return {
-        'host': os.getenv('FLASK_HOST', '127.0.0.1'),
-        'port': int(os.getenv('FLASK_PORT', '5005')),
-        'debug': os.getenv('FLASK_DEBUG', 'true').strip().lower() not in {
-            '0', 'false', 'no', 'off'
-        },
-    }

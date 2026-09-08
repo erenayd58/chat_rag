@@ -19,12 +19,14 @@ Four groups:
 * **the exception table.** Each application refusal, provoked through a seam
   rather than asserted about a dictionary, because a table nothing routes
   through is a table that can be wrong.
-* **coexistence.** One container under both surfaces, one route list, and a
-  bridge that carries the console's session across.
+* **the process's own application.** What ``interfaces.http.create_app``
+  composes: the contract, one operator route beside it that is deliberately
+  off the contract, and one container underneath both.
 
-The application is driven through Starlette's own transport here, not through
-Flask, so a failure names the adapter rather than the bridge. The bridge has
-its own tests at the end, and the contract suite exercises it end to end.
+Until Step 13 there was a fifth group here -- coexistence -- for the bridge
+that mounted this application inside the Flask console so one process could
+serve both. That console is gone and this application is the process
+(``asgi.py``), so what those tests were guarding is now the group above.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-import app as flask_app
+import asgi as entrypoint
 from application import ingest as app_ingest
 from application.errors import Conflict, InvalidRequest, NotFound, NotReady, Unavailable
 from components.ingest import IngestManager
@@ -47,7 +49,7 @@ from components.viewer import methods as M
 from config.ingest import IngestLimits
 from core.exceptions import IngestOverloaded, QueryOverloaded, QueryTimeout
 from core.models import DocumentChunk, RetrievalResult
-from interfaces.http import coexistence
+import interfaces.http as http
 from interfaces.http import v1
 from interfaces.http.v1 import envelope
 from utils.document_tracker import DocumentTracker
@@ -180,7 +182,7 @@ def wired(tmp_path, monkeypatch):
     store = Store()
     pipeline = Pipeline(store)
     ledger_file = str(tmp_path / "ledger.json")
-    container = flask_app.services
+    container = entrypoint.services
 
     monkeypatch.setattr(container, "kb_manager", KnowledgeBaseManager(str(tmp_path / "kbs.json")))
     monkeypatch.setattr(container, "documents", lambda: DocumentTracker(ledger_file))
@@ -238,7 +240,7 @@ def test_every_served_route_appears_in_the_openapi_document(api):
     is a claim about the code and this is the claim being made."""
     served = {
         (method, path)
-        for path, methods, _ in coexistence.served_routes(api.client.app.routes)
+        for path, methods, _ in http.served_routes(api.client.app.routes)
         for method in methods
         if method not in {"HEAD", "OPTIONS"} and not path.endswith("openapi.json")
     }
@@ -679,89 +681,40 @@ def test_a_knowledge_base_and_a_document_live_and_die_through_this_api(api):
     assert api.client.get(f"{V1}/knowledge-bases").json()["page"]["total"] == 0
 
 
-# ============================================================ coexistence
-def test_the_flask_process_serves_the_contract_through_the_asgi_bridge(wired):
-    """The route list Flask registers is read from FastAPI's own table, so
-    there is one list of what `/api/v1` serves rather than two."""
-    served = {rule.rule for rule in flask_app.app.url_map.iter_rules()
-              if rule.rule.startswith(f"{V1}/") or rule.rule == V1}
-    from_fastapi = {coexistence.rule_for(path)
-                    for path, _, _ in coexistence.served_routes(
-                        v1.create_app(wired.container).routes)}
-    assert served == from_fastapi
+# =============================================== the process's own application
+def test_the_process_serves_the_contract_and_exactly_one_route_beside_it(wired):
+    """``interfaces.http.create_app`` is the whole server. The operator route
+    is the only thing on it that ``/api/v1`` does not publish, and it is off
+    the contract deliberately -- its body reports internals that are free to
+    change."""
+    whole = http.surface(http.create_app(wired.container))
+    contract = http.surface(v1.create_app(wired.container))
+    assert whole - contract == {("GET", "/api/ops/metrics")}
+    assert contract, "the contract serves nothing"
 
 
-def test_both_surfaces_answer_from_one_container_with_nothing_between_them(wired):
-    """The parity claim, held across the framework boundary: a knowledge base
-    created through FastAPI is the record the Flask surface lists, with no
-    synchronisation of any kind."""
-    flask_app.app.config.update(TESTING=True)
-    with flask_app.app.test_client() as client:
-        made = client.post(f"{V1}/knowledge-bases", json={"name": "Shared"})
-        assert made.status_code == 201, made.get_json()
-        kb_id = made.get_json()["id"]
-
-        legacy = client.get("/api/kb").get_json()
-        assert [kb["kb_id"] for kb in legacy["knowledge_bases"]] == [kb_id]
-
-        # ...and the other direction, through the legacy adapter's own writer.
-        renamed = client.put(f"/api/kb/{kb_id}", json={"name": "Renamed"})
-        assert renamed.status_code == 200, renamed.get_json()
-        assert client.get(f"{V1}/knowledge-bases/{kb_id}").get_json()["name"] == "Renamed"
-
-        assert client.delete(f"{V1}/knowledge-bases/{kb_id}").status_code == 204
-        assert client.get("/api/kb").get_json()["knowledge_bases"] == []
+def test_the_operator_route_answers_from_the_same_container(wired):
+    """One container under both, handed in rather than imported: the metrics
+    an operator reads are this process's own."""
+    with TestClient(http.create_app(wired.container),
+                    raise_server_exceptions=False) as client:
+        assert client.post(f"{V1}/knowledge-bases", json={"name": "Ops"}).status_code == 201
+        body = client.get("/api/ops/metrics").json()
+    assert body["success"] is True
+    assert body["ingest"]["workers"] == wired.container.ingest_jobs.snapshot()["workers"]
 
 
-def test_the_bridge_carries_the_consoles_session_and_never_starts_one(wired):
-    """A browser with both surfaces open gets one cached pipeline, not two --
-    and a call to the contract never sets a cookie, because this surface has
-    no session of its own to start.
-    """
+def test_a_caller_with_no_session_of_its_own_shares_one_cache_entry(wired):
+    """The session id selects a cached pipeline and nothing else. There is no
+    cookie on this surface, so a plain client gets the shared entry rather
+    than a pipeline of its own per request."""
     seen: list[str] = []
     wired.container.get_pipeline = lambda session_id, kb_id=None: (
         seen.append(session_id) or Pipeline(wired.store))
 
-    flask_app.app.config.update(TESTING=True)
-    with flask_app.app.test_client() as client:
-        # A page hands the browser its session id, exactly as the console does.
-        client.get("/")
+    with TestClient(v1.create_app(wired.container)) as client:
         answered = client.get(f"{V1}/meta/models")
         assert answered.status_code == 200
-        assert "Set-Cookie" not in answered.headers
+        assert "set-cookie" not in answered.headers, "this surface starts no session"
 
-    assert seen and all(name and name != "global" for name in seen), seen
-
-
-def test_the_bridge_answers_with_the_status_headers_and_body_it_was_given(wired):
-    """The three things a transport can lose. Driven through Flask, compared
-    with the same request driven through Starlette."""
-    flask_app.app.config.update(TESTING=True)
-    with flask_app.app.test_client() as flask_client:
-        through_flask = flask_client.post(f"{V1}/knowledge-bases", json={"name": "Bridge"})
-    with TestClient(v1.create_app(wired.container)) as direct:
-        through_asgi = direct.post(f"{V1}/knowledge-bases", json={"name": "Bridge 2"})
-
-    assert through_flask.status_code == through_asgi.status_code == 201
-    assert through_flask.headers["Content-Type"] == through_asgi.headers["content-type"]
-    assert through_flask.headers["Location"].startswith(f"{V1}/knowledge-bases/")
-    assert set(through_flask.get_json()) == set(through_asgi.json())
-
-
-def test_a_legacy_route_is_untouched_by_the_port(wired):
-    """The compatibility surface is not a casualty of the migration: its
-    shapes, its ``success`` envelope and its status codes are the ones the
-    console's JavaScript and the Viewer's relay were written against."""
-    flask_app.app.config.update(TESTING=True)
-    with flask_app.app.test_client() as client:
-        health = client.get("/api/health")
-        assert health.status_code in (200, 503)
-        assert "status" in health.get_json()
-
-        made = client.post("/api/kb", json={"name": "Legacy", "chunker": {"type": "structure_first"}})
-        assert made.status_code == 200
-        assert made.get_json()["success"] is True
-
-        missing = client.get("/api/kb/nope")
-        assert missing.status_code == 404
-        assert missing.get_json()["success"] is False
+    assert seen == ["global"], seen

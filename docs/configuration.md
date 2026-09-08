@@ -36,7 +36,7 @@ that.
 |---|---|---|
 | [config/paths.py](../config/paths.py) | where every **file** this process writes goes, under `CHAT_RAG_DATA_DIR` | resolves; reports refusals |
 | [config/database.py](../config/database.py) | the relational store: `DATABASE_URL` and the connection pool | fail fast; unset is refused at the first use, by name |
-| [config/runtime.py](../config/runtime.py) | the server process: `FLASK_HOST`, `FLASK_PORT`, `WAITRESS_THREADS`, `WAITRESS_CHANNEL_TIMEOUT` | fail fast |
+| [config/runtime.py](../config/runtime.py) | the server process: `FLASK_HOST`, `FLASK_PORT`, `WAITRESS_THREADS`, `WAITRESS_CHANNEL_TIMEOUT` (the names are the deployment's, kept when Flask and waitress went — see below) | fail fast |
 | [config/ingest.py](../config/ingest.py) | ingest workers, queue, deadlines, provider/embedding budgets, pipeline cache | fail fast |
 | [config/query.py](../config/query.py) | query admission, answer budget, deadlines | fail fast |
 | [config/settings.py](../config/settings.py) | everything else: models, endpoints, retrieval, chunking, parsing | fail fast on the strict ones |
@@ -52,7 +52,7 @@ the first upload.
 |---|---|---|
 | **database** | `DATABASE_URL`, `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`, `DATABASE_POOL_TIMEOUT`, `DATABASE_POOL_RECYCLE`, `DATABASE_CONNECT_TIMEOUT`, `DATABASE_ECHO` | where the relational records live and how many connections may reach them. `DATABASE_URL` has no default and cannot have one — see [database.md](database.md) |
 | **state** | `CHAT_RAG_DATA_DIR`, `STRUCTURED_PARSER_CACHE` | moves where every **file** the process persists lives. One directory covers all of them; the records and the vectors are not among them — they are in PostgreSQL |
-| **server** | `FLASK_HOST`, `FLASK_PORT`, `WAITRESS_THREADS`, `WAITRESS_CHANNEL_TIMEOUT`, `FLASK_SECRET_KEY` | the process itself. `WAITRESS_THREADS` is the number every other ration is sized against |
+| **server** | `FLASK_HOST`, `FLASK_PORT`, `WAITRESS_THREADS`, `WAITRESS_CHANNEL_TIMEOUT` | the process itself. `WAITRESS_THREADS` is the number every other ration is sized against, and it sizes the worker pool the synchronous handlers run in |
 | **ingest limits** | `INGEST_WORKERS`, `INGEST_QUEUE_CAPACITY`, `INGEST_JOB_TIMEOUT`, `INGEST_SYNC_WAIT`, `INGEST_SYNC_WAITERS`, `INGEST_JOB_RETENTION` | how much uploading can happen at once and for how long |
 | **provider budgets** | `PROVIDER_MAX_INFLIGHT`, `DEEP_ANALYSIS_CONCURRENCY`, `EMBEDDING_MAX_INFLIGHT`, `ANSWER_MAX_INFLIGHT` | how many calls may be in flight to each external service. Three separate caps so no path can starve another |
 | **query limits** | `QUERY_MAX_ACTIVE`, `QUERY_TIMEOUT`, `ANSWER_SLOT_WAIT` | how many questions run at once, and for how long |
@@ -86,10 +86,25 @@ workers=_number(env, "INGEST_WORKERS", _DEFAULTS.workers, int)
 `WAITRESS_THREADS` is the one every other ration is sized against
 (`INGEST_SYNC_WAITERS` defaults to half of it, `QUERY_MAX_ACTIVE` to
 `threads - sync_waiters - 1`). It has exactly one reader, `config/runtime.py`.
-Before, `wsgi.py`, `config/ingest.py` and `config/query.py` each read it with
-the default `8` written out, and `wsgi.py`'s parser silently forgave a bad
-value while the others did not — so `WAITRESS_THREADS=-4` produced a server
-with eight threads and limits sized against minus four.
+Before, the server entrypoint, `config/ingest.py` and `config/query.py` each
+read it with the default `8` written out, and the entrypoint's parser silently
+forgave a bad value while the others did not — so `WAITRESS_THREADS=-4`
+produced a server with eight threads and limits sized against minus four.
+
+**The four server names outlived their frameworks.** Flask and waitress were
+removed in Step 13; `FLASK_HOST`, `FLASK_PORT`, `WAITRESS_THREADS` and
+`WAITRESS_CHANNEL_TIMEOUT` were not, because they are what every `.env`, the
+compose file and the container image already carry. Renaming a setting is a
+*silent* change: the old name stops being read and the default takes over. It
+is left to whoever decides to make it deliberately, with a migration note
+([legacy-removal.md](legacy-removal.md)).
+
+`INGEST_SYNC_WAIT` and `INGEST_SYNC_WAITERS` are in the same position for a
+different reason. They bound a synchronous upload, and no route makes one any
+more — `POST /api/v1/documents` always answers 202 with the job. The
+reservation is kept because it is subtracted from the `QUERY_MAX_ACTIVE`
+default: removing it would raise the number of questions a deployment answers
+at once, which is a change to what it does rather than a cleanup.
 
 ## Cross-setting rules
 
@@ -137,7 +152,6 @@ Keys are configuration, never defaults or source constants. Most of this
 application configures the *name* of the variable holding a key
 (`ANSWER_API_KEY_ENV`, `EMBEDDING_API_KEY_ENV`, `DEEP_ANALYSIS_API_KEY_ENV`);
 the key itself is read at request time and never stored, logged or serialised.
-`FLASK_SECRET_KEY` falls back to a per-process random key with a warning.
 
 `Settings.to_dict()` redacts everything named in `SECRET_ATTRIBUTES`, and
 `Settings.effective_configuration()` — what the banner and `/api/ops/metrics`

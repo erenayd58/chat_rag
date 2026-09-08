@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-import app as flask_app
+import asgi as entrypoint
 from application.services import build_settings_for_kb
 
 

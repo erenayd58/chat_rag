@@ -29,7 +29,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 #: Imported in the order a request path loads them, most-depended-on first, so
-#: a failure names the deepest module that broke rather than ``app``.
+#: a failure names the deepest module that broke rather than ``asgi``.
 PRODUCT_MODULES = (
     "config.settings",
     "config.paths",
@@ -47,7 +47,6 @@ PRODUCT_MODULES = (
     "application.query",
     "interfaces.http.v1",
     "interfaces.http",
-    "app",
     "asgi",
 )
 
@@ -76,12 +75,11 @@ def _amsc_origin() -> str:
 
 
 def main() -> int:
-    # Importing ``app`` builds the default pipeline against whatever state
+    # Importing ``asgi`` builds the default pipeline against whatever state
     # directory is configured. Point it at a throwaway one so a smoke check
     # never reads or writes a real deployment's knowledge bases.
     os.environ.setdefault("CHAT_RAG_DATA_DIR", os.path.join(tempfile.gettempdir(), "chat_rag-import-smoke"))
-    os.environ.setdefault("FLASK_DEBUG", "false")
-    # Importing ``app`` builds the default pipeline, and the default embedding
+    # Importing ``asgi`` builds the default pipeline, and the default embedding
     # provider loads a sentence-transformers model in its constructor -- which
     # downloads one when the machine has none cached. Whether the declared
     # dependencies satisfy the product's imports has nothing to do with model

@@ -1,19 +1,24 @@
-"""The Lab's retrieval endpoints are not a way around the query limits.
+"""Search is not a way around the query limits.
 
-Four endpoints do the front half of a query on the request thread, exactly
-as ``/api/query`` does -- embed the question, search the store, build the
-knowledge base's lexical index if this pipeline has not built it yet -- and
-they ran under no limit at all. A burst of them could hold every request
-thread, each waiting an unbounded time for an embedding slot, which is the
-starvation ``QUERY_MAX_ACTIVE`` exists to prevent: the bound was on one
-endpoint rather than on the work.
+``POST /api/v1/searches`` does the front half of a query on the request
+thread, exactly as ``POST /api/v1/queries`` does -- embed the question, search
+the store, build the knowledge base's lexical index if this pipeline has not
+built it yet -- and it once ran under no limit at all. A burst of searches
+could hold every request thread, each waiting an unbounded time for an
+embedding slot, which is the starvation ``QUERY_MAX_ACTIVE`` exists to
+prevent: the bound was on one endpoint rather than on the work.
 
-They make no answer-model call, so they are given no answer budget. What
-they are given is the three things the query path already had, and these
-tests pin each: the same admission counter (so the bound is on request
-threads doing retrieval, whichever endpoint asked), the query deadline
-(which is what bounds the embedding-slot wait), and the measurement, under
-their own ``mode``.
+There were four such endpoints when this was written -- the Flask-era Lab had
+a route per retrieval leg -- and they are one resource with a ``method`` now
+(``docs/legacy-removal.md``). Every method is driven below, because the
+question is what the *work* costs and a dense leg costs an embedding call that
+a lexical one does not.
+
+A search makes no answer-model call, so it is given no answer budget. What it
+is given is the three things the query path already had, and these tests pin
+each: the same admission counter (so the bound is on request threads doing
+retrieval, whichever route asked), the query deadline (which is what bounds
+the embedding-slot wait), and the measurement, under its own ``mode``.
 
 The pipeline is a stub built *through* the cache, so the lease is real. No
 provider is reached.
@@ -26,7 +31,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
+
+V1 = http.v1.PREFIX
 from components.ingest import limits as L
 from components.knowledgebase.manager import KnowledgeBaseManager
 from components.observability import telemetry as T
@@ -117,11 +127,10 @@ def registry(monkeypatch):
 def lab(tmp_path, monkeypatch, registry):
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
-    flask_app.app.config.update(TESTING=True)
+    monkeypatch.setattr(entrypoint.services, "kb_manager", manager)
 
     admission = Q.QueryAdmission(2)
-    monkeypatch.setattr(flask_app.services, "query_admission", admission)
+    monkeypatch.setattr(entrypoint.services, "query_admission", admission)
     answers = L.ProviderBudget(2)
     monkeypatch.setattr(Q, "_answer_budget", answers)
     embeddings = L.ProviderBudget(2)
@@ -130,9 +139,9 @@ def lab(tmp_path, monkeypatch, registry):
 
     # Built through the cache, not around it: the lease the endpoint takes
     # is then a real lease on a real entry.
-    flask_app.services.pipeline_cache.clear()
+    entrypoint.services.pipeline_cache.clear()
     monkeypatch.setattr(
-        flask_app.services.pipeline_cache, "_build",
+        entrypoint.services.pipeline_cache, "_build",
         lambda session, kb: LabPipeline(transport, embeddings, watch=watched.get("watch")),
     )
     kb = manager.create("lab-kb", chunker={"type": "structure_first"})
@@ -141,28 +150,34 @@ def lab(tmp_path, monkeypatch, registry):
                            watched=watched)
 
 
-#: Every endpoint that reaches retrieval, with a request that gets there.
-ENDPOINTS = {
-    "lab.search_vector": ("/api/chunks/search-vector",
-                          lambda kb: {"query": QUESTION, "kb_id": kb, "offset": 0, "limit": 5}),
-    "lab.search_bm25": ("/api/chunks/search-bm25",
-                        lambda kb: {"query": QUESTION, "kb_id": kb, "offset": 0, "limit": 5}),
-    "lab.experiment_search": ("/api/experiment/search_chunks",
-                              lambda kb: {"query": QUESTION, "kb_id": kb, "method": "bm25", "top_k": 5}),
-}
+#: The retrieval methods one search resource offers. Every one of them
+#: reaches retrieval; ``vector`` is the one that also embeds the question.
+METHODS = ("bm25", "hybrid", "vector")
+
+#: The one ``mode`` every search is measured under. It used to be one per
+#: endpoint, because there was an endpoint per leg.
+SEARCH_MODE = "lab.experiment_search"
 
 
-def post(client, lab, mode):
-    path, body = ENDPOINTS[mode]
-    return client.post(path, json=body(lab.kb_id))
+def api():
+    """One client over the process's own application."""
+    return TestClient(http.create_app(entrypoint.services),
+                      raise_server_exceptions=False)
+
+
+def post(client, lab, method):
+    return client.post(f"{V1}/searches", json={
+        "query": QUESTION, "knowledge_base_id": lab.kb_id,
+        "method": method, "limit": 5,
+    })
 
 
 # ------------------------------------------------------------- admitted
-@pytest.mark.parametrize("mode", sorted(ENDPOINTS))
-def test_a_lab_search_is_admitted_measured_and_takes_no_answer_slot(lab, mode):
-    with flask_app.app.test_client() as client:
-        response = post(client, lab, mode)
-    assert response.status_code == 200, response.get_json()
+@pytest.mark.parametrize("method", METHODS)
+def test_a_search_is_admitted_measured_and_takes_no_answer_slot(lab, method):
+    with api() as client:
+        response = post(client, lab, method)
+    assert response.status_code == 200, response.json()
 
     assert lab.admission.snapshot()["accepted_total"] == 1
     assert lab.admission.active == 0, "released on the way out"
@@ -172,83 +187,85 @@ def test_a_lab_search_is_admitted_measured_and_takes_no_answer_slot(lab, mode):
 
     queries = lab.registry.snapshot()["queries"]
     assert queries["measured"] == 1
-    assert queries["recent"][0]["mode"] == mode, "Lab traffic is distinguishable from chat"
+    assert queries["recent"][0]["mode"] == SEARCH_MODE, (
+        "search traffic is distinguishable from a question")
     assert queries["recent"][0]["status"] == "succeeded"
     assert queries["outcomes"] == {"succeeded": 1}
 
 
-def test_the_pipeline_is_leased_for_the_length_of_a_lab_search(lab):
+def test_the_pipeline_is_leased_for_the_length_of_a_search(lab):
     """A burst of other sessions must not evict this pipeline and close its
     store while the search is reading it."""
     seen = []
-    lab.watched["watch"] = lambda: seen.append(flask_app.services.pipeline_cache.snapshot()["leased"])
-    with flask_app.app.test_client() as client:
-        assert post(client, lab, "lab.search_bm25").status_code == 200
+    lab.watched["watch"] = lambda: seen.append(entrypoint.services.pipeline_cache.snapshot()["leased"])
+    with api() as client:
+        assert post(client, lab, "bm25").status_code == 200
     assert seen == [1], "leased while the retriever was running"
-    assert flask_app.services.pipeline_cache.snapshot()["leased"] == 0
+    assert entrypoint.services.pipeline_cache.snapshot()["leased"] == 0
 
 
 # ------------------------------------------------------------- refused
-@pytest.mark.parametrize("mode", sorted(ENDPOINTS))
-def test_a_lab_search_is_refused_when_every_query_slot_is_in_use(lab, mode):
+@pytest.mark.parametrize("method", METHODS)
+def test_a_search_is_refused_when_every_query_slot_is_in_use(lab, method):
     """The same 503 a question gets, for the same reason, with the same
-    Retry-After: one shape, whichever endpoint was asked."""
+    Retry-After: one shape, whichever method was asked for."""
     assert lab.admission.try_enter() and lab.admission.try_enter()
     try:
-        with flask_app.app.test_client() as client:
-            response = post(client, lab, mode)
+        with api() as client:
+            response = post(client, lab, method)
     finally:
         lab.admission.leave()
         lab.admission.leave()
 
     assert response.status_code == 503
-    body = response.get_json()
-    assert body["overloaded"] is True and body["reason"] == "admission"
-    assert body["retry_after_seconds"] >= Q.RETRY_AFTER_MIN
-    assert response.headers["Retry-After"] == str(int(body["retry_after_seconds"]))
+    error = response.json()["error"]
+    assert error["type"] == "overloaded" and error["details"]["reason"] == "admission"
+    assert error["details"]["retry_after_seconds"] >= Q.RETRY_AFTER_MIN
+    assert response.headers["Retry-After"] == str(int(error["details"]["retry_after_seconds"]))
     assert lab.registry.snapshot()["counters"]["query.rejected"] == 1
 
 
-def test_lab_searches_and_questions_share_one_bound(lab, monkeypatch):
+def test_searches_and_questions_share_one_bound(lab, monkeypatch):
     """The bound is on request threads doing retrieval, not on one route.
-    With the only slot held by a Lab search, a question is refused too --
-    and the reverse -- which is what makes the starvation guarantee hold
-    across the whole retrieval surface rather than on /api/query alone."""
+    With the only slot held by a search, a question is refused too -- and the
+    reverse -- which is what makes the starvation guarantee hold across the
+    whole retrieval surface rather than on one endpoint."""
     single = Q.QueryAdmission(1)
-    monkeypatch.setattr(flask_app.services, "query_admission", single)
+    monkeypatch.setattr(entrypoint.services, "query_admission", single)
 
     assert single.try_enter(), "stand in for a Lab search in flight"
-    with flask_app.app.test_client() as client:
-        question = client.post("/api/query", json={"question": "soru", "kb_id": lab.kb_id})
+    with api() as client:
+        question = client.post(f"{V1}/queries",
+                               json={"question": "soru", "knowledge_base_id": lab.kb_id})
         assert question.status_code == 503
-        assert question.get_json()["reason"] == "admission"
+        assert question.json()["error"]["details"]["reason"] == "admission"
         # ... and health still answers, and says why.
-        health = client.get("/api/health").get_json()
+        health = client.get(f"{V1}/health").json()
         assert health["state"] == "overloaded" and health["ready"] is True
         assert "every query slot is in use" in health["reasons"][0]
-        assert health["query"]["active"] == 1
+        assert health["capacity"]["query"]["active"] == 1
     single.leave()
 
     # The reverse direction: a question in flight refuses a Lab search.
     assert single.try_enter()
-    with flask_app.app.test_client() as client:
-        refused = post(client, lab, "lab.experiment_search")
+    with api() as client:
+        refused = post(client, lab, "hybrid")
     single.leave()
-    assert refused.status_code == 503 and refused.get_json()["reason"] == "admission"
+    assert refused.status_code == 503
+    assert refused.json()["error"]["details"]["reason"] == "admission"
 
 
 # ------------------------------------------------------------- deadline
-def test_the_query_deadline_reaches_a_lab_search(lab, monkeypatch):
-    """The endpoint's embedding call goes through the same wrapper a
+def test_the_query_deadline_reaches_a_search(lab, monkeypatch):
+    """A dense search's embedding call goes through the same wrapper a
     question's does, so the same guard stops it: 504, nothing embedded."""
     monkeypatch.setattr(Q.QueryGuard, "for_timeout",
                         classmethod(lambda cls, seconds, clock=None: cls(deadline=-1.0)))
-    with flask_app.app.test_client() as client:
-        response = post(client, lab, "lab.search_vector")
+    with api() as client:
+        response = post(client, lab, "vector")
 
     assert response.status_code == 504
-    body = response.get_json()
-    assert body["timed_out"] is True and body["success"] is False
+    assert response.json()["error"]["type"] == "timeout"
     assert lab.transport.calls == 0, "out of time: no embedding request was made"
     assert lab.admission.active == 0, "and the slot came back"
     assert lab.registry.snapshot()["queries"]["outcomes"] == {"timed_out": 1}
@@ -261,59 +278,64 @@ def test_a_lexical_search_runs_to_the_end_of_its_stage(lab, monkeypatch):
     admitted, still measured, and still bounded by the admission count."""
     monkeypatch.setattr(Q.QueryGuard, "for_timeout",
                         classmethod(lambda cls, seconds, clock=None: cls(deadline=-1.0)))
-    with flask_app.app.test_client() as client:
-        response = post(client, lab, "lab.search_bm25")
+    with api() as client:
+        response = post(client, lab, "bm25")
     assert response.status_code == 200
     assert lab.admission.active == 0
     assert "clamped" in Q.QUERY_DEADLINE_SEMANTICS
 
 
-# -------------------------------------------------------- unchanged shape
-def test_the_answers_are_what_the_lab_screen_already_expected(lab):
-    with flask_app.app.test_client() as client:
-        search = post(client, lab, "lab.experiment_search").get_json()
-        vector = post(client, lab, "lab.search_vector").get_json()
-        bm25 = post(client, lab, "lab.search_bm25").get_json()
+# ---------------------------------------------------------- the answer shape
+def test_a_search_answers_ranked_rows_and_names_the_method_that_ran(lab):
+    with api() as client:
+        hybrid = post(client, lab, "hybrid").json()
+        vector = post(client, lab, "vector").json()
+        bm25 = post(client, lab, "bm25").json()
 
-    assert search["success"] and search["retrieval_method"] == "bm25"
-    assert [c["chunk_id"] for c in search["chunks"]] == ["c0", "c1", "c2"]
-    assert vector["success"] and len(vector["chunks"]) == 3
-    assert vector["search_metadata"]["search_method"] == "vector"
-    assert bm25["success"] and bm25["chunks"][0]["retrieval_method"] == "bm25"
-
-
-def test_a_request_that_never_reaches_retrieval_still_answers_as_before(lab):
-    """Validation refusals keep their status and their message."""
-    with flask_app.app.test_client() as client:
-        assert client.post("/api/chunks/search-bm25",
-                           json={"query": "", "kb_id": lab.kb_id}).status_code == 400
-        missing_kb = client.post("/api/chunks/search-vector", json={"query": QUESTION})
-        assert missing_kb.status_code == 400
-        assert "Knowledge base" in missing_kb.get_json()["error"]
+    assert hybrid["method"] == "hybrid"
+    assert [c["id"] for c in hybrid["items"]] == ["c0", "c1", "c2"]
+    assert hybrid["knowledge_base_id"] == lab.kb_id
+    assert len(vector["items"]) == 3 and vector["method"] == "vector"
+    assert bm25["items"][0]["retrieval_method"] == "bm25"
 
 
-def test_an_endpoint_failure_is_still_a_500_and_releases_its_slot(lab, monkeypatch):
+def test_a_request_that_never_reaches_retrieval_is_still_refused_by_name(lab):
+    """Validation refusals keep their status and their message, and take no
+    slot: an empty question is answered before admission."""
+    with api() as client:
+        empty = client.post(f"{V1}/searches",
+                            json={"query": "", "knowledge_base_id": lab.kb_id})
+        assert empty.status_code == 400
+        assert "Query is required" in empty.json()["error"]["message"]
+
+        unknown = client.post(f"{V1}/searches", json={
+            "query": QUESTION, "knowledge_base_id": lab.kb_id, "method": "telepathy"})
+        assert unknown.status_code == 400
+        assert unknown.json()["error"]["details"]["supported"] == ["hybrid", "bm25", "vector"]
+
+
+def test_a_search_failure_is_still_a_500_and_releases_its_slot(lab, monkeypatch):
     lab.watched["watch"] = lambda: (_ for _ in ()).throw(RuntimeError("store broke"))
-    with flask_app.app.test_client() as client:
-        response = post(client, lab, "lab.search_bm25")
+    with api() as client:
+        response = post(client, lab, "bm25")
     assert response.status_code == 500
     assert lab.admission.active == 0
     recent = lab.registry.snapshot()["queries"]["recent"][0]
-    assert recent["status"] == "failed" and recent["mode"] == "lab.search_bm25"
+    assert recent["status"] == "failed" and recent["mode"] == SEARCH_MODE
 
 
-def test_no_answer_model_is_ever_reached_from_the_lab(lab, monkeypatch):
-    """The justification for giving these endpoints no answer budget."""
+def test_no_answer_model_is_ever_reached_from_a_search(lab, monkeypatch):
+    """The justification for giving this endpoint no answer budget."""
     model = GatedAnswerModel()
     model.release()
-    monkeypatch.setattr(flask_app.services.pipeline_cache, "_build", lambda session, kb: SimpleNamespace(
+    monkeypatch.setattr(entrypoint.services.pipeline_cache, "_build", lambda session, kb: SimpleNamespace(
         settings=SimpleNamespace(embedding_model_name="test/embedding"),
         hybrid_retriever=Retriever(), vector_db=Store(),
         embedding_model=Embedding(lab.transport, lab.embeddings),
         llm_model=model, answer_model=model,
     ))
-    with flask_app.app.test_client() as client:
-        for mode in sorted(ENDPOINTS):
-            assert post(client, lab, mode).status_code == 200
+    with api() as client:
+        for method in METHODS:
+            assert post(client, lab, method).status_code == 200
     assert model.calls == 0
     assert lab.answers.snapshot()["acquired_total"] == 0

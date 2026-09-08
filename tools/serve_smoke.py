@@ -1,20 +1,21 @@
-"""Start the production server, ask it one question, stop it.
+"""Start the server, ask it one question, stop it.
 
     python tools/serve_smoke.py
 
 ``tools/import_smoke.py`` proves the declared dependencies can be imported.
 This proves the next thing along: that the entrypoint a deployment actually
-runs (``python -m wsgi``) binds a socket, serves a request and stops when it is
+runs (``python -m asgi``) binds a socket, serves a request and stops when it is
 asked to. It is what tells "the modules import" apart from "the container
 serves", and it is cheap enough to run in the image build.
 
 What it checks
 --------------
 
-* the production entrypoint starts as its own process, exactly as the
-  container's CMD starts it;
-* ``/api/health`` answers 200 over a real socket;
-* the response is served by waitress, not by Werkzeug's development server;
+* the entrypoint starts as its own process, exactly as the container's CMD
+  starts it;
+* ``/api/v1/health`` answers 200 over a real socket;
+* the response is served by uvicorn, which is what proves the process that
+  answered is the one the container runs;
 * the process shuts down on the signal a service manager sends, and on POSIX
   it exits 0 rather than being killed (Windows has no graceful terminate to
   send, so there the exit status is not asserted).
@@ -26,9 +27,9 @@ own -- if the checkout's ``.env`` could still supply a state path -- this
 smoke would be writing into the developer's own checkout to answer a health
 request.
 
-The second cannot have a throwaway: the production entrypoint refuses to serve
-without a database, which is the behaviour this smoke would otherwise be
-proving by accident. With ``DATABASE_URL`` unset the smoke says so and stops,
+The second cannot have a throwaway: the entrypoint refuses to serve without a
+database, which is the behaviour this smoke would otherwise be proving by
+accident. With ``DATABASE_URL`` unset the smoke says so and stops,
 reporting success, because "no database here" is the state of an image build
 and not a fault in the entrypoint. Wherever there *is* one -- a developer's
 machine, CI -- the full check runs.
@@ -114,21 +115,21 @@ def main() -> int:
     if not (os.environ.get("DATABASE_URL") or "").strip():
         # The entrypoint refuses to serve without a database, by design. An
         # image build has none, so there is nothing here to prove or to fail.
-        print("DATABASE_URL is not set: the production entrypoint needs one, so "
-              "there is no server to smoke here.")
+        print("DATABASE_URL is not set: the entrypoint needs one, so there is "
+              "no server to smoke here.")
         print("Set it (docker-compose.test.yml starts one) to run this check.")
         return 0
 
     data_dir = tempfile.mkdtemp(prefix="chat_rag-serve-smoke-")
     port = _free_port()
-    url = f"http://127.0.0.1:{port}/api/health"
+    url = f"http://127.0.0.1:{port}/api/v1/health"
 
     print(f"python  {sys.version.split()[0]}")
     print(f"state   {data_dir}  (throwaway; no real deployment is read or written)")
-    print(f"serving python -m wsgi on 127.0.0.1:{port}")
+    print(f"serving python -m asgi on 127.0.0.1:{port}")
 
     process = subprocess.Popen(
-        [sys.executable, "-m", "wsgi"],
+        [sys.executable, "-m", "asgi"],
         cwd=ROOT,
         env=_environment(data_dir, port),
         stdout=subprocess.PIPE,
@@ -144,17 +145,18 @@ def main() -> int:
         print(f"  health  {health['status']}  Server: {health['server'] or '(none)'}")
 
         if health["status"] != 200:
-            failures.append(f"/api/health answered {health['status']}")
+            failures.append(f"/api/v1/health answered {health['status']}")
         server_header = health["server"].lower()
-        if "waitress" not in server_header:
+        if "uvicorn" not in server_header:
             failures.append(
-                f"served by {health['server'] or 'an unnamed server'}, not waitress "
-                "-- the production entrypoint is not the one that ran"
+                f"served by {health['server'] or 'an unnamed server'}, not uvicorn "
+                "-- the entrypoint that answered is not the one a deployment runs"
             )
-        if "werkzeug" in server_header:
-            failures.append("the development server answered a production start")
-        if health["body"].get("status") != "healthy":
-            failures.append(f"health body says {health['body'].get('status')!r}")
+        # The contract's own shape: a resource at the top level, no envelope.
+        # ``ready`` is the field a load balancer acts on, and it stays true
+        # while the service reports itself degraded or overloaded.
+        if health["body"].get("ready") is not True:
+            failures.append(f"health body says {health['body']!r}")
     finally:
         process.terminate()
         try:
@@ -188,7 +190,7 @@ def main() -> int:
         return 1
 
     print()
-    print("the production entrypoint starts, serves /api/health on waitress and stops")
+    print("the entrypoint starts, serves /api/v1/health on uvicorn and stops")
     return 0
 
 

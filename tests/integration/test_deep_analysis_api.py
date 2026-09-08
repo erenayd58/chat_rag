@@ -16,7 +16,13 @@ from types import SimpleNamespace
 
 import pytest
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
+from components.viewer import methods as M
+
+V1 = http.v1.PREFIX
 from application import workspace as app_workspace
 from components.knowledgebase.manager import KnowledgeBaseManager
 from config import paths
@@ -97,7 +103,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("FAKE_DEEP_KEY", "sk-placeholder-secret")
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
+    monkeypatch.setattr(entrypoint.services, "kb_manager", manager)
     # These tests are about what the upload route returns and records. Viewer
     # packaging is a separate contract with its own tests, and it runs on a
     # background thread that outlives the request -- so left real, it reaches
@@ -106,26 +112,39 @@ def client(tmp_path, monkeypatch):
     # stubbed rather than fed a fake store: the boundary being exercised ends
     # at the response.
     monkeypatch.setattr(app_workspace, "stage_analysis", lambda *a, **k: {"status": "queued"})
-    flask_app.app.config.update(TESTING=True)
     kb = manager.create("deep-kb", chunker={"type": "structure_first"})
-    with flask_app.app.test_client() as test_client:
+    with TestClient(http.create_app(entrypoint.services),
+                    raise_server_exceptions=False) as test_client:
         yield test_client, kb["kb_id"]
 
 
 def upload(test_client, kb_id, deep):
+    """One upload, always asynchronous: this contract answers 202 with the job.
+
+    Deep Analysis is a *method* here rather than a boolean, which is the same
+    decision spelled the way the registry spells it.
+    """
     return test_client.post(
-        "/api/documents/upload",
-        data={
-            "file": (io.BytesIO(b"kucuk bir test belgesi"), "belge.txt"),
-            "kb_id": kb_id,
-            "deep_analysis": "true" if deep else "false",
-        },
-        content_type="multipart/form-data",
+        f"{V1}/documents",
+        files={"file": ("belge.txt", io.BytesIO(b"kucuk bir test belgesi"), "text/plain")},
+        data={"knowledge_base_id": kb_id,
+              "methods": [M.DEEP] if deep else [M.STANDARD]},
     )
 
 
+def settle(test_client, submitted):
+    """Wait for the submitted job, then read it back the way a client polls."""
+    manager = entrypoint.services.ingest_jobs
+    job = manager.get(submitted["id"])
+    assert job is not None, submitted
+    assert manager.wait(job, 30), "the job did not settle"
+    read = test_client.get(f"{V1}/ingest-jobs/{submitted['id']}")
+    assert read.status_code == 200, read.text
+    return read.json()
+
+
 def use_pipeline(monkeypatch, pipeline):
-    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: pipeline)
+    monkeypatch.setattr(entrypoint.services, "get_pipeline", lambda *a, **k: pipeline)
     return pipeline
 
 
@@ -146,10 +165,11 @@ def test_a_chunker_without_deep_support_is_a_client_error(client, monkeypatch):
     test_client, kb_id = client
     pipeline = use_pipeline(monkeypatch, StubPipeline(deep_capable=False))
     response = upload(test_client, kb_id, deep=True)
-    body = response.get_json()
+    error = response.json()["error"]
     assert response.status_code == 400
-    assert body["deep_analysis_unavailable"] is True
-    assert "SemanticChunker" in body["error"]
+    assert error["type"] == "invalid_request"
+    assert error["details"]["deep_analysis_unavailable"] is True
+    assert "SemanticChunker" in error["message"]
     assert pipeline.seen_deep_analysis is None, "no ingest may have started"
 
 
@@ -157,10 +177,11 @@ def test_standard_uploads_carry_no_deep_analysis_fields(client, monkeypatch):
     test_client, kb_id = client
     pipeline = use_pipeline(monkeypatch, StubPipeline(deep_capable=True))
     response = upload(test_client, kb_id, deep=False)
-    body = response.get_json()
-    assert response.status_code == 200
-    assert body["chunking_mode"] == "standard"
-    assert body["deep_analysis"] is None
+    assert response.status_code == 202, response.text
+    job = settle(test_client, response.json())
+    assert job["status"] == "succeeded", job
+    assert job["result"]["chunking_mode"] == "standard"
+    assert job["result"]["deep_analysis"] is None
     assert pipeline.seen_deep_analysis is False
     (record,) = records().values()
     assert record["chunking_mode"] == "standard"
@@ -171,17 +192,18 @@ def test_a_served_deep_upload_records_status_report_and_summary(client, monkeypa
     test_client, kb_id = client
     pipeline = use_pipeline(monkeypatch, StubPipeline(deep_capable=True))
     response = upload(test_client, kb_id, deep=True)
-    body = response.get_json()
-    assert response.status_code == 200
+    assert response.status_code == 202, response.text
+    job = settle(test_client, response.json())
+    assert job["status"] == "succeeded", job
     assert pipeline.seen_deep_analysis is True
-    assert body["chunking_mode"] == "deep_analysis"
-    assert body["deep_analysis"]["status"] == "ok"
-    assert body["deep_analysis"]["label"] == "Quality checks passed"
-    assert body["deep_analysis"]["chunk_count"] == {"standard": 47, "deep": 45}
-    assert body["deep_analysis"]["smell_total"] == {"standard": 9, "deep": 4}
-    assert body["deep_analysis"]["proposer"]["call_count"] == 6
-    assert body["deep_analysis"]["verifier"]["accepted"] == 2
-    assert "Deep Analysis" in body["message"]
+    report = job["result"]["deep_analysis"]
+    assert job["result"]["chunking_mode"] == "deep_analysis"
+    assert report["status"] == "ok"
+    assert report["label"] == "Quality checks passed"
+    assert report["chunk_count"] == {"standard": 47, "deep": 45}
+    assert report["smell_total"] == {"standard": 9, "deep": 4}
+    assert report["proposer"]["call_count"] == 6
+    assert report["verifier"]["accepted"] == 2
 
     (record,) = records().values()
     assert record["chunking_mode"] == "deep_analysis"
@@ -205,13 +227,15 @@ def test_a_fallback_still_completes_and_is_labelled_as_such(client, monkeypatch,
     test_client, kb_id = client
     use_pipeline(monkeypatch, StubPipeline(deep_capable=True, deep_status=status))
     response = upload(test_client, kb_id, deep=True)
-    body = response.get_json()
-    assert response.status_code == 200 and body["success"] is True
-    assert body["chunking_mode"] == "deep_analysis", "never passed off as Standard"
-    assert body["deep_analysis"]["status"] == status
-    assert body["deep_analysis"]["label"] == label
-    assert body["deep_analysis"]["tone"] == "warn"
-    assert "Traceback" not in json.dumps(body)
+    assert response.status_code == 202, response.text
+    job = settle(test_client, response.json())
+    assert job["status"] == "succeeded", job
+    report = job["result"]["deep_analysis"]
+    assert job["result"]["chunking_mode"] == "deep_analysis", "never passed off as Standard"
+    assert report["status"] == status
+    assert report["label"] == label
+    assert report["tone"] == "warn"
+    assert "Traceback" not in json.dumps(job)
     (record,) = records().values()
     assert record["metadata"]["deep_analysis_status"] == status
 
@@ -219,8 +243,8 @@ def test_a_fallback_still_completes_and_is_labelled_as_such(client, monkeypatch,
 def test_nothing_key_shaped_is_persisted_or_returned(client, monkeypatch):
     test_client, kb_id = client
     use_pipeline(monkeypatch, StubPipeline(deep_capable=True))
-    body = upload(test_client, kb_id, deep=True).get_json()
-    serialized = (json.dumps(records()) + json.dumps(body)).lower()
+    job = settle(test_client, upload(test_client, kb_id, deep=True).json())
+    serialized = (json.dumps(records()) + json.dumps(job)).lower()
     assert "sk-placeholder-secret" not in serialized
     assert "authorization" not in serialized
     assert '"api_key"' not in serialized

@@ -22,7 +22,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
+
+V1 = http.v1.PREFIX
 from components.ingest import limits as L
 from components.knowledgebase.manager import KnowledgeBaseManager
 from components.observability import telemetry as T
@@ -31,6 +36,10 @@ from components.query import limits as Q
 from query_doubles import GatedAnswerModel
 
 SUBMITTED = 12
+#: How long the accepted questions are held inside the model, so that a
+#: refusal's own duration can be compared with a number rather than with a
+#: race.
+HOLD_SECONDS = 2.0
 MAX_ACTIVE = 4
 ANSWER_BUDGET = 2
 
@@ -55,17 +64,16 @@ class Pipeline:
 def app(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
-    flask_app.app.config.update(TESTING=True)
+    monkeypatch.setattr(entrypoint.services, "kb_manager", manager)
     registry = T.MetricsRegistry(window=100)
     monkeypatch.setattr(T, "_registry", registry)
     budget = L.ProviderBudget(ANSWER_BUDGET)
     monkeypatch.setattr(Q, "_answer_budget", budget)
     admission = Q.QueryAdmission(MAX_ACTIVE)
-    monkeypatch.setattr(flask_app.services, "query_admission", admission)
+    monkeypatch.setattr(entrypoint.services, "query_admission", admission)
     model = GatedAnswerModel(expect=ANSWER_BUDGET)
-    flask_app.services.pipeline_cache.clear()
-    monkeypatch.setattr(flask_app.services.pipeline_cache, "_build", lambda session, kb: Pipeline(model, budget))
+    entrypoint.services.pipeline_cache.clear()
+    monkeypatch.setattr(entrypoint.services.pipeline_cache, "_build", lambda session, kb: Pipeline(model, budget))
     kb = manager.create("load-kb", chunker={"type": "structure_first"})
     return SimpleNamespace(kb_id=kb["kb_id"], registry=registry, budget=budget,
                            admission=admission, model=model)
@@ -74,13 +82,18 @@ def app(tmp_path, monkeypatch):
 def wave(app, count):
     barrier = threading.Barrier(count)
     outcomes = {}
+    # One application, many callers -- as a server is. Building one per thread
+    # would put the cost of composing it inside the window this measures.
+    application = http.create_app(entrypoint.services)
 
     def ask(index):
-        with flask_app.app.test_client() as client:
+        with TestClient(application, raise_server_exceptions=False) as client:
             barrier.wait(timeout=10)
             started = time.perf_counter()
-            response = client.post("/api/query", json={"question": f"soru {index}", "kb_id": app.kb_id})
-            outcomes[index] = (response.status_code, response.get_json(), time.perf_counter() - started)
+            response = client.post(f"{V1}/queries", json={
+                "question": f"soru {index}", "knowledge_base_id": app.kb_id})
+            outcomes[index] = (response.status_code, response.json(),
+                               time.perf_counter() - started)
 
     threads = [threading.Thread(target=ask, args=(i,)) for i in range(count)]
     for thread in threads:
@@ -96,6 +109,11 @@ def test_a_burst_of_questions_is_bounded_refused_deterministically_and_measured(
     # an answer slot, and every other question already refused.
     snapshot_at_peak = app.admission.snapshot()
     active_at_peak = app.registry.snapshot()["queries"]["active"]
+    # Held deliberately, so "a refusal is immediate" is measured against a
+    # known duration rather than against however long the assertions above
+    # happened to take. Every accepted question is inside the model for at
+    # least this long; every refusal is answered without waiting at all.
+    time.sleep(HOLD_SECONDS)
     app.model.release()
     for thread in threads:
         thread.join(60)
@@ -104,15 +122,22 @@ def test_a_burst_of_questions_is_bounded_refused_deterministically_and_measured(
     rejected = [o for o in outcomes.values() if o[0] == 503]
     assert len(accepted) + len(rejected) == SUBMITTED, outcomes
     assert len(accepted) == MAX_ACTIVE, "exactly the slots, no more and no fewer"
-    assert all(o[1]["overloaded"] and o[1]["reason"] == "admission" for o in rejected)
+    assert all(o[1]["error"]["type"] == "overloaded"
+               and o[1]["error"]["details"]["reason"] == "admission" for o in rejected)
     assert app.model.peak == ANSWER_BUDGET == app.budget.peak
     assert snapshot_at_peak["active"] == MAX_ACTIVE == app.admission.peak
     assert active_at_peak == MAX_ACTIVE
     assert app.admission.active == 0 and app.budget.snapshot()["inflight"] == 0
-    assert max(o[2] for o in rejected) < min(o[2] for o in accepted), "a refusal is immediate"
+    assert max(o[2] for o in rejected) < HOLD_SECONDS <= min(o[2] for o in accepted), (
+        "a refusal is immediate: it is answered while the accepted questions "
+        "are still inside the model, never queued behind them")
 
-    # The second wave: the refused questions, asked again once the first
-    # wave has drained, are all served.
+    # The second wave: the refused questions, asked again once the first wave
+    # has drained. A refusal is transient -- the caller that was told to retry
+    # is served when it does. How many of them get through in one wave is a
+    # race between the retries and the slots coming free, so what is asserted
+    # is the floor (a full set of slots) and the ceiling (nobody is served
+    # twice), not a number that happens to fall out of one machine's timing.
     app.model.gate.clear()
     app.model.full.clear()
     second, again = wave(app, len(rejected))
@@ -121,7 +146,7 @@ def test_a_burst_of_questions_is_bounded_refused_deterministically_and_measured(
     for thread in second:
         thread.join(60)
     served_again = [o for o in again.values() if o[0] == 200]
-    assert len(served_again) == min(len(rejected), MAX_ACTIVE)
+    assert MAX_ACTIVE <= len(served_again) <= len(rejected)
 
     metrics = app.registry.snapshot(recent=25)
     queries = metrics["queries"]

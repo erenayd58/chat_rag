@@ -4,8 +4,8 @@ The system is two repositories that ship as one product.
 
 | repo | what it is | what it owns |
 |---|---|---|
-| **`chat_rag`** (this one) | the product: a Flask console, its HTTP API, the runtime that serves it | uploads, ingest jobs, knowledge bases, retrieval, the answer chain, resource limits, observability, configuration, the demo launcher |
-| **`chunk`** (`amsc-poc`) | the chunking library, installed as a pinned dependency | chunking methods and their registry, Deep Analysis, the canonical PDF adapter, the retrieval primitives the benchmark froze, the Viewer page builder and its server, all research and benchmark code |
+| **`chat_rag`** (this one) | the product: the `/api/v1` contract, the application under it, the Next.js console, and the runtime that serves them | uploads, ingest jobs, knowledge bases, retrieval, the answer chain, resource limits, observability, configuration, the demo launcher |
+| **`chunk`** (`amsc-poc`) | the chunking library, installed as a pinned dependency | chunking methods and their registry, Deep Analysis, the canonical PDF adapter, the retrieval primitives the benchmark froze, the shared payload reader and the Viewer's retrieval engine, all research and benchmark code |
 
 They are expected side by side (`../chunk`), and the console installs the
 library from an immutable commit named in `requirements.txt`. Nothing in
@@ -27,8 +27,8 @@ load is in [operations.md](operations.md).
 ### Upload → a document you can search
 
 ```
-POST /api/documents/upload
-  │  read the multipart body                      interfaces/http/{v1,legacy}
+POST /api/v1/documents
+  │  read the multipart body                      interfaces/http/v1
   │  validate, stage the file, hash it            application/ingest.py
   ▼
 ingest job (queued → running)                     components/ingest/jobs.py
@@ -59,8 +59,8 @@ are additionally capped process-wide, by separate budgets.
 ### Question → an answer with sources
 
 ```
-POST /api/query
-  │  read the body                                interfaces/http/{v1,legacy}
+POST /api/v1/queries
+  │  read the body                                interfaces/http/v1
   │  admission: a slot now, or 503 now            application/query.py
   │                                               components/query/limits.py
   ▼
@@ -89,10 +89,10 @@ interfaces/http/
       schemas/            the API's own Pydantic types
       errors.py           the one refusal-to-status table
       openapi.py          what the generated document cannot infer
-  legacy/                 compatibility: Flask, what the console still speaks
-  coexistence.py          one process, both frameworks — for this step only
-      │                   Both surfaces read a request, call one use case, and
-      │                   turn the answer or the refusal into their own shape.
+  operator.py             one route, off the contract on purpose:
+      │                   /api/ops/metrics, whose body is free to change
+      │                   A router reads a request, calls one use case, and
+      │                   turns the answer or the refusal into a wire shape.
       ▼
 application/              The product's behaviour.  Plain functions over a
       │                   Services container; no framework, no request,
@@ -134,39 +134,34 @@ a *row* (`contents.content_key` names the directory) rather than being the
 record. [database.md](database.md) is the schema, the migrations and the
 reasoning.
 
-`/api/v1` is **FastAPI** and the console's surface is still **Flask**, in one
-process over one container. `interfaces/http/coexistence.py` mounts the ASGI
-application inside the WSGI one and registers its routes — read from FastAPI's
-own table, never written out twice — so `python -m wsgi` keeps serving both.
-`asgi.py` is the same FastAPI application standing alone, which is what a
-deployment runs once nothing needs the console's screens. There is no
-synchronisation between the two surfaces and there is nothing to synchronise:
-they are two adapters over one application.
+`/api/v1` is **FastAPI**, served by `python -m asgi` on uvicorn, and it is the
+whole HTTP surface bar one operator route. There was a second one until Step 13
+— the Flask console, its rendered screens and the Viewer's relay, with the
+FastAPI application mounted inside the WSGI process by a bridge — and
+[legacy-removal.md](legacy-removal.md) is the record of what each of its
+endpoints became. What is left is what that plan said would be left: this
+package, and `asgi.py` as the entrypoint.
 
-Nothing in `application/` imports Flask — `tests/application` fails if it
-ever does — and nothing below `interfaces/http/` builds a response. Three
-consequences worth stating:
+Nothing in `application/` imports a web framework — `tests/application` fails
+if it ever does — and nothing below `interfaces/http/` builds a response.
+Three consequences worth stating:
 
 * **the container is the seam.** `application/services.py` composes the whole
   application (`build_services()`), and every use case takes it as its first
   argument. The CLI calls `default_services()` and gets the same object the
-  Flask app was given, which is why `python -m cli` measures what the console
-  would actually return — and why it now imports no web framework at all.
+  server is given, which is why `python -m cli` measures what the console
+  would actually return — and why it imports no web framework at all.
 * **a refusal is a meaning, not a code.** `application/errors.py` has six:
   invalid request, not found, conflict, unavailable, not-ready, processing
   failed. Overload, deadline and interruption are not among them because
   `core/exceptions.py` already owns those, raised by the subsystem that owns
-  the limit. Each adapter has exactly one file that maps them to a status —
-  `v1/envelope.py` and `legacy/responses.py` — and the two are free to
-  disagree, which they do: an analysis that is selected but not built yet is
-  a **409** `not_ready` on the contract and a **404** on the compatibility
-  surface, because that is what the console was written against.
-* **two surfaces, one application.** `/api/v1` is a second adapter, never a
-  second implementation: both call the same use cases, so a knowledge base
-  created through one is the record the other lists, with nothing
-  synchronising them. [api-v1.md](api-v1.md) is the contract, and
-  `interfaces/http/legacy/` is the directory to delete when nothing speaks
-  the old surface any more.
+  the limit. Exactly one file maps them to a status — `v1/errors.py` — and
+  a router never names one beyond what its own decorator declares.
+* **one surface, one application.** `/api/v1` is an adapter, never an
+  implementation: it calls the same use cases the CLI does, over the same
+  container. [api-v1.md](api-v1.md) is the contract; the one route beside it
+  is `/api/ops/metrics`, which is deliberately not on it because its body
+  reports internals that are free to change.
 
 ### Adding an endpoint
 
@@ -180,10 +175,8 @@ consequences worth stating:
    only place a status code is decided;
 3. publish it in [api-v1.md](api-v1.md) — `tests/migration/test_http_surface.py`
    compares that document against the live routing table and fails on drift in
-   either direction. (The same is true of the README's *console API* table for
-   the compatibility surface, which should not be growing — and a route added
-   there is also a row in [legacy-removal.md](legacy-removal.md), which
-   `tests/migration/test_legacy_removal_map.py` holds to the same standard.)
+   either direction. It also fails on a route served *outside* `/api/v1`: there
+   is one, it is declared there, and a second is a legacy surface growing back.
 
 ---
 
@@ -194,14 +187,12 @@ open it.
 
 | path | owns | touch it when |
 |---|---|---|
-| `application/` | **the product's behaviour, with no web framework under it**: one module per behaviour group (`knowledge_bases`, `documents`, `ingest`, `chunks`, `query`, `workspace`, `catalogue`, `goldsets`, `ops`), plus `errors.py` (what a refusal means) and `services.py` (the container everything is handed) | changing what the product *does* |
+| `application/` | **the product's behaviour, with no web framework under it**: one module per behaviour group (`knowledge_bases`, `documents`, `ingest`, `chunks`, `query`, `workspace`, `catalogue`, `analysis_query`, `ops`), plus `errors.py` (what a refusal means) and `services.py` (the container everything is handed) | changing what the product *does* |
 | `interfaces/http/v1/` | **the product contract** (`/api/v1`), as a FastAPI application: `routers/` (one per concept), `schemas/` (the API's own Pydantic types), `errors.py` (the one refusal-to-status table), `openapi.py` (the refusal body, the two headers and the status the document must not advertise), `application.py` (the app and its lifespan) — see [api-v1.md](api-v1.md) | adding or changing a supported endpoint |
-| `interfaces/http/legacy/` | the Flask-era surface the old rendered screens still speak; one directory to delete when they are gone | keeping those screens working |
-| `interfaces/http/coexistence.py` | the ASGI-inside-WSGI bridge that lets one process serve both surfaces over one container; temporary, and deleted with the legacy directory | debugging why a `/api/v1` request behaves differently through the console's port |
-| `runtime/bootstrap.py` | what a process does before it serves: the banner, restart settlement, the staging sweep, the development server's options | changing start-up or restart behaviour |
-| `app.py` | the Flask application itself: the app object, the session key, CORS, and which container the blueprints are given | changing framework-level wiring |
-| `wsgi.py` | the production entrypoint today (`python -m wsgi`, waitress, one process, both surfaces) | changing how the server is served or shut down |
-| `asgi.py` | the ASGI entrypoint (`python -m asgi`, uvicorn): `/api/v1` alone, and what a deployment runs once the console's screens are gone | changing FastAPI's own start-up, shutdown or thread pool |
+| `interfaces/http/operator.py` | the one route served outside the contract: `GET /api/ops/metrics`, kept at its old path and body through the removal of the surface that used to serve it | changing what an operator can read |
+| `interfaces/http/__init__.py` | `create_app()` — the contract plus that route, over one container — and the walker that answers "what does this application serve" for the tests and the documents | adding a surface beside the contract |
+| `runtime/bootstrap.py` | what a process does before it serves: the banner, restart settlement, the staging sweep | changing start-up or restart behaviour |
+| `asgi.py` | **the entrypoint** (`python -m asgi`, uvicorn, one process): the composed container, the application, the lifespan and the worker-thread pool | changing how the server starts, stops or sizes itself |
 | `pipeline/rag_pipeline.py` | the pipeline object: builds the embedder / store / retriever / answer model from settings, and runs a query | changing retrieval or the answer chain end to end |
 | `components/ingest/jobs.py` | the job system: queue, workers, states, retention, cancellation | changing upload concurrency or job lifecycle |
 | `components/ingest/limits.py` | **the one owner of deadlines and provider budgets**: `current_guard()`, `deadline_timeout()`, the Deep and embedding semaphores | adding a transport, or anything that calls out over the network |
@@ -222,10 +213,9 @@ open it.
 | `utils/document_tracker.py` | the ingest ledger, as a façade over `DocumentRepository`: a document is a row addressed by its `doc_id`, never by a path | changing what a registered document records |
 | `cli/` | `python -m cli` — eval, search, qa, inspect, report, gold | offline evaluation of a knowledge base |
 | `tools/` | `import_smoke.py`, `serve_smoke.py`, `verify_reproducibility.py`, `import_legacy_state.py` (a pre-Step-8 installation's JSON records into PostgreSQL) | proving a build works — see [testing.md](testing.md) |
-| `tests/` | `unit/` (fast, no network), `application/` (the use cases with no Flask at all), `integration/` (the real Flask app), `migration/` (the contracts a platform change must keep), `storage/` (the repositories, the invariants, the transactions, the concurrency and the Alembic gate), `conftest.py` (moves the process out of the checkout, blanks keys, builds and truncates the test database) | always |
+| `tests/` | `unit/` (fast, no network), `application/` (the use cases with no web framework at all), `integration/` (the real application over a test client, and two that start the real server), `migration/` (the contracts a platform change must keep), `storage/` (the repositories, the invariants, the transactions, the concurrency and the Alembic gate), `conftest.py` (moves the process out of the checkout, blanks keys, builds and truncates the test database) | always |
 | `evaluation/experiment-log.md` | the record of the retrieval experiments behind the shipped context budget and top-k | asking why a number is what it is |
 | `frontend/` | **the console**: a Next.js application over `/api/v1` and nothing else. `app/viewer/` and `components/viewer/` are the Viewer's five screens; `lib/viewer/rows.ts` is the alignment rule the comparison is built on | changing a screen |
-| `templates/`, `static/` | the Flask-era screens, served beside the console until Step 13 | keeping an old screen working |
 | `start-demo.ps1` / `stop-demo.ps1` | the demo launcher: starts the backend and the Next.js console, waits until each answers | running the demo |
 
 ## Repository map — `chunk`

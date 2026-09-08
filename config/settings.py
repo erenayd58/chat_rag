@@ -166,12 +166,6 @@ class Settings:
             os.getenv("CONTEXT_EXPAND_NEIGHBORS", "true").strip().lower() in {"1", "true", "yes", "on"}
         )
 
-        # Companion chunking viewer (the chunk repository's Viewer v3), linked
-        # from the console as "Agentic Chunking Viewer". A demo-level setting:
-        # the default is the viewer server's own default address; an empty
-        # value hides the link. start-demo.ps1 sets it to the port it used.
-        self.viewer_url = os.getenv("VIEWER_URL", "http://127.0.0.1:8765/").strip()
-
         # Embedding Settings
         self.embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
         

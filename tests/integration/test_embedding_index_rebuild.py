@@ -126,12 +126,12 @@ def client_app():
     """The FastAPI surface over the process container."""
     from fastapi.testclient import TestClient
 
-    import app as flask_app
+    import asgi as entrypoint
     from interfaces.http import v1
 
-    with TestClient(v1.create_app(flask_app.services),
+    with TestClient(v1.create_app(entrypoint.services),
                     raise_server_exceptions=False) as client:
-        yield flask_app.services, client
+        yield entrypoint.services, client
 
 
 V1 = "/api/v1"

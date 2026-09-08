@@ -99,7 +99,7 @@ def discard_staged(temp_path: str) -> None:
         logger.warning(f"Could not remove the uploaded temp file {temp_path}: {error}")
 
 
-def resolve_methods(selection: Any, deep_flag: Optional[str] = None) -> list[str]:
+def resolve_methods(selection: Any) -> list[str]:
     """Which chunking methods this upload asked to be analysed with.
 
     One upload, one parse, one canonical -- then every method the user ticked
@@ -107,22 +107,16 @@ def resolve_methods(selection: Any, deep_flag: Optional[str] = None) -> list[str
     methods are an *analysis* choice; what gets indexed for retrieval is still
     the knowledge base's own chunker, and this does not change it.
 
-    ``deep_flag`` is the older single-mode form, which still works: when it is
-    present it replaces the selection entirely with Standard, plus Deep when
-    it is on.
+    There used to be a second spelling: a ``deep_analysis`` boolean that
+    replaced the selection with Standard, plus Deep when it was on. It existed
+    for the Flask-era upload form, which is gone (``docs/legacy-removal.md``),
+    and Deep Analysis is a method key here like every other.
     """
-    selected = viewer_methods.normalise(selection)
-    raw = (deep_flag or '').strip().lower()
-    if raw:
-        wanted = raw in {'1', 'true', 'yes', 'on'}
-        selected = viewer_methods.normalise(
-            [viewer_methods.STANDARD] + ([viewer_methods.DEEP] if wanted else [])
-        )
-    return selected
+    return viewer_methods.normalise(selection)
 
 
 def submit(services, *, upload: Upload, kb_id: Optional[str], session_id: str,
-           methods: Any = None, deep_flag: Optional[str] = None) -> Accepted:
+           methods: Any = None) -> Accepted:
     """Validate an upload, stage it and queue its job.
 
     Raises :class:`~application.errors.InvalidRequest` or
@@ -139,7 +133,7 @@ def submit(services, *, upload: Upload, kb_id: Optional[str], session_id: str,
     if not kb:
         raise NotFound(f'Knowledge base "{kb_id}" not found')
 
-    selected = resolve_methods(methods, deep_flag)
+    selected = resolve_methods(methods)
     # Deep Analysis (the amsc.deep.pipeline quality pipeline with an LLM
     # proposer and verifier) is a per-document, ingest-only decision -- never
     # a query-time toggle and never written into the knowledge base's chunker

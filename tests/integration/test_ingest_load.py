@@ -23,7 +23,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
+
+V1 = http.v1.PREFIX
 import tempfile
 from components.ingest import IngestManager
 from components.ingest import jobs as J
@@ -55,11 +60,12 @@ def staging(tmp_path, monkeypatch):
 def client(tmp_path, monkeypatch, staging):
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
-    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: _pipeline_stub)
-    flask_app.app.config.update(TESTING=True)
+    monkeypatch.setattr(entrypoint.services, "kb_manager", manager)
+    monkeypatch.setattr(entrypoint.services, "get_pipeline", lambda *a, **k: _pipeline_stub)
     kbs = [manager.create(f"load-kb-{i}", chunker={"type": "structure_first"})["kb_id"] for i in range(SUBMITTED)]
-    yield flask_app.app, kbs
+    # One application, many callers -- as a server is. Building one per thread
+    # would put the cost of composing it inside the window this measures.
+    yield http.create_app(entrypoint.services), kbs
 
 
 _pipeline_stub = type("Stub", (), {
@@ -126,7 +132,7 @@ def test_load_characterisation(client, monkeypatch, staging):
     manager = IngestManager(
         IngestLimits(workers=WORKERS, queue_capacity=QUEUE, job_timeout_seconds=120), execute=work,
     )
-    monkeypatch.setattr(flask_app.services, "ingest_jobs", manager)
+    monkeypatch.setattr(entrypoint.services, "ingest_jobs", manager)
 
     barrier = threading.Barrier(SUBMITTED)
     outcomes: list[tuple[int, dict]] = []
@@ -134,17 +140,17 @@ def test_load_characterisation(client, monkeypatch, staging):
     started = time.perf_counter()
 
     def submit(index: int):
-        # One client per thread: the Flask test client is not shareable.
-        with app.test_client() as test_client:
+        # One client per thread, over the one application.
+        with TestClient(app, raise_server_exceptions=False) as test_client:
             barrier.wait(10)
             response = test_client.post(
-                "/api/documents/upload",
-                data={"file": (io.BytesIO(f"belge {index}".encode()), f"belge-{index}.txt"),
-                      "kb_id": kbs[index], "deep_analysis": "true", "async": "1"},
-                content_type="multipart/form-data",
+                f"{V1}/documents",
+                files={"file": (f"belge-{index}.txt",
+                                io.BytesIO(f"belge {index}".encode()), "text/plain")},
+                data={"knowledge_base_id": kbs[index], "methods": ["agentic"]},
             )
             with lock:
-                outcomes.append((response.status_code, response.get_json()))
+                outcomes.append((response.status_code, response.json()))
 
     threads = [threading.Thread(target=submit, args=(i,)) for i in range(SUBMITTED)]
     try:
@@ -213,5 +219,5 @@ def test_load_characterisation(client, monkeypatch, staging):
     assert report["embedding_calls_total"] == report["accepted"] * EMBEDDING_CALLS_PER_JOB
     assert budget.snapshot()["inflight"] == 0
     assert embedding_budget.snapshot()["inflight"] == 0
-    assert all(body["overloaded"] is True for body in rejected)
+    assert all(body["error"]["type"] == "overloaded" for body in rejected)
     assert sorted(p.name for p in staging.rglob("*") if p.is_file()) == []

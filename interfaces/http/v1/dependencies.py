@@ -7,18 +7,16 @@ that a router reads as "take these, call one use case, return the schema".
 
 The container is read from the running application rather than imported, so a
 test that replaces a seam on it is honoured by every route at once and no
-module in this package holds a reference of its own. It is the *same* object
-the legacy Flask adapter is given: one application underneath two surfaces,
-with nothing synchronised between them.
+module in this package holds a reference of its own. It is the one object the
+process composed, handed in by ``interfaces.http.create_app``.
 
 The session id is the one thing this API takes from the transport that it did
 not ask for. It selects a cached pipeline and nothing else -- it is not
-identity, it is not authorisation, and this surface never sets it. When the
-request arrives through the Flask coexistence bridge the browser's existing
-console session is carried in on the ASGI scope, so a client using both
-surfaces gets one pipeline rather than two; served standalone there is no
-cookie to read and the shared 'global' entry is used instead. Real sessions
-belong to the authentication work that is deliberately not in this step.
+identity, it is not authorisation, and this surface never sets it. A caller
+that carries one on the ASGI scope gets its own cache entry; there is no
+cookie to read otherwise, so the shared 'global' entry is used instead. Real
+sessions belong to the authentication work that is deliberately not in this
+step.
 """
 
 from __future__ import annotations
@@ -32,7 +30,7 @@ from application.services import Services
 
 from .envelope import clamp, whole_number
 
-#: Where the bridge puts the console's session id on the ASGI scope.
+#: Where a caller's session id is read from on the ASGI scope.
 SESSION_STATE = "session_id"
 #: The cache entry a caller with no session of its own shares.
 SHARED_SESSION = "global"

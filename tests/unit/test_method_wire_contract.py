@@ -2,9 +2,9 @@
 
 One set of strings -- ``markdown``, ``structure-only``, ``agentic``,
 ``hybrid`` -- travels from the registry in ``components/viewer/methods.py``
-through ``GET /api/demo/methods``, the upload form's repeated ``methods``
-field, the packaged variant directories and the Viewer page's build-time
-method list. Nothing tested it directly; renaming a key or reordering
+through ``GET /api/v1/meta/chunking-methods``, the upload's repeated
+``methods`` field, the packaged variant directories and the Viewer screen's
+method chips. Nothing tested it directly; renaming a key or reordering
 ``ORDER`` would keep every existing test green and break the product.
 
 These tests pin *observable* behaviour: the keys, labels and engines the API
@@ -30,7 +30,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import app as flask_app
+from fastapi.testclient import TestClient
+
+import asgi as entrypoint
+import interfaces.http as http
+
+V1 = http.v1.PREFIX
 from application import workspace as app_workspace
 from components.chunker import create_chunker
 from components.knowledgebase.manager import KnowledgeBaseManager, normalize_chunker_config
@@ -131,17 +136,15 @@ def test_the_catalogue_reports_every_method_offered_or_not(hybrid_unavailable):
 
 @pytest.fixture
 def client():
-    flask_app.app.config.update(TESTING=True)
-    with flask_app.app.test_client() as test_client:
+    with TestClient(http.create_app(entrypoint.services),
+                    raise_server_exceptions=False) as test_client:
         yield test_client
 
 
-def test_get_api_demo_methods_is_the_catalogue_verbatim(client, hybrid_available):
-    body = client.get("/api/demo/methods").get_json()
-    assert body["success"] is True
-    assert body["methods"] == M.catalogue()
-    assert [row["key"] for row in body["methods"]] == list(M.ORDER)
-    reported = {row["key"]: row for row in body["methods"]}
+def test_the_meta_route_is_the_catalogue_verbatim(client, hybrid_available):
+    body = client.get(f"{V1}/meta/chunking-methods").json()
+    assert [row["key"] for row in body["items"]] == list(M.ORDER)
+    reported = {row["key"]: row for row in body["items"]}
     assert {key: reported[key]["engine"] for key in WIRE_KEYS} == WIRE_ENGINES
     assert {key: reported[key]["label"] for key in WIRE_KEYS} == WIRE_LABELS
 
@@ -180,10 +183,10 @@ def upload(tmp_path, monkeypatch, client):
     for what the route hands the Viewer packager."""
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
-    monkeypatch.setattr(flask_app.services, "kb_manager", manager)
+    monkeypatch.setattr(entrypoint.services, "kb_manager", manager)
     kb = manager.create("wire-kb", chunker={"type": "structure_first"})
     pipeline = _Pipeline()
-    monkeypatch.setattr(flask_app.services, "get_pipeline", lambda *a, **k: pipeline)
+    monkeypatch.setattr(entrypoint.services, "get_pipeline", lambda *a, **k: pipeline)
     staged = []
     monkeypatch.setattr(
         app_workspace, "stage_analysis",
@@ -191,14 +194,27 @@ def upload(tmp_path, monkeypatch, client):
     )
 
     def post(*fields):
-        from werkzeug.datastructures import MultiDict
+        """One upload, and what it left behind.
 
-        data = MultiDict([("file", (io.BytesIO(b"kucuk bir test belgesi"), "belge.txt")), ("kb_id", kb["kb_id"])])
+        The form is repeated ``methods`` fields, which is what a browser sends
+        and what the contract declares; the answer is the job, so what a test
+        reads is the settled job rather than a synchronous body.
+        """
+        data: dict = {"knowledge_base_id": kb["kb_id"]}
         for name, value in fields:
-            data.add(name, value)
-        response = client.post("/api/documents/upload", data=data, content_type="multipart/form-data")
-        assert response.status_code == 200, response.get_json()
-        return response.get_json(), staged[-1], pipeline
+            data.setdefault(name, []).append(value)
+        response = client.post(
+            f"{V1}/documents",
+            files={"file": ("belge.txt", io.BytesIO(b"kucuk bir test belgesi"), "text/plain")},
+            data=data,
+        )
+        assert response.status_code == 202, response.text
+        manager = entrypoint.services.ingest_jobs
+        job = manager.get(response.json()["id"])
+        assert manager.wait(job, 30), "the job did not settle"
+        settled = job.snapshot()
+        assert settled["status"] == "succeeded", settled
+        return settled["result"], staged[-1], pipeline
 
     return SimpleNamespace(post=post, kb_id=kb["kb_id"], manager=manager)
 
@@ -240,14 +256,18 @@ def test_an_unavailable_method_is_dropped_from_the_upload(upload, hybrid_unavail
     assert staged["methods"] == ["markdown"]
 
 
-def test_the_retired_deep_analysis_flag_still_maps_onto_the_method_list(upload):
+def test_deep_analysis_is_a_method_key_and_not_a_flag_beside_the_list(upload):
+    """There used to be a second spelling -- a ``deep_analysis`` boolean that
+    replaced the selection -- for the Flask-era upload form. That form is gone
+    and so is the flag: Deep Analysis is asked for by its registry key, like
+    every other method, and a leftover boolean selects nothing."""
     body, staged, pipeline = upload.post(("deep_analysis", "true"))
-    assert staged["methods"] == ["structure-only", "agentic"]
-    assert body["chunking_mode"] == "deep_analysis" and pipeline.seen_deep_analysis is True
+    assert staged["methods"] == ["structure-only"], "an unknown field selects nothing"
+    assert body["chunking_mode"] == "standard" and pipeline.seen_deep_analysis is False
 
-    body, staged, pipeline = upload.post(("deep_analysis", "false"), ("methods", "markdown"))
-    assert staged["methods"] == ["structure-only"], "the old flag wins over the new field"
-    assert body["chunking_mode"] == "standard"
+    body, staged, pipeline = upload.post(("methods", "agentic"))
+    assert staged["methods"] == ["agentic"]
+    assert body["chunking_mode"] == "deep_analysis" and pipeline.seen_deep_analysis is True
 
 
 def test_the_response_and_ledger_speak_in_modes_not_method_keys(upload):

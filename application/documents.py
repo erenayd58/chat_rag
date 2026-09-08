@@ -34,32 +34,11 @@ def get(services, doc_id: str) -> dict:
     return record
 
 
-def statistics(services, *, kb_id: Optional[str], session_id: str) -> dict:
-    """Ledger counts, plus what the store itself holds.
-
-    The store's own count is best-effort: it needs a built pipeline, and a
-    knowledge base whose store cannot be opened must not make the documents
-    screen fail -- the ledger numbers are still true.
-    """
-    stats = services.documents().get_statistics(kb_id=kb_id)
-
-    vector_db_chunks = 0
-    try:
-        pipeline = (services.get_pipeline(session_id, kb_id) if kb_id
-                    else services.default_pipeline)
-        vector_db_chunks = len(pipeline.vector_db.get_all_chunks())
-    except Exception:  # noqa: BLE001 - a countless store is not a broken screen
-        pass
-
-    return {
-        'total_documents': stats['total_documents'],
-        'total_chunks': stats['total_chunks'],
-        'total_size_mb': round(stats['total_size_bytes'] / (1024 * 1024), 2),
-        'vector_db_chunks': vector_db_chunks,
-        'oldest_ingestion': stats.get('oldest_ingestion'),
-        'latest_ingestion': stats.get('latest_ingestion'),
-        'kb_id': kb_id,
-    }
+#: ``statistics()`` was here -- the body of ``GET /api/stats``, a count of
+#: documents, chunks and bytes for one knowledge base. It has no ``/api/v1``
+#: answer and needs none: ``GET /api/v1/documents`` carries every number in it
+#: per document, and ``GET /api/v1/health`` carries the capacity half
+#: (``docs/api-v1.md``). It went with the surface that asked for it.
 
 
 def owning_knowledge_base(services, doc_id: str, kb_id: Optional[str]) -> Optional[str]:
@@ -68,8 +47,7 @@ def owning_knowledge_base(services, doc_id: str, kb_id: Optional[str]) -> Option
     A document belongs to exactly one, and the ledger row says which -- so a
     caller does not have to, and a read that omits the filter must not be
     answered out of the process default's store, which holds nothing and would
-    look like a document with no chunks. The console has always passed
-    ``?kb_id=``; a client on the contract is not required to know it.
+    look like a document with no chunks.
 
     The record wins over what the caller passed, the same way it does in
     :func:`delete`, which applies this rule to the record it has already read:
@@ -79,9 +57,8 @@ def owning_knowledge_base(services, doc_id: str, kb_id: Optional[str]) -> Option
     return (record.get('kb_id') if record else None) or kb_id
 
 
-#: What "every chunk of this document" means when a caller does not page.
-#: The legacy route asks for one page this size and hands the whole thing to
-#: the browser; a paging caller passes its own window instead.
+#: What "every chunk of this document" means when a caller does not page. A
+#: paging caller passes its own window instead.
 WHOLE_DOCUMENT = 10000
 
 
