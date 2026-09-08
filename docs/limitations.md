@@ -18,15 +18,18 @@ in memory, the per-knowledge-base pipeline cache is a module global, and the
 vector store is an embedded database rather than a database server. A second
 process would duplicate all three and they would disagree.
 
-*To scale out* you would need an external queue, a shared pipeline registry
-and a vector store that is a service. That is a different deployment shape,
-not a configuration change; `wsgi.py` says the same thing beside the code.
+*To scale out* you would need an external queue and a shared pipeline
+registry. That is a different deployment shape, not a configuration change;
+`wsgi.py` says the same thing beside the code. The vector store is no longer
+one of the obstacles — it is the database, and it is already a service.
 
 **Horizontal scaling is not a container setting.** Running two containers
-against one mounted data root is not supported: two processes would open the
-same Chroma store and keep separate ledgers, job registries and caches. The
-resource limits in `config/` remain the real capacity dial whatever the
-container is given.
+against one database is not supported yet, but the reason has narrowed: the
+records and the vectors are shared safely now, and what is still per-process
+is the in-memory job registry, the pipeline cache and each pipeline's BM25
+index — so two containers would answer from two lexical indexes that learn
+about each other's ingests only on their next rebuild. The resource limits in
+`config/` remain the real capacity dial whatever the container is given.
 
 **The job registry is in memory; only the *answer* survives a restart.** No
 job is resumed. Nothing was committed either — the ledger write is a job's
@@ -146,10 +149,17 @@ See [testing.md](testing.md).
 
 **The console indexes with one chunker and searches with one store.** A
 knowledge base may be created with `structure_first` or the frozen `v4`
-package, and its vectors live in Chroma. The earlier `SemanticChunker`, the
-`legacy` retrieval profile and the FAISS store were removed once no knowledge
-base used any of them; a second store is a `BaseVectorDB` implementation and
-the contract it must meet is `tests/migration/test_document_store_contract.py`.
+package, and its vectors live in PostgreSQL (pgvector). The earlier
+`SemanticChunker`, the `legacy` retrieval profile, the FAISS store and — since
+Step 9 — Chroma were each removed once nothing used them; a second store is a
+`BaseVectorDB` implementation and the contract it must meet is
+`tests/migration/test_document_store_contract.py`.
+
+**Dense search is an exact scan, not an approximate index.** There is no ANN
+index on the embedding column, because the column has no fixed width and
+pgvector can only index one that has. That is the right trade at this size and
+it is not free forever; the condition under which it changes, and the DDL, are
+in [database.md](database.md).
 
 **Questions carry no history.** Each question is answered from retrieval
 alone. The console kept a per-session conversation for a retrieval path that

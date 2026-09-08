@@ -22,9 +22,9 @@ What it checks
 The server is given two settings: ``CHAT_RAG_DATA_DIR``, pointing at a
 throwaway directory, and ``DATABASE_URL``, inherited from the environment. The
 first is the check hiding inside the check: if it were not sufficient on its
-own -- if the checkout's ``.env`` could still supply a ``VECTOR_DB_PATH`` --
-this smoke would be opening the developer's real Chroma store to answer a
-health request.
+own -- if the checkout's ``.env`` could still supply a state path -- this
+smoke would be writing into the developer's own checkout to answer a health
+request.
 
 The second cannot have a throwaway: the production entrypoint refuses to serve
 without a database, which is the behaviour this smoke would otherwise be

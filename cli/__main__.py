@@ -255,7 +255,8 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         ("Retriever", environment["retriever"]),
         ("Uses embeddings", "yes" if environment["uses_embeddings"] else "no"),
         ("Embedding model", environment["embedding_model"] or "-"),
-        ("Vector store", environment["storage_path"]),
+        ("Vector store", f"{environment['vector_db_provider']}: "
+                         f"{environment['vector_collection']}"),
         ("Documents", str(len(documents))),
         ("Chunks", str(len(views))),
         ("Canonical units referenced", str(len(unit_ids))),

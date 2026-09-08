@@ -1,29 +1,36 @@
 # Database — PostgreSQL, migrations, and what is still a file
 
-**PostgreSQL is authoritative for this application's relational state.** The
-knowledge bases, the ingest ledger, the content identities and their analysis
-state, the ingest journal and the gold set are rows. Nothing dual-writes and
-nothing falls back to a file.
+**PostgreSQL is authoritative for everything durable this application
+keeps.** The knowledge bases, the ingest ledger, the content identities and
+their analysis state, the ingest journal, the gold set — and, since Step 9,
+the chunks and their embeddings — are rows. Nothing dual-writes and nothing
+falls back to a file.
 
-**The vector store is still authoritative for embeddings.** Chroma holds every
-vector and every chunk, exactly as before, under the data directory. Moving it
-to pgvector is the next step and is not started; the two stores are separate on
-purpose until then.
+Chroma is gone. It is not an optional backend, not a fallback and not a
+dependency; `pip install -r requirements.txt` no longer installs it, and the
+one thing that still reads a Chroma store is the migration tool that empties
+one (`tools/migrate_chroma_to_pgvector.py`, which imports it lazily and tells
+you to install it).
 
 ```
                  FastAPI /api/v1        legacy Flask console
                         \                    /
                          \                  /
                       application / domain
-                         /                  \
-                        /                    \
-              PostgreSQL                   vector store (Chroma)
-   knowledge bases                         embeddings
-   documents (the ingest ledger)           chunk rows
-   content identity + analysis state       the lexical index
-   ingest jobs
-   gold set
+                                 |
+                            PostgreSQL
+              knowledge bases
+              documents (the ingest ledger)
+              content identity + analysis state
+              ingest jobs
+              gold set
+              vector_collections  — one corpus, and its embedding manifest
+              chunk_vectors       — chunk text, metadata, embedding (pgvector)
 ```
+
+The BM25 index is the one thing retrieval keeps outside the database, and it
+always was: it is built in memory from the chunk rows on demand and never
+persisted. What changed for it in Step 9 is only where the rows come from.
 
 ---
 
@@ -87,17 +94,19 @@ URL to `scheme://host:port/name` before it reaches the start-up banner or
 
 ## The schema
 
-Seven tables. `storage/models.py` carries the reasons; this is the shape.
+Nine tables. `storage/models.py` carries the reasons; this is the shape.
 
 | table | one row is | key |
 |---|---|---|
-| `knowledge_bases` | a named collection with its own chunker, embedding and vector store | `id` (the 8-character id `/api/v1` publishes) |
+| `knowledge_bases` | a named collection with its own chunker and embedding | `id` (the 8-character id `/api/v1` publishes) |
 | `documents` | **one upload**: one file, ingested into one knowledge base | `id`; `doc_id` unique, and the identity every API addresses |
 | `contents` | **the bytes**, and the analysis that belongs to them | `id`; `content_key` and `content_sha256` unique |
 | `content_documents` | one upload's membership of one content, and the methods *it* selected | `(content_id, doc_id)`; `doc_id` unique on its own |
 | `content_variants` | one chunking method run over one content | `(content_id, method)` |
 | `ingest_jobs` | what a restart may answer a `job_id` with | `job_id` |
 | `gold_set_entries` | one confirmed answer, per (knowledge base, question) | `entry_id` |
+| `vector_collections` | **one searchable corpus**, and which embedding space it holds | `collection` — a knowledge base's id, or `VECTOR_DB_COLLECTION` for the one used when none is selected |
+| `chunk_vectors` | one chunk: its text, its metadata and its embedding | `(collection, chunk_id)` |
 
 ### The two identities
 
@@ -128,6 +137,16 @@ uploads. The content itself goes when the last membership does — a
 reference-count rule the domain applies, in one transaction under the content's
 row lock.
 
+* `chunk_vectors.collection → vector_collections.collection` — `ON DELETE CASCADE`
+* `vector_collections.kb_id → knowledge_bases.id` — `ON DELETE CASCADE`
+
+Those last two are the pair that replaced "remove the directory, then remove
+the record, and in that order". Deleting a knowledge base row removes its
+collection and every vector in it, in the same transaction, by the database.
+A vector that outlived its knowledge base would be an orphan a *later*
+knowledge base could be matched against, which is exactly why this edge
+cascades where the two below do not.
+
 Not foreign keys, on purpose:
 
 * `documents.kb_id`
@@ -151,8 +170,109 @@ database identity and `documents.doc_id` is the identity the product publishes.
 a diagnostic; neither is unique, indexed, or an address. No path has ever been
 exposed through `/api/v1` and none is now.
 
-One path remains in the schema — `knowledge_bases.vector_db_path` — and it
-addresses the *vector store*, which is still a directory until pgvector.
+No path remains in the schema. `knowledge_bases.vector_db_path` was the last
+one, and `0002_pgvector_store` drops it: a knowledge base is identified by its
+id, and its corpus is the `vector_collections` row whose `collection` is that
+id. It was never exposed through `/api/v1` and there is now nothing to
+expose.
+
+---
+
+## The vectors
+
+### One column, several embedding spaces
+
+`chunk_vectors.embedding` is declared `vector` with **no width**. That is a
+decision, not an omission. This application supports more than one embedding
+space at a time:
+
+| where it comes from | width |
+|---|---|
+| `all-MiniLM-L6-v2` / `paraphrase-multilingual-MiniLM-L12-v2`, the local default | 384 |
+| `qwen/qwen3-embedding-8b` through the gateway, the demo profile | 4096 |
+| a lexical-only ingestion, which embeds nothing and stores a constant placeholder | 1 |
+
+A knowledge base names its own embedding model, so two knowledge bases in one
+database can legitimately be in two of those spaces at once. A `vector(n)`
+column would have to pick one width and would reject every write from the
+others, so the width is recorded per row (`embedding_dim`) instead, and the
+invariant that matters is enforced where it belongs: **one collection holds one
+width**. A write at a different width is refused by name; `replace_all` — a
+re-index — is the one call allowed to change it, because it empties the
+collection first.
+
+`components/embedding/index_manifest.py` is the rule on top of that: a query is
+never compared against vectors a different model produced. The manifest that
+used to be an `embedding_index.json` beside the store is the manifest columns
+on `vector_collections` now.
+
+### Distance, and why nothing above it changed
+
+Cosine, through pgvector's `<=>` operator, ordered ascending:
+
+```
+0.0  identical      1.0  orthogonal      2.0  opposite
+```
+
+That is the same number, on the same scale, in the same direction that Chroma
+returned for a cosine collection. It has to be, because three things above the
+store read it directly: the dense leg turns it into `1 - distance`, the console
+turns it into `1 - distance / 2`, and the RRF fusion assumes the list arrives
+nearest-first. `tests/migration/test_retrieval_parity.py` pins all of it —
+ranking, ties, filtering, direction — against a second implementation.
+
+### No ANN index, deliberately
+
+There is no HNSW or IVFFlat index on `chunk_vectors`, and the search is an
+exact scan of the collection. Two reasons, in order:
+
+1. **pgvector cannot index this column.** Both index types require a column of
+   fixed, declared width; `vector` with no width cannot carry either. Choosing
+   a width to get an index back would break every knowledge base not in that
+   space — the trade the previous section rejected.
+2. **Correctness first.** An exact scan returns the true ranking. An ANN index
+   returns an approximation, and every recall trade-off would have to be
+   re-tuned against the RRF fusion and the gold set before it could be trusted.
+   For corpora of this size — thousands of chunks per knowledge base, scoped by
+   a btree index on `(collection, doc_id)` — the scan is not the bottleneck;
+   the embedding call in front of it is.
+
+When one production embedding width is fixed and a corpus is large enough to
+need it, the change is a migration that adds a typed column and one index:
+
+```sql
+ALTER TABLE chunk_vectors ADD COLUMN embedding_4096 vector(4096);
+CREATE INDEX ON chunk_vectors USING hnsw (embedding_4096 vector_cosine_ops);
+```
+
+HNSW rather than IVFFlat, because this workload writes continuously (every
+ingest) and IVFFlat's lists have to be rebuilt as the data grows. Note that
+`vector` tops out at 2000 dimensions for an index — a 4096-wide space needs
+`halfvec` — which is one more reason it is not worth doing before a width is
+actually fixed.
+
+### Migrating an existing Chroma store
+
+```bash
+pip install chromadb                       # not a dependency any more
+python -m tools.migrate_chroma_to_pgvector --root ./chroma_db --dry-run
+python -m tools.migrate_chroma_to_pgvector --root ./chroma_db
+```
+
+It copies: chunk text byte for byte, metadata whole, and the vectors as the
+floats Chroma already held — **no embedding is recomputed**, so no provider is
+called and a migrated corpus answers with the ranking it had. The
+`embedding_index.json` beside each store becomes the collection's manifest
+row. It is idempotent (a chunk already there, unchanged, is skipped), scoped to
+one knowledge base at a time, and reports migrated/skipped/failed counts. A
+chunk already present with *different* content is reported as a conflict and
+left alone unless `--overwrite` says otherwise.
+
+If a store cannot give its embeddings back, the tool says so and writes nothing
+for that batch rather than inventing a vector. The recovery is then the
+controlled rebuild:
+`POST /api/v1/knowledge-bases/<kb_id>/embedding-index/rebuild`, which re-embeds
+the migrated text with the current model.
 
 ---
 
@@ -163,7 +283,6 @@ the data directory (`config/paths.py`):
 
 | what | where | why |
 |---|---|---|
-| embeddings, chunk rows, the lexical index | `chroma/` | the vector store's job; pgvector replaces it next |
 | canonical units, packaged `chunks.jsonl`, Deep run trees, `viewer-payload.json` | `viewer-live/<content key>/` | large, regenerable from an ingest, read as files by the library's own reader; a row would only be a second name for a path |
 | the parser's canonical-unit cache | `cache/canonical-units/` | a cache |
 | embedding caches | `cache/embeddings/`, `cache/boundary-embeddings/` | caches |

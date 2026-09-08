@@ -3,7 +3,7 @@
 The public schema of `/api/v1`, declared as Pydantic models and kept
 deliberately apart from the application's records and the stores' rows. The
 current implementation keys a document by an absolute file path, a knowledge
-base by a Chroma directory and an analysis by a directory named for a content
+base by a vector-store directory and an analysis by a directory named for a content
 hash; none of that appears in this package, so none of it has to survive the
 move to PostgreSQL and pgvector.
 

@@ -7,8 +7,7 @@ The contract these tests hold, stated once:
 
 with one deliberate exception for state paths, which
 ``tests/unit/test_state_isolation.py`` owns: a ``.env`` may not move
-``VECTOR_DB_PATH`` or ``STRUCTURED_PARSER_CACHE`` once ``CHAT_RAG_DATA_DIR``
-is declared. That asymmetry exists because ``.env`` describes a developer's
+``STRUCTURED_PARSER_CACHE`` once ``CHAT_RAG_DATA_DIR`` is declared. That asymmetry exists because ``.env`` describes a developer's
 local layout and a deployment has already said where its state lives.
 
 What is proved here:
@@ -45,7 +44,7 @@ def clean_env(monkeypatch):
                  "WAITRESS_CHANNEL_TIMEOUT", "INGEST_WORKERS", "INGEST_SYNC_WAIT",
                  "INGEST_SYNC_WAITERS", "QUERY_MAX_ACTIVE", "ANSWER_MAX_INFLIGHT",
                  "LOG_LEVEL", "LOG_FILE_LEVEL", paths.DATA_DIR_ENV,
-                 paths.VECTOR_DB_PATH_ENV, paths.PARSER_CACHE_ENV):
+                 paths.PARSER_CACHE_ENV):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -86,13 +85,13 @@ def test_the_default_applies_when_nothing_overrides_it(clean_env):
 def test_a_state_path_still_follows_the_stricter_data_root_rule(tmp_path, monkeypatch, clean_env):
     """The Phase 1C contract, unchanged: a declared data root owns state paths."""
     env_file = tmp_path / ".env"
-    env_file.write_text("VECTOR_DB_PATH=./chroma_db\n", encoding="utf-8")
+    env_file.write_text("STRUCTURED_PARSER_CACHE=.cache/units\n", encoding="utf-8")
     monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path / "data"))
 
     paths.load_env_file(str(env_file))
 
-    assert paths.VECTOR_DB_PATH_ENV not in os.environ
-    assert paths.fallback_vector_store().startswith(str(tmp_path / "data"))
+    assert paths.PARSER_CACHE_ENV not in os.environ
+    assert paths.canonical_cache().startswith(str(tmp_path / "data"))
     assert any("owns this path" in line for line in paths.diagnostics())
 
 
@@ -299,7 +298,6 @@ DELIBERATE_OVERRIDES = {
         "LLM_PROVIDER": "the demo has no Azure account; the code default is azure",
         "AZURE_ENDPOINT": "a placeholder, not a value",
         "AZURE_API_KEY": "a placeholder, not a value",
-        "VECTOR_DB_PATH": "names the store in a developer's own checkout",
         "DATABASE_URL": "there is no application default and cannot be one -- the only fallback would be a credential in a tracked file; this names the local development database docker-compose.test.yml starts",
     },
     ".env.docker": {

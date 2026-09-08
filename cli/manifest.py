@@ -45,7 +45,7 @@ def pipeline_facts(kb: Dict[str, Any]) -> Dict[str, Any]:
 
     return provenance.pipeline_facts(
         runtime.pipeline_for(kb), kb,
-        storage_path=runtime.kb_manager.storage_path(kb["kb_id"]),
+        vector_collection=runtime.kb_manager.collection(kb["kb_id"]),
     )
 
 

@@ -1,10 +1,11 @@
 """PostgreSQL: where this application's relational state lives.
 
-Since Step 8, PostgreSQL is authoritative for every durable record this
-product keeps *about* documents -- the knowledge bases, the ingest ledger, the
-content identities and their analysis state, the ingest journal and the gold
-set. The vector store is still authoritative for embeddings; Step 9 replaces
-it with pgvector, and until then the two are separate on purpose.
+Since Step 9, PostgreSQL is authoritative for everything durable this product
+keeps: the knowledge bases, the ingest ledger, the content identities and
+their analysis state, the ingest journal, the gold set -- and the chunks and
+their embeddings, which were a Chroma directory per knowledge base until this
+step and are ``vector_collections`` and ``chunk_vectors`` now, with the
+embedding in a pgvector column.
 
 What is deliberately *not* here: the artifacts of document processing. The
 canonical units a parse produced, each chunking method's packaged
@@ -36,11 +37,12 @@ from .engine import (
     health, pool_status, require_reachable, session_scope,
 )
 from .repositories import (
-    ContentRepository, DocumentRepository, GoldSetRepository,
-    IngestJobRepository, KnowledgeBaseRepository,
+    ChunkVectorRepository, ContentRepository, DocumentRepository,
+    GoldSetRepository, IngestJobRepository, KnowledgeBaseRepository,
 )
 
 __all__ = [
+    "ChunkVectorRepository",
     "ContentRepository",
     "DatabaseNotConfigured",
     "DatabaseUnavailable",

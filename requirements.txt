@@ -2,21 +2,25 @@ python-dotenv
 sentence-transformers
 
 # Relational persistence. PostgreSQL holds the knowledge bases, the ingest
-# ledger, the content identities and their analysis state, the ingest journal
-# and the gold set (storage/). psycopg 3 is the driver the application is
-# written against and the one config/database.py names explicitly, so a machine
-# with psycopg2 lying around cannot run it on a driver nobody tested. Alembic
-# is how a schema is created -- there is no metadata.create_all() in the source.
+# ledger, the content identities and their analysis state, the ingest journal,
+# the gold set and -- since Step 9 -- the chunks and their embeddings
+# (storage/). psycopg 3 is the driver the application is written against and
+# the one config/database.py names explicitly, so a machine with psycopg2 lying
+# around cannot run it on a driver nobody tested. Alembic is how a schema is
+# created -- there is no metadata.create_all() in the source.
 SQLAlchemy>=2.0
 psycopg[binary]>=3.1
 alembic>=1.13
+# The vector column type and its distance operators, on both sides: the server
+# needs the `vector` extension (docker-compose uses pgvector/pgvector:pg16, and
+# 0002_pgvector_store creates it) and this is the SQLAlchemy binding for it.
+pgvector>=0.3
 # amsc-poc is the chunking library, consumed as a versioned dependency and
 # pinned to an immutable commit that must already be pushed. Every
 # `from amsc... import` in product code has to resolve at this revision;
 # tests/unit/test_amsc_pin.py checks that against the sibling checkout's
 # git history, so a stale pin fails the suite instead of the Docker build.
 amsc-poc @ git+https://github.com/erenayd58/chunk.git@4820250c5b43a444d0dea02fa1d250c39d2faaa2
-chromadb
 openai
 rank-bm25
 numpy

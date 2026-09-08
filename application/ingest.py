@@ -312,7 +312,7 @@ def _run(services, job, kb, pipeline) -> dict:
     # today's configuration rather than the one that ran.
     pipeline_snapshot = capture_pipeline_snapshot(
         pipeline, kb, kb_id=job.kb_id,
-        storage_path=services.kb_manager.storage_path(job.kb_id),
+        vector_collection=services.kb_manager.collection(job.kb_id),
     )
     if pipeline_snapshot is not None:
         # The per-document ingest decision, next to the pipeline facts, so the

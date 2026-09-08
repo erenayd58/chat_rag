@@ -3,9 +3,10 @@
 The surface a client builds against. It is versioned because it has to keep
 working while everything under it is replaced: the state files by PostgreSQL,
 Chroma by pgvector, the templates by a Next.js front end. None of those is a
-reason to change anything on this page — and neither was the first of them,
-which has already happened. These routes were Flask and are now **FastAPI**,
-at the same URLs, with the same statuses and the same bodies.
+reason to change anything on this page — and none of the first three was.
+These routes were Flask and are now **FastAPI**, at the same URLs, with the
+same statuses and the same bodies; the records and then the vectors moved into
+PostgreSQL underneath them, and this page did not change for either.
 
 The Flask-era surface is still served beside it — see *The console API* in
 [../README.md](../README.md). That one is compatibility, this one is the

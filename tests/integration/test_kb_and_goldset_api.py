@@ -20,6 +20,20 @@ from application import workspace as app_workspace
 from components.goldset import GoldSetManager
 from components.knowledgebase.manager import KnowledgeBaseManager
 from components.retriever import BM25OnlyRetriever, NullEmbedding
+from components.vectordb import PgVectorStore
+from core.models import DocumentChunk
+
+
+def _fill(collection, kb_id, chunk_id="c-1"):
+    """One chunk in a knowledge base's collection, and the store holding it."""
+    store = PgVectorStore(collection=collection, kb_id=kb_id)
+    store.add_chunks(
+        [DocumentChunk(chunk_id=chunk_id, content="metin", doc_id="doc-1",
+                       doc_title="rapor.pdf", chunk_index=0, total_chunks=1,
+                       metadata={"word_count": 1})],
+        [[1.0, 0.0, 0.0]],
+    )
+    return store
 
 
 class DenseRetriever:
@@ -176,18 +190,19 @@ def test_a_knowledge_base_can_be_created_and_deleted(client):
     assert created["success"] is True
     kb_id = created["kb"]["kb_id"]
 
-    # Where this knowledge base's store lives, asked of the same resolver the
-    # deletion route asks -- not rebuilt from a literal that happens to match
-    # today's default.
-    store = Path(flask_app.services.kb_manager.storage_path(kb_id))
-    store.mkdir(parents=True)
-    (store / "chroma.sqlite3").write_text("x", encoding="utf-8")
+    # Which collection this knowledge base's chunks are in, asked of the same
+    # resolver the deletion route asks -- not rebuilt from a literal that
+    # happens to match today's default.
+    collection = flask_app.services.kb_manager.collection(kb_id)
+    store = _fill(collection, kb_id)
+    assert store.count() == 1
 
     body = client.delete(f"/api/kb/{kb_id}").get_json()
 
     assert body["success"] is True
-    assert body["storage_removed"] is True
-    assert not store.exists()
+    assert body["vectors_removed"] == 1
+    assert body["vector_collection"] == collection
+    assert store.count() == 0
     assert client.get("/api/kb").get_json()["knowledge_bases"] == []
 
 
@@ -209,45 +224,53 @@ def test_an_invalid_chunker_is_a_client_error_and_creates_nothing(client):
     assert client.get("/api/kb").get_json()["knowledge_bases"] == []
 
 
-def test_a_store_still_in_use_reports_a_conflict_and_keeps_the_record(
-    client, monkeypatch
-):
-    """The record must not outlive its store, nor the store its record."""
-    import shutil
+def test_a_failed_clearance_keeps_the_record(client, monkeypatch):
+    """The record must not outlive its corpus, nor the corpus its record.
+
+    A directory that could not be removed used to be the way this happened --
+    on Windows an open Chroma handle was enough. It is one transaction now, so
+    the failure has to be provoked from inside it; what is asserted is
+    unchanged: 409, and both halves still there.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    from storage.repositories import ChunkVectorRepository
 
     created = client.post("/api/kb", json={"name": "locked"}).get_json()["kb"]
-    store = Path(flask_app.services.kb_manager.storage_path(created["kb_id"]))
-    store.mkdir(parents=True)
+    collection = flask_app.services.kb_manager.collection(created["kb_id"])
+    _fill(collection, created["kb_id"])
 
-    monkeypatch.setattr(
-        shutil, "rmtree", lambda *a, **k: (_ for _ in ()).throw(OSError("in use"))
-    )
+    def refuse(*_args, **_kwargs):
+        raise OperationalError("DELETE FROM vector_collections", {}, Exception("in use"))
+
+    monkeypatch.setattr(ChunkVectorRepository, "delete_collection", refuse)
     response = client.delete(f"/api/kb/{created['kb_id']}")
 
     assert response.status_code == 409
     assert "in use" in response.get_json()["error"]
-    assert store.exists()
     assert len(client.get("/api/kb").get_json()["knowledge_bases"]) == 1
+    assert PgVectorStore(collection=collection).count() == 1
 
 
 def test_deleting_an_unknown_knowledge_base_is_a_404(client):
     assert client.delete("/api/kb/nope").status_code == 404
 
 
-def test_a_store_shared_with_another_knowledge_base_is_kept(client):
-    first = client.post(
-        "/api/kb", json={"name": "one", "vector_db_path": "./chroma_db/shared"}
-    ).get_json()["kb"]
-    client.post("/api/kb", json={"name": "two", "vector_db_path": "./chroma_db/shared"})
-    # An explicit per-knowledge-base path -- still a legitimate override, and
-    # the resolver honours it rather than deriving one.
-    store = Path(flask_app.services.kb_manager.storage_path(first["kb_id"]))
-    store.mkdir(parents=True)
+def test_deleting_one_knowledge_base_leaves_anothers_vectors_alone(client):
+    """Two knowledge bases could once be pointed at one directory, and
+    deleting either had to decide whether the other still needed it. A
+    collection is named by the knowledge base's own id, so the question cannot
+    be asked -- which is what this pins."""
+    first = client.post("/api/kb", json={"name": "one"}).get_json()["kb"]
+    second = client.post("/api/kb", json={"name": "two"}).get_json()["kb"]
+    _fill(flask_app.services.kb_manager.collection(first["kb_id"]), first["kb_id"])
+    kept = _fill(flask_app.services.kb_manager.collection(second["kb_id"]),
+                 second["kb_id"])
 
     body = client.delete(f"/api/kb/{first['kb_id']}").get_json()
 
-    assert body["storage_removed"] is False
-    assert store.exists()
+    assert body["vectors_removed"] == 1
+    assert kept.count() == 1
 
 
 def test_deleting_drops_the_cached_pipeline(client, monkeypatch):
@@ -264,26 +287,24 @@ def test_deleting_drops_the_cached_pipeline(client, monkeypatch):
     assert kb_id not in flask_app.services.pipeline_cache.snapshot()["knowledge_bases"]
 
 
-def test_the_vector_store_releases_its_files_when_closed(tmp_path):
-    """Chroma holds the sqlite file and hnsw index open; on Windows that alone
-    stops the knowledge base's directory from ever being deleted."""
-    import shutil
+def test_the_store_holds_no_handle_that_could_outlive_a_deletion():
+    """The store that replaced Chroma has nothing to close.
 
-    from components.vectordb.chroma_vectordb import ChromaVectorDB
-    from core.models import DocumentChunk
-
-    path = tmp_path / "store"
-    store = ChromaVectorDB(path=str(path), collection_name="documents")
+    Chroma held the store's sqlite file and hnsw index open, and on Windows
+    that alone stopped a knowledge base's directory from ever being deleted --
+    which is why the pipeline cache closes a store before dropping it, and why
+    ``close`` is an optional capability rather than a required one. This one
+    borrows a connection per call from the process's pooled engine and returns
+    it, so it offers no ``close`` at all and the cache skips it.
+    """
+    store = PgVectorStore(collection="documents")
     store.add_chunks(
         [DocumentChunk(chunk_id="a", content="metin", doc_id="d", doc_title="t",
                        chunk_index=0, total_chunks=1, metadata={"word_count": 1})],
         [],
     )
-    store.get_all_chunks()
-
-    store.close()
-    shutil.rmtree(path)
-    assert not path.exists()
+    assert store.count() == 1
+    assert not hasattr(store, "close")
 
 
 # ------------------------------------------------------- ingest snapshot

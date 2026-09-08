@@ -1,10 +1,9 @@
 """A bounded home for the most expensive object in the process.
 
 A ``RAGPipeline`` is not a small thing. Each one holds an embedding model
-(a local sentence-transformers model, when that is the provider), a Chroma
-client with the store's sqlite file and hnsw index open, a chunker, and a
-BM25 index built from **every chunk in the knowledge base** -- held in
-memory, as objects. The cache holding these was effectively unbounded: the
+(a local sentence-transformers model, when that is the provider), a handle on
+its vector collection, a chunker, and a BM25 index built from **every chunk in
+the knowledge base** -- held in memory, as objects. The cache holding these was effectively unbounded: the
 key is ``session_id:kb_id``, ``session_id`` is a uuid4 in a browser cookie,
 and nothing ever removed an entry. Every new browser that opened a knowledge
 base added one, for the life of the process. So the cache is *bounded*
@@ -25,10 +24,9 @@ Eviction that cannot corrupt anything
 
 An entry is evicted only when it is not in use. "In use" is a count, not a
 guess: :meth:`lease` increments it for the duration of a request or a job,
-and a leased pipeline is never chosen for eviction, so nothing can close a
-Chroma handle out from under a query in progress. Eviction closes the store
-explicitly (the handle is what makes a store directory undeletable on
-Windows) and then drops the reference.
+and a leased pipeline is never chosen for eviction, so nothing can drop a
+store out from under a query in progress. Eviction closes the store when it
+has something to close and then drops the reference.
 
 The bound itself is least-recently-used with a ceiling
 (``PIPELINE_CACHE_MAX``) and an idle timeout (``PIPELINE_CACHE_TTL``),
@@ -237,9 +235,13 @@ class PipelineCache:
     def _close(self, pipeline: Any) -> None:
         """Let go of the store handle before letting go of the pipeline.
 
-        Dropping the reference is not enough: Chroma keeps the sqlite file and
-        the hnsw index open until its client is closed, and on Windows an open
-        handle is what makes a store directory undeletable.
+        The store on PostgreSQL has nothing to close -- it borrows a
+        connection per call from the one pooled engine and returns it -- so
+        this is a no-op for it. The call stays because ``close`` is an
+        optional capability of a store rather than an absent one: an
+        implementation that does hold a handle (Chroma did, and its open
+        sqlite file was what made a store directory undeletable on Windows)
+        has to be told when its pipeline is dropped.
         """
         store = getattr(pipeline, "vector_db", None)
         closer = getattr(store, "close", None)

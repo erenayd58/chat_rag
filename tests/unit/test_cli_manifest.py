@@ -111,7 +111,7 @@ def wired(monkeypatch):
         monkeypatch.setattr(runtime, "pipeline_for", lambda kb: pipeline)
         monkeypatch.setattr(
             runtime, "kb_manager",
-            type("KB", (), {"storage_path": staticmethod(lambda kb_id, root=".": "/store")})(),
+            type("KB", (), {"collection": staticmethod(lambda kb_id: "kb-1")})(),
         )
         return pipeline
     return use

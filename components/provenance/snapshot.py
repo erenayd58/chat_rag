@@ -35,7 +35,7 @@ IMPORTANT_DEPENDENCIES = (
     "amsc-poc",
     "pymupdf4llm",
     "pymupdf",
-    "chromadb",
+    "pgvector",
     "rank-bm25",
     "sentence-transformers",
     "tiktoken",
@@ -191,7 +191,7 @@ def features_of(parser: Any) -> Dict[str, Optional[bool]]:
 
 
 def pipeline_facts(
-    pipeline: Any, kb: Dict[str, Any], *, storage_path: Optional[str] = None
+    pipeline: Any, kb: Dict[str, Any], *, vector_collection: Optional[str] = None
 ) -> Dict[str, Any]:
     """How a pipeline is wired, read from the objects themselves."""
     retriever = getattr(pipeline, "hybrid_retriever", None)
@@ -215,7 +215,13 @@ def pipeline_facts(
         "requires_document_embeddings": requires,
         "configured_embedding_model": configured_model,
         "vector_db_provider": (kb or {}).get("vector_db_provider"),
-        "storage_path": storage_path,
+        # Which collection in the vector store this corpus is in. It was a
+        # filesystem path until Step 9 and is a key now, so the field was
+        # renamed rather than quietly redefined: a snapshot captured before
+        # that has ``storage_path`` and no ``vector_collection``, and the
+        # report reads whichever it finds instead of pretending a directory
+        # name is a collection.
+        "vector_collection": vector_collection,
     }
 
 
@@ -227,7 +233,7 @@ def build_snapshot(
     kb: Dict[str, Any],
     *,
     kb_id: Optional[str] = None,
-    storage_path: Optional[str] = None,
+    vector_collection: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Capture the configuration that just produced a corpus.
 
@@ -244,7 +250,8 @@ def build_snapshot(
         "captured_at": datetime.now().isoformat(timespec="seconds"),
         "kb_id": kb_id,
         "document_sha256": None,
-        "pipeline": pipeline_facts(pipeline, kb, storage_path=storage_path),
+        "pipeline": pipeline_facts(pipeline, kb,
+                                   vector_collection=vector_collection),
         "features": features_of(parser),
         "versions": version_facts(),
     }
@@ -255,7 +262,7 @@ def capture(
     kb: Dict[str, Any],
     *,
     kb_id: Optional[str] = None,
-    storage_path: Optional[str] = None,
+    vector_collection: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """``build_snapshot`` that returns None instead of propagating a failure.
 
@@ -265,7 +272,7 @@ def capture(
     """
     try:
         return build_snapshot(
-            pipeline, kb, kb_id=kb_id, storage_path=storage_path
+            pipeline, kb, kb_id=kb_id, vector_collection=vector_collection
         )
     except Exception:
         return None

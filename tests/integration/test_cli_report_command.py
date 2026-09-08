@@ -173,7 +173,7 @@ def ingest_snapshot(**overrides):
     """
     snapshot = build_snapshot(
         FakePipeline(CHUNKS, [c.chunk_id for c in CHUNKS]), KB_RECORD,
-        kb_id="kb-1", storage_path="/store",
+        kb_id="kb-1", vector_collection="kb-1",
     )
     # The tracker stamps the hash of the bytes it recorded.
     snapshot["document_sha256"] = "abc123"
@@ -217,7 +217,7 @@ def workspace(tmp_path, monkeypatch):
             } if kb_id == "kb-1" else None),
             "find_by_name": staticmethod(lambda name: "kb-1" if name == "kb-one" else None),
             "list": staticmethod(lambda: [{"kb_id": "kb-1", "name": "kb-one"}]),
-            "storage_path": staticmethod(lambda kb_id, root=".": "/store"),
+            "collection": staticmethod(lambda kb_id: "kb-1"),
         })(),
     )
     monkeypatch.setattr(runtime, "document_sha", lambda doc_id: "abc123")

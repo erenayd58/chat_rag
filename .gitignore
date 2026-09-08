@@ -30,13 +30,15 @@ ENV/
 # secret-free container configuration.
 .env
 
-# Vector database
+# Vector stores that are no longer the product's. The vectors are rows in
+# PostgreSQL since Step 9, and neither of these directories is written any
+# more -- but a working checkout still carries the one Chroma left behind
+# (that is what tools/migrate_chroma_to_pgvector.py reads), and it must not be
+# committed. FAISS was once tracked: one knowledge base's index and its
+# meta.json -- which carries the full text of every chunk in it -- travelled
+# in every clone, and a clone arriving with a populated vector store lets a
+# clean-clone check pass for the wrong reason.
 chroma_db/
-# The FAISS provider is gone; a local checkout may still carry the store it
-# left behind, and it must not be committed. It was once tracked: one
-# knowledge base's index and its meta.json -- which carries the full text of
-# every chunk in it -- travelled in every clone, and a clone arriving with a
-# populated vector store lets a clean-clone check pass for the wrong reason.
 faiss_db/
 
 # Document tracking. A .corrupt-<timestamp> copy is what the tracker keeps

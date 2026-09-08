@@ -265,8 +265,9 @@ class StructuralChunker(BaseChunker):
                         # anything that needs the real heading -- structural QA,
                         # the retrieval review screen -- had to rebuild it from
                         # the canonical units. Persist it instead. Omitted when
-                        # the chunk has no heading: Chroma rejects None and a
-                        # missing key reads the same as an older record.
+                        # the chunk has no heading: a store omits null
+                        # metadata and a missing key reads the same as an
+                        # older record.
                         "heading": row.get("heading"),
                         # Deep Analysis renders a table it carries into a
                         # searchable form; retrieval may read it instead of, or
@@ -281,15 +282,16 @@ class StructuralChunker(BaseChunker):
                         # Standard's metadata is the exact set it always was.
                         **({"table_view": row["table_view"]}
                            if row.get("table_view") else {}),
-                        # Chroma keeps scalar metadata only and silently drops
-                        # list values, so provenance is serialised the same way
+                        # Chunk metadata is a flat scalar record -- the
+                        # shape every store this product has shipped keeps --
+                        # so provenance is serialised the same way
                         # FrozenV4Chunker serialises its own.
                         "unit_ids_json": json.dumps(list(row["unit_ids"])),
                         "pages_json": json.dumps(list(row.get("pages") or [])),
                         "token_count": int(row["token_count"]),
-                        # Chroma metadata values must be scalars or flat lists,
-                        # and section_paths is a list of paths. Serialised the
-                        # same way FrozenV4Chunker serialises its structures.
+                        # section_paths is a list of paths, and chunk
+                        # metadata is flat. Serialised the same way
+                        # FrozenV4Chunker serialises its structures.
                         "section_paths_json": json.dumps(
                             section_paths, ensure_ascii=False
                         ),

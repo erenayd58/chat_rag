@@ -11,14 +11,19 @@ the process actually used.
   3. the application default           (the setting's own dataclass field)
 ```
 
-**One exception, deliberate.** A *state path* — `VECTOR_DB_PATH`,
-`STRUCTURED_PARSER_CACHE` — from `.env` is ignored once `CHAT_RAG_DATA_DIR`
-is set. `.env` describes a developer's local layout (`VECTOR_DB_PATH=./chroma_db`
-means "the store in my checkout"), and a deployment or a smoke run that
+**One exception, deliberate.** A *state path* — `STRUCTURED_PARSER_CACHE` —
+from `.env` is ignored once `CHAT_RAG_DATA_DIR` is set. `.env` describes a
+developer's local layout (`STRUCTURED_PARSER_CACHE=.cache/canonical-units`
+means "the cache in my checkout"), and a deployment or a smoke run that
 declared where its state lives must not have it moved back by a leftover file.
-That is how a smoke run once opened the developer's real Chroma store. Rule 1
+That is how a smoke run once wrote into the developer's own checkout. Rule 1
 still applies: set the variable in the real environment and it wins, visibly.
-Refusals are reported at start-up (`! VECTOR_DB_PATH=… ignored: …`).
+Refusals are reported at start-up (`! STRUCTURED_PARSER_CACHE=… ignored: …`).
+
+There used to be a second one, `VECTOR_DB_PATH`, and it was the reason this
+rule exists: a stale `.env` pointing at `./chroma_db` made a smoke run open
+the developer's real vector store. It is gone — the vectors are rows in the
+database `DATABASE_URL` names, and no path addresses them.
 
 `.env` is applied in `config/__init__.py`, before any config module reads
 anything, so import order cannot change what a setting resolves to. It is the
@@ -46,14 +51,14 @@ the first upload.
 | group | variables | what changing them does |
 |---|---|---|
 | **database** | `DATABASE_URL`, `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`, `DATABASE_POOL_TIMEOUT`, `DATABASE_POOL_RECYCLE`, `DATABASE_CONNECT_TIMEOUT`, `DATABASE_ECHO` | where the relational records live and how many connections may reach them. `DATABASE_URL` has no default and cannot have one — see [database.md](database.md) |
-| **state** | `CHAT_RAG_DATA_DIR`, `VECTOR_DB_PATH`, `STRUCTURED_PARSER_CACHE` | moves where every **file** the process persists lives. One directory covers all of them; the relational records are not among them |
+| **state** | `CHAT_RAG_DATA_DIR`, `STRUCTURED_PARSER_CACHE` | moves where every **file** the process persists lives. One directory covers all of them; the records and the vectors are not among them — they are in PostgreSQL |
 | **server** | `FLASK_HOST`, `FLASK_PORT`, `WAITRESS_THREADS`, `WAITRESS_CHANNEL_TIMEOUT`, `FLASK_SECRET_KEY` | the process itself. `WAITRESS_THREADS` is the number every other ration is sized against |
 | **ingest limits** | `INGEST_WORKERS`, `INGEST_QUEUE_CAPACITY`, `INGEST_JOB_TIMEOUT`, `INGEST_SYNC_WAIT`, `INGEST_SYNC_WAITERS`, `INGEST_JOB_RETENTION` | how much uploading can happen at once and for how long |
 | **provider budgets** | `PROVIDER_MAX_INFLIGHT`, `DEEP_ANALYSIS_CONCURRENCY`, `EMBEDDING_MAX_INFLIGHT`, `ANSWER_MAX_INFLIGHT` | how many calls may be in flight to each external service. Three separate caps so no path can starve another |
 | **query limits** | `QUERY_MAX_ACTIVE`, `QUERY_TIMEOUT`, `ANSWER_SLOT_WAIT` | how many questions run at once, and for how long |
 | **caches** | `PIPELINE_CACHE_MAX`, `PIPELINE_CACHE_TTL` | the largest memory dial in the process |
 | **models** | `ANSWER_*`, `EMBEDDING_*`, `DEEP_ANALYSIS_*`, `OLLAMA_*`, `AZURE_*`, `LLM_PROVIDER` | which model answers, embeds and proposes boundaries, and through which gateway |
-| **retrieval and chunking** | `RETRIEVAL_PROFILE`, `CHUNKER_TYPE`, `DEFAULT_TOP_K`, `CONTEXT_*` | what gets indexed and what gets found |
+| **retrieval and chunking** | `RETRIEVAL_PROFILE`, `CHUNKER_TYPE`, `DEFAULT_TOP_K`, `CONTEXT_*`, `VECTOR_DB_COLLECTION` | what gets indexed and what gets found. `VECTOR_DB_COLLECTION` names only the collection used when *no* knowledge base is selected; a knowledge base's collection is its own id |
 | **logging** | `LOG_LEVEL`, `LOG_FILE_LEVEL`, `LOG_MAX_BYTES`, `LOG_BACKUPS`, `LOG_RUNS_KEPT` | what is written and how much is kept. `LOG_FILE_LEVEL=DEBUG` writes document content to disk |
 
 The relationships that matter are in *Cross-setting rules* below; how each

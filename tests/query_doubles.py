@@ -1,6 +1,7 @@
 """Doubles the bounded-query tests share: answer models that block, count and
 fail on cue, an embedding transport that never leaves the process, and a
-small real pipeline over Chroma with a distinctive corpus.
+small real pipeline over the product's own vector store with a distinctive
+corpus.
 
 Nothing here sleeps and nothing reaches a provider. A model that has to
 "take time" waits on an event the test controls, so a test proves an
@@ -19,7 +20,7 @@ import numpy as np
 
 from components.embedding import OpenAICompatibleEmbedding
 from components.llm.base import BaseLLM
-from components.vectordb import ChromaVectorDB
+from components.vectordb import PgVectorStore
 from config import Settings
 from core.exceptions import LLMException
 from pipeline.rag_pipeline import RAGPipeline
@@ -156,9 +157,11 @@ def make_settings(tmp_path, **overrides) -> Settings:
     settings = Settings()
     settings.retrieval_profile = "hybrid_rrf"
     settings.chunker_type = "structure_first"
-    settings.vector_db_provider = "chroma"
-    settings.vector_db_path = str(tmp_path / "chroma")
-    settings.vector_db_collection_name = "documents"
+    settings.vector_db_provider = "pgvector"
+    # A collection per test, named after the temporary directory the test was
+    # given: the tables are truncated between tests anyway, and this keeps two
+    # pipelines built in one test from sharing a corpus.
+    settings.vector_collection = "test-" + str(abs(hash(str(tmp_path))))[:12]
     settings.enable_conversation = False
     settings.default_top_k = 5
     settings.embedding_provider = "openai_compatible"
@@ -173,16 +176,16 @@ def make_settings(tmp_path, **overrides) -> Settings:
 
 def make_pipeline(tmp_path, llm: BaseLLM, *, transport: Optional[FakeEmbeddingTransport] = None,
                   ingest: bool = True, **overrides) -> RAGPipeline:
-    """A real hybrid_rrf pipeline over a Chroma store under ``tmp_path``,
-    with the given answer model and a fake embedding transport. Ingests the
-    corpus unless told not to (a second session over the same store)."""
+    """A real hybrid_rrf pipeline over its own vector collection, with the
+    given answer model and a fake embedding transport. Ingests the corpus
+    unless told not to (a second session over the same store)."""
     transport = transport or FakeEmbeddingTransport()
     settings = make_settings(tmp_path, **overrides)
     embedding = OpenAICompatibleEmbedding(
         "test/embedding", api_key_env="QUERY_TEST_KEY",
         cache_dir=str(tmp_path / "cache"), provider=transport,
     )
-    vector_db = ChromaVectorDB(path=settings.vector_db_path, collection_name="documents")
+    vector_db = PgVectorStore(collection=settings.vector_collection)
     pipeline = RAGPipeline(llm_model=llm, embedding_model=embedding, vector_db=vector_db,
                            settings=settings)
     if ingest:

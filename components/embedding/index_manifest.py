@@ -1,12 +1,17 @@
 """Which embedding space a vector store holds, and whether it is the current one.
 
 A vector store is only meaningful together with the model that wrote it.
-This manifest sits beside the store (``embedding_index.json``) and records
-provider, model, dimension and fingerprint at the last write, so the
-retriever can tell a compatible store from one that needs re-indexing --
-and never compares a Qwen3-Embedding query vector against vectors another
-model produced, or against the placeholder vectors a lexical-only profile
-stores.
+This manifest records provider, model, dimension and fingerprint at the last
+write, so the retriever can tell a compatible store from one that needs
+re-indexing -- and never compares a Qwen3-Embedding query vector against
+vectors another model produced, or against the placeholder vectors a
+lexical-only profile stores.
+
+Where it is *kept* belongs to the store: until Step 9 it was an
+``embedding_index.json`` beside the Chroma directory, and it is now a row
+beside the vectors it describes (``vector_collections``). This module owns the
+shape and the comparison, and nothing here opens a file or a connection --
+which is what lets one rule be applied to whichever store answers.
 
 States reported by :func:`index_status`:
 
@@ -23,12 +28,8 @@ Only counts, ids and names are stored; nothing here can carry a key.
 
 from __future__ import annotations
 
-import json
-import os
 from datetime import datetime
 from typing import Any, Dict, Optional
-
-MANIFEST_NAME = "embedding_index.json"
 
 STATE_EMPTY = "empty"
 STATE_COMPATIBLE = "compatible"
@@ -39,35 +40,21 @@ STATE_REINDEX_REQUIRED = "reindex_required"
 PLACEHOLDER_DIMENSION = 1
 
 
-def manifest_path(store_path: str) -> str:
-    return os.path.join(store_path, MANIFEST_NAME)
-
-
-def read_manifest(store_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    if not store_path:
-        return None
-    path = manifest_path(store_path)
-    if not os.path.isfile(path):
-        return None
-    try:
-        with open(path, encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def write_manifest(
-    store_path: str,
+def build_manifest(
     identity: Dict[str, Any],
     *,
     dimension: int,
     chunk_count: int,
 ) -> Dict[str, Any]:
-    """Record the space the store now holds. ``identity`` is an embedding's
-    ``describe()``; the key variable name is kept, the key never exists here."""
-    os.makedirs(store_path, exist_ok=True)
-    manifest = {
+    """The record of the space a store now holds.
+
+    ``identity`` is an embedding's ``describe()``; the key variable name is
+    kept, the key never exists here. Handed to the store to persist -- the
+    shape is stable because a store written by an older version has to keep
+    reading, and because the fields are exactly what :func:`index_status`
+    compares.
+    """
+    return {
         "schema_version": 1,
         "embedding_provider": identity.get("provider"),
         "embedding_model": identity.get("model"),
@@ -77,11 +64,6 @@ def write_manifest(
         "chunk_count": int(chunk_count),
         "written_at": datetime.now().isoformat(timespec="seconds"),
     }
-    tmp = manifest_path(store_path) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(manifest, handle, indent=2, ensure_ascii=False)
-    os.replace(tmp, manifest_path(store_path))
-    return manifest
 
 
 def index_status(

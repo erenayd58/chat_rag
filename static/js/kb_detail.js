@@ -39,7 +39,7 @@ async function loadKb() {
   $('#configRows').innerHTML =
     '<div class="def-row"><span class="def-key">Bölümleme profile</span><span class="def-val">' + escapeHtml(chunkerTypeLabel(chunker)) + '</span></div>' +
     '<div class="def-row"><span class="def-key">Retrieval method</span><span class="def-val">' + escapeHtml((currentKb.retrieval_method || 'hybrid').toUpperCase()) + '</span></div>' +
-    '<div class="def-row"><span class="def-key">Vector store</span><span class="def-val">' + escapeHtml((currentKb.vector_db_provider || 'chroma').toUpperCase()) + '</span></div>' +
+    '<div class="def-row"><span class="def-key">Vector store</span><span class="def-val">' + escapeHtml((currentKb.vector_db_provider || 'pgvector').toUpperCase()) + '</span></div>' +
     '<div class="def-row"><span class="def-key">Knowledge base ID</span><span class="def-val mono">' + escapeHtml(KB_ID) + '</span></div>';
 }
 

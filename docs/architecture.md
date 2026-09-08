@@ -106,24 +106,32 @@ storage/                  PostgreSQL, behind repository interfaces.  Every SQL
                           nothing above it imports SQLAlchemy.
 ```
 
-### Two stores, and what is in each
+### One store, and what is in it
 
 ```
 application / domain
-   ├── PostgreSQL          knowledge bases, documents (the ingest ledger),
-   │                       content identity and analysis state, ingest jobs,
-   │                       the gold set
-   └── vector store        embeddings, chunk rows, the lexical index
-       (Chroma, files)
+   └── PostgreSQL          knowledge bases, documents (the ingest ledger),
+                           content identity and analysis state, ingest jobs,
+                           the gold set,
+                           chunk rows + metadata + embeddings (pgvector)
 ```
 
-**PostgreSQL is authoritative for relational state** and the vector store is
-authoritative for embeddings. Nothing dual-writes. The large regenerable
-artifacts of document processing -- the canonical units, each method's packaged
-`chunks.jsonl`, a Deep run tree, the assembled Viewer payload, the caches --
-are still files under the data directory, addressed by a *row*
-(`contents.content_key` names the directory) rather than being the record.
-[database.md](database.md) is the schema, the migrations and the reasoning.
+**PostgreSQL is authoritative for everything durable.** Step 8 moved the
+relational records off the filesystem; Step 9 moved the vectors, and there is
+no second store to keep in step -- deleting a knowledge base takes its
+vectors with it in the same transaction, by a foreign key rather than by a
+caller remembering to remove a directory.
+
+The lexical (BM25) index is unchanged and is not stored anywhere: it is built
+in memory from the chunk rows, which are now read out of `chunk_vectors`
+instead of out of a Chroma collection. The retrieval algorithm did not move.
+
+The large regenerable artifacts of document processing -- the canonical units,
+each method's packaged `chunks.jsonl`, a Deep run tree, the assembled Viewer
+payload, the caches -- are still files under the data directory, addressed by
+a *row* (`contents.content_key` names the directory) rather than being the
+record. [database.md](database.md) is the schema, the migrations and the
+reasoning.
 
 `/api/v1` is **FastAPI** and the console's surface is still **Flask**, in one
 process over one container. `interfaces/http/coexistence.py` mounts the ASGI

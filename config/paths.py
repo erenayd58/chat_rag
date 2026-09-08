@@ -1,11 +1,12 @@
 """Where the *files* this application writes live.
 
-Since Step 8 that is a smaller set than it was. The knowledge bases, the
-ingest ledger, the gold set, the ingest journal and the Viewer's analysis
-records are rows in PostgreSQL (``config/database.py`` owns that connection
-string). What is left here is what is genuinely a file: the vector stores, the
-parser's canonical-unit cache, the packaged Viewer artifacts, the embedding
-caches, the upload staging directory and the logs.
+Since Step 9 that is a smaller set again. The knowledge bases, the ingest
+ledger, the gold set, the ingest journal, the Viewer's analysis records and --
+as of this step -- the chunks and their embeddings are all rows in PostgreSQL
+(``config/database.py`` owns that connection string). What is left here is
+what is genuinely a file: the parser's canonical-unit cache, the packaged
+Viewer artifacts, the embedding caches, the upload staging directory and the
+logs.
 
 Every one of those has always been a path relative to the working directory.
 That is right for local development and wrong for a container, where the
@@ -33,15 +34,17 @@ from typing import Dict, List, Optional
 #: historical, working-directory-relative layout.
 DATA_DIR_ENV = "CHAT_RAG_DATA_DIR"
 
-#: The fallback vector store, used when no knowledge base is selected.
-VECTOR_DB_PATH_ENV = "VECTOR_DB_PATH"
-
 #: The structured parser's canonical-unit cache.
 PARSER_CACHE_ENV = "STRUCTURED_PARSER_CACHE"
 
 #: Variables that name where runtime *state* lives, as opposed to which model
 #: to call or how big a chunk is. These are the ones a data root owns.
-STATE_PATH_ENV = (VECTOR_DB_PATH_ENV, PARSER_CACHE_ENV)
+#:
+#: One name, since Step 9 took the vector store out of the filesystem. The
+#: rule below is still worth keeping for it: a developer's ``.env`` describes
+#: a checkout, and a deployment that declared a data root has already said
+#: where its state goes.
+STATE_PATH_ENV = (PARSER_CACHE_ENV,)
 
 #: Settings the .env file supplied, and the state paths it was not allowed to
 #: supply because a data root was already declared. Diagnostics only.
@@ -68,13 +71,14 @@ def load_env_file(path: str) -> Dict[str, str]:
     3. this file, for state paths, but *only* when no data root is declared.
 
     Rule 3 is the whole point. ``.env`` is a developer's local file and it
-    describes the developer's local layout: ``VECTOR_DB_PATH=./chroma_db``
-    means "the store in my checkout". A deployment, a smoke check or a test
-    that declares ``CHAT_RAG_DATA_DIR`` has said where its state lives, and
-    a file left over from local development must not quietly move it back --
-    which is exactly how a smoke run came to open the developer's real Chroma
-    store. An operator who genuinely wants a store outside the data root still
-    has rule 1: set the variable in the environment, where it is visible.
+    describes the developer's local layout:
+    ``STRUCTURED_PARSER_CACHE=./.cache/canonical-units`` means "the cache in
+    my checkout". A deployment, a smoke check or a test that declares
+    ``CHAT_RAG_DATA_DIR`` has said where its state lives, and a file left over
+    from local development must not quietly move it back -- which is exactly
+    how a smoke run came to write into the developer's own checkout. An
+    operator who genuinely wants a cache outside the data root still has rule
+    1: set the variable in the environment, where it is visible.
 
     Returns the settings that were applied, and records the ones that were
     refused (see :func:`diagnostics`).
@@ -116,11 +120,11 @@ def diagnostics() -> List[str]:
         lines.append(
             f"{key}={value} in .env ignored: {DATA_DIR_ENV}={root} owns this path"
         )
-    override = (os.getenv(VECTOR_DB_PATH_ENV) or "").strip()
+    override = (os.getenv(PARSER_CACHE_ENV) or "").strip()
     if root and override and not _within(override, root):
         lines.append(
-            f"{VECTOR_DB_PATH_ENV}={override} is outside {DATA_DIR_ENV}={root}; "
-            "the fallback store will not travel with the data directory"
+            f"{PARSER_CACHE_ENV}={override} is outside {DATA_DIR_ENV}={root}; "
+            "the parser cache will not travel with the data directory"
         )
     return lines
 
@@ -163,36 +167,6 @@ def gold_set() -> str:
 
 def logs() -> str:
     return _resolve("logs", "logs")
-
-
-def vector_store_root() -> str:
-    """The directory the per-knowledge-base stores sit under."""
-    return _resolve("chroma", "./chroma_db")
-
-
-def fallback_vector_store() -> str:
-    """The store used when no knowledge base is selected.
-
-    ``VECTOR_DB_PATH`` names it outright when set -- the one path override
-    this application has always had. It is resolved here rather than read
-    straight out of the environment in ``Settings`` so that one place decides
-    it, and so :func:`load_env_file` can keep a stale ``.env`` from supplying
-    it. Per-knowledge-base stores are unaffected: they come from
-    :func:`vector_store`, which this override has never applied to.
-    """
-    override = (os.getenv(VECTOR_DB_PATH_ENV) or "").strip()
-    return override or vector_store_root()
-
-
-def vector_store(kb_id: Optional[str] = None) -> str:
-    """Where one knowledge base keeps its vectors, by default.
-
-    A knowledge base with an explicit ``vector_db_path`` overrides this; the
-    default is what both the pipeline builder and the deletion guard resolve,
-    and they must agree or a store is orphaned.
-    """
-    root = vector_store_root()
-    return os.path.join(root, kb_id) if kb_id else root
 
 
 def canonical_cache() -> str:

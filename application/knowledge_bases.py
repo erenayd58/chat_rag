@@ -73,12 +73,14 @@ def update(services, kb_id: str, updates: dict) -> dict:
 
 
 def delete(services, kb_id: str) -> dict:
-    """Delete a knowledge base: its record and, when nothing else needs it,
-    its vector store.
+    """Delete a knowledge base: its record and the vectors that belong to it.
 
-    Cached pipelines are dropped **first**: a live Chroma client keeps the
-    store's sqlite file and hnswlib index open, and on Windows an open handle
-    is what makes the directory undeletable.
+    Cached pipelines are dropped first. That used to be load-bearing -- a live
+    Chroma client held the store's sqlite file open and on Windows an open
+    handle was enough to make the directory undeletable. It is hygiene now: a
+    cached pipeline for a knowledge base that no longer exists would answer
+    from a lexical index built before the delete, and dropping it is how the
+    next query rebuilds against an empty collection.
     """
     if not services.kb_manager.get(kb_id):
         raise NotFound('Knowledge base not found')

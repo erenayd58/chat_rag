@@ -105,20 +105,24 @@ python -m pytest -m migration -q          # the same set, by marker
 ```
 
 It is seconds, not minutes, on purpose -- it is meant to be run on every step
-of a rewrite, not once at the end. Four files, one contract each:
+of a rewrite, not once at the end. Five files, one contract each:
 
 | file | holds |
 |---|---|
-| `test_document_store_contract.py` | what a document store must do: the result record, the metadata round trip (including `search_text` / `table_view`), per-document isolation, pagination, durability -- and the twelve methods the routes call unguarded, which is more than `BaseVectorDB` declares. Run against **two** implementations: the shipped Chroma store and `reference_store.py`, a dependency-free store written to the contract and nothing else. Two is the point -- with one, a contract quietly becomes a description of that one, and `reference_store.py` doubles as the runnable checklist for pgvector |
+| `test_document_store_contract.py` | what a document store must do: the result record, the metadata round trip (including `search_text` / `table_view`), per-document isolation, pagination, durability -- and the twelve methods the routes call unguarded, which is more than `BaseVectorDB` declares. Run against **two** implementations: the shipped pgvector store and `reference_store.py`, a dependency-free store written to the contract and nothing else. Two is the point -- with one, a contract quietly becomes a description of that one. It was the runnable checklist pgvector was built against, and every test in it passed unchanged when the store underneath was replaced |
+| `test_retrieval_parity.py` | the narrower claim a store migration needs: the shipped store and the reference implementation, over one corpus, answer with the **same ranking** -- top-k order, ties, filtering, identical-content chunks, empty results, deletion, re-indexing and the direction `distance` runs. Behavioural parity, not floating-point parity |
 | `test_http_surface.py` | the console API is exactly what the README publishes, every route belongs to a declared group, and the refusal taxonomy (400/404/409/500/503/504) still makes all six distinctions -- read from the HTTP adapter's own translation tables |
 | `test_domain_relations.py` | the edges between knowledge base, document, content and variant: what each deletion takes and what it must leave -- the foreign keys a schema has to declare |
 | `test_api_v1_contract.py` | `/api/v1` as the contract it is: resource shapes, both identities, `visible = selected ∩ ready` on the wire, the refusal taxonomy, registry-driven method discovery, and that no module behind it keeps a method catalogue of its own |
 
 What it deliberately leaves free: the web framework, the module layout, the
-file-backed persistence, Chroma, the Viewer's implementation, and the internal
-call graph. That freedom has been spent once already: `/api/v1` moved from
-Flask to FastAPI with **no change to any file in this directory**, which is
-the strongest thing that can be said about a contract suite.
+persistence, the vector store, the Viewer's implementation, and the internal
+call graph. That freedom has been spent three times: `/api/v1` moved from
+Flask to FastAPI, the record stores moved from JSON files to PostgreSQL, and
+the vector store moved from Chroma to pgvector -- each with **no change to any
+assertion in this directory**. The store migration edited two lines of
+`test_document_store_contract.py`, both naming which implementations to run
+against; every test body stayed as it was.
 
 `tests/unit/test_fastapi_adapter.py` is the other half of that port -- the
 questions the contract suite is blind to on purpose: the generated OpenAPI
@@ -306,5 +310,5 @@ python -m pytest -q tests/unit/test_amsc_surface.py tests/unit/test_amsc_pin.py
 ```
 
 The suites print a warning line if a run changed the developer's knowledge
-bases, ledger, gold set or Chroma store. That line should never appear; if it
-does, treat it as a bug in the test isolation rather than as noise.
+bases, ledger or gold set. That line should never appear; if it does, treat it
+as a bug in the test isolation rather than as noise.

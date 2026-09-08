@@ -2,8 +2,8 @@
 
 Deep Analysis (amsc.deep.pipeline with a fake proposer/verifier) and Standard
 documents are ingested into one knowledge base, embedded by the
-OpenAI-compatible embedding seam (fake transport), stored in Chroma with an
-embedding manifest, retrieved by dense + BM25 + RRF, assembled into a
+OpenAI-compatible embedding seam (fake transport), stored in PostgreSQL with
+an embedding manifest, retrieved by dense + BM25 + RRF, assembled into a
 labelled context and answered by a fake primary model with a fake fallback.
 
 What is pinned: Standard is untouched; Deep goes through amsc.deep.pipeline
@@ -30,12 +30,11 @@ from components.embedding import OpenAICompatibleEmbedding
 from components.embedding.index_manifest import (
     STATE_COMPATIBLE,
     STATE_REINDEX_REQUIRED,
-    read_manifest,
-    write_manifest,
+    build_manifest,
 )
 from components.llm import FallbackLLM
 from components.llm.base import BaseLLM
-from components.vectordb import ChromaVectorDB
+from components.vectordb import PgVectorStore
 from config import Settings
 from core.exceptions import IndexIncompatibleException, LLMException
 from pipeline.rag_pipeline import RAGPipeline
@@ -158,9 +157,8 @@ def make_settings(tmp_path, **overrides):
     settings = Settings()
     settings.retrieval_profile = "hybrid_rrf"
     settings.chunker_type = "structure_first"
-    settings.vector_db_provider = "chroma"
-    settings.vector_db_path = str(tmp_path / "chroma")
-    settings.vector_db_collection_name = "documents"
+    settings.vector_db_provider = "pgvector"
+    settings.vector_collection = "final-chain"
     settings.enable_conversation = False
     settings.default_top_k = 5
     settings.embedding_provider = "openai_compatible"
@@ -190,7 +188,7 @@ def chain(tmp_path, monkeypatch):
     primary = FakeAnswerLLM()
     fallback = FakeLocalLLM()
     settings = make_settings(tmp_path)
-    vector_db = ChromaVectorDB(path=settings.vector_db_path, collection_name="documents")
+    vector_db = PgVectorStore(collection=settings.vector_collection)
     pipeline = RAGPipeline(
         llm_model=FallbackLLM(primary, fallback),
         embedding_model=embedding,
@@ -202,7 +200,6 @@ def chain(tmp_path, monkeypatch):
         proposer=proposer, primary=primary, fallback=fallback, settings=settings,
         tmp_path=tmp_path,
     )
-    vector_db.close()
 
 
 def ingest_both(chain):
@@ -238,7 +235,7 @@ def test_standard_and_deep_share_one_embedding_space(chain):
 
 def test_ingest_writes_the_embedding_manifest(chain):
     ingest_both(chain)
-    manifest = read_manifest(chain.settings.vector_db_path)
+    manifest = chain.pipeline.vector_db.read_manifest()
     assert manifest["embedding_model"] == "test/qwen3-embedding"
     assert manifest["embedding_provider"] == "openai_compatible"
     assert manifest["embedding_dimension"] == 32
@@ -335,11 +332,11 @@ def test_no_fallback_configured_raises_for_the_route_to_handle(chain):
 def test_a_stale_index_is_detected_and_never_searched_densely(chain):
     ingest_both(chain)
     # Someone indexed this store with another model.
-    write_manifest(
-        chain.settings.vector_db_path,
-        {"provider": "openai_compatible", "model": "other/model", "fingerprint": "deadbeefdeadbeef"},
+    chain.pipeline.vector_db.write_manifest(build_manifest(
+        {"provider": "openai_compatible", "model": "other/model",
+         "fingerprint": "deadbeefdeadbeef"},
         dimension=32, chunk_count=5,
-    )
+    ))
     status = chain.pipeline.embedding_index_status()
     assert status["state"] == STATE_REINDEX_REQUIRED and not status["dense_available"]
 
@@ -359,11 +356,11 @@ def test_a_stale_index_is_detected_and_never_searched_densely(chain):
 
 def test_reindex_restores_dense_retrieval(chain):
     ingest_both(chain)
-    write_manifest(
-        chain.settings.vector_db_path,
-        {"provider": "local", "model": "all-MiniLM-L6-v2", "fingerprint": "0123456789abcdef"},
+    chain.pipeline.vector_db.write_manifest(build_manifest(
+        {"provider": "local", "model": "all-MiniLM-L6-v2",
+         "fingerprint": "0123456789abcdef"},
         dimension=384, chunk_count=5,
-    )
+    ))
     assert chain.pipeline.embedding_index_status()["state"] == STATE_REINDEX_REQUIRED
     outcome = chain.pipeline.reindex_embeddings()
     assert outcome["chunks"] == chain.pipeline.vector_db.count()
@@ -376,13 +373,13 @@ def test_reindex_restores_dense_retrieval(chain):
 
 def test_a_dimension_change_alone_requires_reindex(chain):
     ingest_both(chain)
-    manifest = read_manifest(chain.settings.vector_db_path)
-    write_manifest(
-        chain.settings.vector_db_path,
-        {"provider": manifest["embedding_provider"], "model": manifest["embedding_model"],
+    manifest = chain.pipeline.vector_db.read_manifest()
+    chain.pipeline.vector_db.write_manifest(build_manifest(
+        {"provider": manifest["embedding_provider"],
+         "model": manifest["embedding_model"],
          "fingerprint": manifest["embedding_fingerprint"]},
         dimension=4096, chunk_count=manifest["chunk_count"],
-    )
+    ))
     status = chain.pipeline.embedding_index_status()
     assert status["state"] == STATE_REINDEX_REQUIRED
     assert "width" in status["reason"]
@@ -394,7 +391,7 @@ def test_nothing_key_shaped_leaks(chain):
     result = chain.pipeline.query("Risk Merkezi ne zaman faaliyete gecti?", top_k=3)
     blobs = [
         json.dumps(result, ensure_ascii=False),
-        json.dumps(read_manifest(chain.settings.vector_db_path)),
+        json.dumps(chain.pipeline.vector_db.read_manifest()),
         json.dumps(chain.pipeline.model_chain()),
         json.dumps(chain.pipeline.last_deep_analysis_report),
         json.dumps([c.metadata for c in chain.pipeline.vector_db.get_all_chunks()]),

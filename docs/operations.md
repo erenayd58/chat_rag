@@ -68,13 +68,14 @@ records are still JSON files.
 
 ### Where the rest of the state goes
 
-One setting decides: `CHAT_RAG_DATA_DIR`. Set it, and the vector stores, the
-parser's canonical-unit cache, the packaged Viewer artifacts, the embedding
-caches, the upload staging area and the logs all live under it. Leave it
-unset -- a local checkout -- and every path stays exactly where it has always
-been, relative to the working directory.
+One setting decides: `CHAT_RAG_DATA_DIR`. Set it, and the parser's
+canonical-unit cache, the packaged Viewer artifacts, the embedding caches, the
+upload staging area and the logs all live under it. Leave it unset -- a local
+checkout -- and every path stays exactly where it has always been, relative to
+the working directory. The records and the vectors are not among them: they
+are in the database `DATABASE_URL` names.
 
-`VECTOR_DB_PATH` still names the fallback vector store outright, for a
+`STRUCTURED_PARSER_CACHE` still names the parser cache outright, for a
 deployment that really does keep it elsewhere. But it is honoured only from the
 actual environment: a value for it in `.env` is ignored once a data directory
 has been declared, because `.env` describes a developer's own layout and a

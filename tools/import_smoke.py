@@ -89,11 +89,13 @@ def main() -> int:
     # model at all. An operator who sets the variable still wins.
     os.environ.setdefault("RETRIEVAL_PROFILE", "bm25_only")
     # Nothing else is set. A data directory is now sufficient on its own:
-    # config/paths.py derives the vector store and the parser cache from it,
-    # and a ``VECTOR_DB_PATH=./chroma_db`` left in a developer's .env is
-    # refused rather than applied once a data root is declared. This script
-    # used to have to force both of those by hand, which meant the isolation
-    # lived in the smoke check instead of in the application.
+    # config/paths.py derives the parser cache and every other file from it,
+    # and a ``STRUCTURED_PARSER_CACHE`` left in a developer's .env is refused
+    # rather than applied once a data root is declared. This script used to
+    # have to force those by hand, which meant the isolation lived in the
+    # smoke check instead of in the application. The vectors are not among
+    # them at all any more: they are rows, reached by DATABASE_URL, and this
+    # check never opens a database.
     data_dir = os.environ["CHAT_RAG_DATA_DIR"]
 
     print(f"python  {sys.version.split()[0]}")
@@ -102,11 +104,10 @@ def main() -> int:
 
     from config import paths  # after the environment above, never before
 
-    print(f"store   {paths.fallback_vector_store()}")
     print(f"cache   {paths.canonical_cache()}")
     for line in paths.diagnostics():
         print(f"  note  {line}")
-    for resolved in (paths.fallback_vector_store(), paths.canonical_cache()):
+    for resolved in (paths.canonical_cache(), paths.viewer_live_analysis()):
         if not os.path.abspath(resolved).startswith(os.path.abspath(data_dir)):
             print(f"  FAIL  {resolved} is outside the throwaway data directory")
             return 1

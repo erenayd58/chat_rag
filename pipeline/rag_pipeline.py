@@ -23,7 +23,7 @@ from components.embedding import (
 )
 from components.context import assemble_context
 from config import paths as data_paths
-from components.vectordb import BaseVectorDB, ChromaVectorDB
+from components.vectordb import BaseVectorDB, PgVectorStore
 from components.chunker import BaseChunker, create_chunker
 from components.retriever import (
     HybridRRFRetriever,
@@ -103,11 +103,10 @@ class RAGPipeline:
             )
         elif self.retrieval_profile == 'hybrid_rrf':
             # The final product profile: stored dense vectors + frozen BM25,
-            # fused by RRF. The store path carries the embedding manifest.
+            # fused by RRF. The store carries the embedding manifest.
             self.hybrid_retriever = HybridRRFRetriever(
                 self.embedding_model,
                 self.vector_db,
-                store_path=getattr(self.settings, 'vector_db_path', None),
             )
         else:
             if not isinstance(self.embedding_model, BenchmarkAlignedEmbedding):
@@ -229,13 +228,15 @@ class RAGPipeline:
         )
 
     def _create_vectordb(self) -> BaseVectorDB:
-        return ChromaVectorDB(
-            path=self.settings.vector_db_path,
-            collection_name=self.settings.vector_db_collection_name,
-            hnsw_m=self.settings.hnsw_m,
-            hnsw_ef_construction=self.settings.hnsw_ef_construction,
-            hnsw_ef_search=self.settings.hnsw_ef_search,
-            space="cosine"
+        """The collection this pipeline searches, in PostgreSQL.
+
+        Named, not opened: constructing a store runs no statement, so building
+        a pipeline still works on a machine with no reachable database and the
+        failure arrives at the first call that actually needs a row.
+        """
+        return PgVectorStore(
+            collection=self.settings.vector_collection,
+            kb_id=getattr(self.settings, 'vector_kb_id', None),
         )
 
     def _create_chunker(self) -> BaseChunker:

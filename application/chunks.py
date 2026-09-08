@@ -147,8 +147,10 @@ def search_vector(services, *, query: str, kb_id: Optional[str], session_id: str
                 'chunk_id': hit['chunk_id'],
                 'content': hit['content'],
                 'metadata': hit['metadata'],
-                # ChromaDB cosine distance runs 0 (identical) to 2 (opposite);
-                # the raw distance is kept for debugging.
+                # Cosine distance runs 0 (identical) to 2 (opposite) --
+                # pgvector's ``<=>`` and the range every store this product
+                # has shipped reported; the raw distance is kept for
+                # debugging.
                 'similarity_score': 1 - (hit['distance'] / 2),
                 'distance': hit['distance'],
                 'search_metadata': metadata,

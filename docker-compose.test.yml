@@ -19,7 +19,7 @@
 # leftovers explain the next one's result.
 services:
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: chat-rag-test-db
     environment:
       POSTGRES_USER: chat_rag

@@ -63,8 +63,9 @@ def update_knowledge_base(
                response_class=Response, summary="Delete one, and its corpus")
 def delete_knowledge_base(services: Container, kb_id: str) -> Response:
     """Its documents' ledger rows and analyses deliberately survive -- a user
-    does not lose the record that a file was ever ingested. **409** when the
-    corpus is still needed by something else."""
+    does not lose the record that a file was ever ingested. Its vectors do
+    not: they go in the same transaction as the record. **409** when the
+    corpus could not be cleared, in which case neither half went."""
     use_case.delete(services, kb_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

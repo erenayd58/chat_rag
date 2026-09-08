@@ -53,12 +53,14 @@ def build_settings_for_kb(kb_cfg: dict, kb_id: Optional[str] = None) -> Settings
     if kb_cfg.get('vector_db_provider'):
         s.vector_db_provider = kb_cfg['vector_db_provider']
 
-    if kb_cfg.get('vector_db_path'):
-        s.vector_db_path = kb_cfg['vector_db_path']
-    else:
-        # Resolved in one place, shared with KnowledgeBaseManager.storage_path:
-        # if the two ever disagree, deleting a knowledge base orphans its store.
-        s.vector_db_path = paths.vector_store(kb_id)
+    # A knowledge base's vectors are the collection named by its id, and its
+    # id is the foreign key that makes deleting it delete them. There is
+    # nothing to resolve and nothing to configure: no record can name a
+    # collection belonging to another knowledge base, which is what the
+    # ``vector_db_path`` override could do and did.
+    if kb_id:
+        s.vector_collection = kb_id
+        s.vector_kb_id = kb_id
 
     if kb_cfg.get('chunker'):
         s.kb_chunker_config = kb_cfg['chunker']

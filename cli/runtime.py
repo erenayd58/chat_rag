@@ -332,6 +332,10 @@ def run_environment(kb: Dict[str, Any]) -> Dict[str, Any]:
         "requires_document_embeddings": facts["requires_document_embeddings"],
         "embedding_model": facts["configured_embedding_model"],
         "vector_db_provider": facts["vector_db_provider"],
-        "storage_path": facts["storage_path"],
+        # A snapshot captured before Step 9 named a directory; one captured
+        # after names a collection. Whichever the record carries is what the
+        # report shows.
+        "vector_collection": facts.get("vector_collection")
+        or facts.get("storage_path"),
         "git_sha": version_facts()["chat_rag_git_sha"],
     }

@@ -2,13 +2,19 @@
 
 The failure this exists to prevent was real and quiet. ``config/settings.py``
 loads the checkout's ``.env`` at import time, whatever the process is; that file
-carries ``VECTOR_DB_PATH=./chroma_db`` from local development; and
-``VECTOR_DB_PATH`` was read straight from the environment and beat
-``CHAT_RAG_DATA_DIR``. So a smoke check, a container or a test that had said
-exactly where its state should live still opened the developer's real Chroma
-store, and nothing said so. The workaround was for each caller to force the
-variable itself, which put the isolation in the callers rather than in the
-application -- and a caller that forgot had no way to find out.
+carries a state path from local development; and that path was read straight
+from the environment and beat ``CHAT_RAG_DATA_DIR``. So a smoke check, a
+container or a test that had said exactly where its state should live still
+wrote into the developer's checkout, and nothing said so. The workaround was
+for each caller to force the variable itself, which put the isolation in the
+callers rather than in the application -- and a caller that forgot had no way
+to find out.
+
+The store that failure was originally about -- ``VECTOR_DB_PATH=./chroma_db``,
+which opened the developer's real Chroma directory -- is not a path any more:
+Step 9 moved the vectors into PostgreSQL, where ``DATABASE_URL`` names them and
+this module's rules do not apply. What is left under the rule is the parser's
+canonical-unit cache, and the rule is the same rule.
 
 The contract now, highest precedence first:
 
@@ -40,7 +46,7 @@ def clean_env(monkeypatch):
     writes into ``os.environ`` by design, and ``monkeypatch`` can only undo
     what it made itself.
     """
-    for name in (paths.DATA_DIR_ENV, paths.VECTOR_DB_PATH_ENV, paths.PARSER_CACHE_ENV):
+    for name in (paths.DATA_DIR_ENV, paths.PARSER_CACHE_ENV):
         monkeypatch.delenv(name, raising=False)
     paths._from_env_file.clear()
     paths._ignored_from_env_file.clear()
@@ -56,30 +62,21 @@ def env_file(tmp_path, body: str) -> str:
 #: next to settings that have nothing to do with paths.
 DEVELOPER_ENV = """
 LLM_PROVIDER=ollama
-VECTOR_DB_PATH=./chroma_db
 VECTOR_DB_COLLECTION=documents
 STRUCTURED_PARSER_CACHE=.cache/canonical-units
 DEFAULT_TOP_K=5
 """
 
+#: The same file with the setting Step 9 removed still in it, because a
+#: developer's .env is not migrated when the code is.
+STALE_DEVELOPER_ENV = DEVELOPER_ENV + "VECTOR_DB_PATH=./chroma_db\n"
+
 
 # ------------------------------------------------------- the isolation itself
 
 
-def test_a_data_root_refuses_a_store_path_left_in_a_dotenv(tmp_path, monkeypatch, clean_env):
-    """The exact accident: an isolated root, and the checkout's store anyway."""
-    monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path / "isolated"))
-
-    paths.load_env_file(env_file(tmp_path, DEVELOPER_ENV))
-
-    assert paths.VECTOR_DB_PATH_ENV not in os.environ
-    assert paths.fallback_vector_store() == os.path.join(
-        str(tmp_path / "isolated"), "chroma"
-    )
-    assert "./chroma_db" not in paths.fallback_vector_store()
-
-
 def test_a_data_root_refuses_a_parser_cache_left_in_a_dotenv(tmp_path, monkeypatch, clean_env):
+    """The exact accident: an isolated root, and the checkout's cache anyway."""
     monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path / "isolated"))
 
     paths.load_env_file(env_file(tmp_path, DEVELOPER_ENV))
@@ -88,6 +85,7 @@ def test_a_data_root_refuses_a_parser_cache_left_in_a_dotenv(tmp_path, monkeypat
     assert paths.canonical_cache() == os.path.join(
         str(tmp_path / "isolated"), "cache", "canonical-units"
     )
+    assert ".cache/canonical-units" not in paths.canonical_cache()
 
 
 def test_the_refusal_is_reported_rather_than_silent(tmp_path, monkeypatch, clean_env):
@@ -97,46 +95,53 @@ def test_the_refusal_is_reported_rather_than_silent(tmp_path, monkeypatch, clean
 
     reported = " ".join(paths.diagnostics())
 
-    assert "VECTOR_DB_PATH=./chroma_db" in reported
+    assert "STRUCTURED_PARSER_CACHE=.cache/canonical-units" in reported
     assert paths.DATA_DIR_ENV in reported
 
 
-def test_settings_resolve_the_store_through_the_same_contract(tmp_path, monkeypatch, clean_env):
-    """Settings must not read VECTOR_DB_PATH behind the resolver's back."""
-    from config import Settings
+def test_a_stale_vector_store_path_can_no_longer_move_anything(
+    tmp_path, monkeypatch, clean_env
+):
+    """The setting this whole contract was written for is gone.
 
+    A developer's ``.env`` still has ``VECTOR_DB_PATH=./chroma_db`` in it and
+    always will; nothing migrates that file. It must now be inert -- not
+    merely refused when a data root is declared, but unable to name a store
+    at all, because there is no store with a path to name.
+    """
     monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path / "isolated"))
-    paths.load_env_file(env_file(tmp_path, DEVELOPER_ENV))
+    paths.load_env_file(env_file(tmp_path, STALE_DEVELOPER_ENV))
 
-    assert Settings().vector_db_path == os.path.join(str(tmp_path / "isolated"), "chroma")
+    assert not hasattr(paths, "fallback_vector_store")
+    assert not hasattr(paths, "vector_store")
+    assert "VECTOR_DB_PATH" not in paths.STATE_PATH_ENV
 
 
 # --------------------------------------------- what must keep working exactly
 
 
-def test_without_a_data_root_a_dotenv_still_supplies_the_store(tmp_path, clean_env):
+def test_without_a_data_root_a_dotenv_still_supplies_the_cache(tmp_path, clean_env):
     """A plain local checkout behaves exactly as it always has."""
     paths.load_env_file(env_file(tmp_path, DEVELOPER_ENV))
 
-    assert os.environ[paths.VECTOR_DB_PATH_ENV] == "./chroma_db"
-    assert paths.fallback_vector_store() == "./chroma_db"
+    assert os.environ[paths.PARSER_CACHE_ENV] == ".cache/canonical-units"
     assert paths.canonical_cache() == ".cache/canonical-units"
 
 
 def test_an_explicit_environment_override_still_wins(tmp_path, monkeypatch, clean_env):
-    """A deliberate override -- a store on another mount -- is not the bug."""
+    """A deliberate override -- a cache on another mount -- is not the bug."""
     monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path / "isolated"))
-    monkeypatch.setenv(paths.VECTOR_DB_PATH_ENV, str(tmp_path / "elsewhere"))
+    monkeypatch.setenv(paths.PARSER_CACHE_ENV, str(tmp_path / "elsewhere"))
 
     paths.load_env_file(env_file(tmp_path, DEVELOPER_ENV))
 
-    assert paths.fallback_vector_store() == str(tmp_path / "elsewhere")
+    assert paths.canonical_cache() == str(tmp_path / "elsewhere")
 
 
 def test_an_override_outside_the_data_root_is_called_out(tmp_path, monkeypatch, clean_env):
     """Allowed, because someone may mean it; never silent, because most do not."""
     monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path / "isolated"))
-    monkeypatch.setenv(paths.VECTOR_DB_PATH_ENV, str(tmp_path / "elsewhere"))
+    monkeypatch.setenv(paths.PARSER_CACHE_ENV, str(tmp_path / "elsewhere"))
 
     reported = " ".join(paths.diagnostics())
 
@@ -146,7 +151,8 @@ def test_an_override_outside_the_data_root_is_called_out(tmp_path, monkeypatch, 
 
 def test_an_override_inside_the_data_root_is_not_called_out(tmp_path, monkeypatch, clean_env):
     monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path / "isolated"))
-    monkeypatch.setenv(paths.VECTOR_DB_PATH_ENV, str(tmp_path / "isolated" / "chroma"))
+    monkeypatch.setenv(paths.PARSER_CACHE_ENV,
+                       str(tmp_path / "isolated" / "cache" / "canonical-units"))
 
     assert paths.diagnostics() == []
 
@@ -163,33 +169,16 @@ def test_a_dotenv_may_still_declare_the_data_root_itself(tmp_path, clean_env):
     """And when it does, it applies before the paths it then governs."""
     root = str(tmp_path / "from-the-file")
     paths.load_env_file(
-        env_file(tmp_path, f"{paths.DATA_DIR_ENV}={root}\nVECTOR_DB_PATH=./chroma_db\n")
+        env_file(tmp_path,
+                 f"{paths.DATA_DIR_ENV}={root}\nSTRUCTURED_PARSER_CACHE=.cache/units\n")
     )
 
     assert paths.data_root() == root
-    assert paths.fallback_vector_store() == os.path.join(root, "chroma")
+    assert paths.canonical_cache() == os.path.join(root, "cache", "canonical-units")
 
 
 def test_a_missing_dotenv_is_not_an_error(tmp_path, clean_env):
     assert paths.load_env_file(str(tmp_path / "nothing-here")) == {}
-
-
-# -------------------------------------------- per-knowledge-base stores stand
-
-
-def test_the_store_override_never_applied_to_per_kb_stores(tmp_path, monkeypatch, clean_env):
-    """VECTOR_DB_PATH names the fallback store only, and still does.
-
-    A knowledge base's own store comes from ``vector_store(kb_id)``,
-    which both the pipeline builder and the deletion guard resolve. Moving the
-    override into ``paths`` must not have quietly widened it to those, or
-    deleting a knowledge base would orphan its vectors.
-    """
-    monkeypatch.setenv(paths.VECTOR_DB_PATH_ENV, str(tmp_path / "elsewhere"))
-
-    assert paths.vector_store("kb-1").replace(os.sep, "/") == "./chroma_db/kb-1"
-    assert paths.vector_store_root() == "./chroma_db"
-    assert paths.fallback_vector_store() == str(tmp_path / "elsewhere")
 
 
 # ------------------------------------------- the parser cache reads it live

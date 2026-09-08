@@ -178,17 +178,18 @@ class Settings:
         # The one vector store this console ships. A field rather than a
         # literal because every knowledge base record carries it and the
         # provenance snapshot reports what a corpus was written with.
-        self.vector_db_provider = "chroma"
-        # The fallback store, used when no knowledge base is selected.
-        # VECTOR_DB_PATH names it outright; otherwise it comes from the same
-        # resolver the per-KB stores use, so a deployment that gathers state
-        # under one directory gathers this too.
-        self.vector_db_path = paths.fallback_vector_store()
-        self.vector_db_collection_name = os.getenv("VECTOR_DB_COLLECTION", "documents")
-        # HNSW (Chroma) index params
-        self.hnsw_m = int(os.getenv("HNSW_M", "64"))
-        self.hnsw_ef_construction = int(os.getenv("HNSW_EF_CONSTRUCTION", "200"))
-        self.hnsw_ef_search = int(os.getenv("HNSW_EF_SEARCH", "100"))
+        self.vector_db_provider = "pgvector"
+        # Which collection this pipeline searches. A knowledge base's
+        # collection is its own id, set by ``build_settings_for_kb``; the name
+        # below is the one the console uses when no knowledge base is
+        # selected. It is a key in ``vector_collections``, not a path: where
+        # the vectors live is DATABASE_URL's answer and nothing else's.
+        self.vector_collection = os.getenv("VECTOR_DB_COLLECTION", "documents")
+        # The knowledge base that owns the collection above, when one does.
+        # It is the foreign key that makes deleting a knowledge base delete
+        # its vectors, so it is set beside the collection name and never
+        # guessed from it.
+        self.vector_kb_id = None
         
         # Which indexing chunker a knowledge base is created with, when its
         # own record does not say (components/chunker/registry.py).
@@ -247,7 +248,11 @@ class Settings:
             # in ``config/database.py``, because that endpoint is
             # unauthenticated and a DSN carries a password.
             "database": database_configuration(),
-            "vector_db": self.vector_db_path,
+            # The vector store, as configuration rather than as a location:
+            # it is a collection in the database named above, so the only
+            # honest answer here is which collection and which provider.
+            "vector_db": {"provider": self.vector_db_provider,
+                          "collection": self.vector_collection},
             "parser_cache": paths.canonical_cache(),
             "viewer_analyses": paths.viewer_live_analysis(),
             "runtime": self.runtime_limits.to_dict(),

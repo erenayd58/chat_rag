@@ -58,10 +58,7 @@ def test_a_query_reports_where_its_time_went(tmp_path, key, registry, admission)
     model = GatedAnswerModel()
     model.release()
     pipeline = make_pipeline(tmp_path, model)
-    try:
-        scope, result = run_query(pipeline, admission)
-    finally:
-        pipeline.vector_db.close()
+    scope, result = run_query(pipeline, admission)
 
     assert result["answer"] == SECRET_ANSWER
     timing = scope.timing()
@@ -84,11 +81,8 @@ def test_a_query_reports_where_its_time_went(tmp_path, key, registry, admission)
 
 def test_a_failed_answer_is_a_failed_stage_with_a_category(tmp_path, key, registry, admission):
     pipeline = make_pipeline(tmp_path, FailingAnswerModel())
-    try:
-        with pytest.raises(LLMException):
-            run_query(pipeline, admission)
-    finally:
-        pipeline.vector_db.close()
+    with pytest.raises(LLMException):
+        run_query(pipeline, admission)
     recent = registry.snapshot()["queries"]["recent"]
     assert len(recent) == 1
     assert recent[0]["status"] == "failed" and recent[0]["error_category"] == "provider"
@@ -115,19 +109,16 @@ def test_concurrent_queries_are_attributed_to_their_own_traces(tmp_path, key, re
         except BaseException as error:  # noqa: BLE001
             outcomes[index] = error
 
-    try:
-        for pipeline in (first, second):
-            pipeline.llm_model = Q.LimitedAnswerModel(shared, budget)
-        threads = [threading.Thread(target=ask, args=(i, p)) for i, p in enumerate((first, second))]
-        for thread in threads:
-            thread.start()
-        assert shared.full.wait(20), "both queries never overlapped inside the model"
-        assert registry.snapshot()["queries"]["active"] == 2
-        shared.release()
-        for thread in threads:
-            thread.join(30)
-    finally:
-        first.vector_db.close()
+    for pipeline in (first, second):
+        pipeline.llm_model = Q.LimitedAnswerModel(shared, budget)
+    threads = [threading.Thread(target=ask, args=(i, p)) for i, p in enumerate((first, second))]
+    for thread in threads:
+        thread.start()
+    assert shared.full.wait(20), "both queries never overlapped inside the model"
+    assert registry.snapshot()["queries"]["active"] == 2
+    shared.release()
+    for thread in threads:
+        thread.join(30)
 
     assert all(isinstance(o, Q.QueryScope) for o in outcomes.values()), outcomes
     for scope in outcomes.values():
@@ -176,11 +167,8 @@ def test_the_operational_log_of_a_query_carries_no_content(tmp_path, key, regist
     model.release()
     pipeline = make_pipeline(tmp_path, model)
     caplog.set_level(logging.INFO, logger="RAG")
-    try:
-        with caplog.at_level(logging.INFO, logger="RAG"):
-            run_query(pipeline, admission)
-    finally:
-        pipeline.vector_db.close()
+    with caplog.at_level(logging.INFO, logger="RAG"):
+        run_query(pipeline, admission)
     lines = [record.getMessage() for record in caplog.records if record.levelno >= logging.INFO]
     assert lines, "the query did log something operational"
     text = "\n".join(lines)

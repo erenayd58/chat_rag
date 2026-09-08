@@ -1,12 +1,17 @@
 """What a document store must do, whichever store it is.
 
-The product keeps its chunks in a ``BaseVectorDB``. Today that is Chroma;
-the platform migration replaces it with pgvector. Nothing in this repository
-said what such a replacement has to *do* -- the store was exercised only
-through its own concrete class, so the contract lived in whichever call sites
-happened to be covered. A pgvector store written against ``BaseVectorDB``
-would satisfy the abstract base class and still break four routes, because
-the base class declares six methods and the product calls twelve.
+The product keeps its chunks in a ``BaseVectorDB``. That was Chroma until
+Step 9 and is PostgreSQL with pgvector now. Nothing in this repository said
+what such a replacement has to *do* -- the store was exercised only through
+its own concrete class, so the contract lived in whichever call sites happened
+to be covered. A pgvector store written against ``BaseVectorDB`` would satisfy
+the abstract base class and still break four routes, because the base class
+declares six methods and the product calls twelve.
+
+Every test below is the test that was written against Chroma, unchanged. What
+changed is the two lines that name the implementations: the store the product
+ships is the pgvector one, and it passes the contract the store it replaced
+passed.
 
 This module is that contract, stated once and run against more than one
 implementation -- the store the product ships, and a dependency-free reference
@@ -34,12 +39,12 @@ from __future__ import annotations
 
 import pytest
 
-from components.vectordb import BaseVectorDB, ChromaVectorDB
+from components.vectordb import BaseVectorDB, PgVectorStore
 from core.models import DocumentChunk
 
 #: The store the product is configured with by default. Whatever else is
 #: shipped, this one has to implement everything the routes call.
-DEFAULT_STORE = ChromaVectorDB
+DEFAULT_STORE = PgVectorStore
 
 #: Every method the product calls on a store without first checking that it
 #: is there. A store that lacks one of these fails neither at import nor at
@@ -67,8 +72,13 @@ OPTIONAL = ("replace_all", "close", "bm25_search")
 
 
 # --------------------------------------------------------------- the stores
-def _chroma(path):
-    return ChromaVectorDB(path=str(path), collection_name="documents")
+def _pgvector(path):
+    """The shipped store. ``path`` is the fixture's temporary directory and
+    is deliberately unused: a collection is a key in PostgreSQL, and the whole
+    point of Step 9 is that where a corpus lives is no longer a directory. The
+    isolation the path used to give is the empty schema every test starts
+    with (``tests/conftest.py``)."""
+    return PgVectorStore(collection="documents")
 
 
 def _reference(path):
@@ -77,10 +87,10 @@ def _reference(path):
     return ReferenceVectorDB(path=str(path), collection_name="documents")
 
 
-#: ``chroma`` is what the product runs. ``reference`` is not shipped and is
+#: ``pgvector`` is what the product runs. ``reference`` is not shipped and is
 #: never configured; it is here so the contract has a second implementation to
 #: be a contract against -- see reference_store.py.
-STORES = {"chroma": _chroma, "reference": _reference}
+STORES = {"pgvector": _pgvector, "reference": _reference}
 
 
 def _close(store):
@@ -311,8 +321,8 @@ def test_what_was_written_is_still_there_when_the_store_is_opened_again(name, tm
 # ----------------------------------------------- the surface a store needs
 def test_the_default_store_implements_everything_the_routes_call():
     """The list above is derived from the unguarded call sites. It is the
-    checklist a pgvector store has to finish -- ``BaseVectorDB`` alone is not,
-    because it declares six of these twelve."""
+    checklist the shipped store has to finish -- ``BaseVectorDB`` alone is
+    not, because it declares six of these twelve."""
     missing = [name for name in REQUIRED_OF_THE_DEFAULT_STORE
                if not callable(getattr(DEFAULT_STORE, name, None))]
     assert missing == [], (

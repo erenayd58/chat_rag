@@ -114,7 +114,9 @@ def startup_banner(services) -> None:
     print(f"Database: {db.get('url') or '(not configured)'}"
           f"  (pool {db.get('pool_size')}+{db.get('max_overflow')})")
     print(f"Data directory: {effective['data_root'] or '(none: paths are relative to ' + os.getcwd() + ')'}")
-    print(f"Vector DB: {effective['vector_db']}")
+    vectors = effective['vector_db']
+    print(f"Vector store: {vectors['provider']}, "
+          f"collection {vectors['collection']} (in the database above)")
     print(f"Parser cache: {effective['parser_cache']}")
     for line in effective['warnings'] + logs['fallbacks']:
         print(f"  ! {line}")

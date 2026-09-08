@@ -496,16 +496,17 @@ so it also works on plain Linux Docker.
 
 ### Where the data lives
 
-Everything the container persists is under `./.docker-data`, which is a
-different place from the paths a local checkout uses. Running the container
-never reads or writes your local `chroma_db/`, `.knowledge_bases.json`,
-`.ingested_documents.json` or `.cache/`.
+The records and the vectors are in PostgreSQL (`DATABASE_URL`); the *files*
+the container persists are under `./.docker-data`, which is a different place
+from the paths a local checkout uses. Running the container never reads or
+writes your local `.cache/` or `artifacts/viewer-live/`.
 
 ```
 .docker-data/
-  state/      knowledge_bases.json, ingested_documents.json, gold_set.json
-  chroma/     one vector store per knowledge base
-  cache/      the parser's canonical-unit cache
+  postgres/   the database volume: records, chunks and embeddings
+  cache/      the parser's canonical-unit cache and the embedding caches
+  viewer-live/ packaged Viewer payloads, one directory per content
+  uploads/    files waiting for their ingest job
   logs/       application logs
   artifacts/  evaluation runs and QA reports written by the CLI
 ```

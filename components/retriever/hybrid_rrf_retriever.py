@@ -8,11 +8,16 @@ validated; the two rank lists are combined by reciprocal-rank fusion with
 deterministic tie-breaking on chunk id. Standard and Deep Analysis documents
 go through exactly this path -- only their chunk partition differs.
 
-Safety before availability: the retriever reads the store's embedding
+Safety before availability: the retriever asks the store for its embedding
 manifest and refuses the dense leg when the stored vectors were not produced
 by the current model (or are a lexical profile's placeholders). It never
 compares across spaces; it falls back to the lexical leg alone and says so in
 ``last_stats``, and the console shows that state with a re-index action.
+
+The manifest is the store's to keep -- a row beside the vectors it describes
+since Step 9, an ``embedding_index.json`` beside a directory before it. This
+class asks for it and compares it; a store that keeps none reports "no dense
+index", which is the same answer a missing file gave.
 """
 
 from __future__ import annotations
@@ -27,9 +32,8 @@ from amsc.retrieval.pipeline import DeterministicBM25
 from components.embedding.index_manifest import (
     STATE_COMPATIBLE,
     STATE_EMPTY,
+    build_manifest,
     index_status,
-    read_manifest,
-    write_manifest,
 )
 from core.exceptions import EmbeddingException, RetrieverException
 from core.models import DocumentChunk, RetrievalResult
@@ -83,13 +87,11 @@ class HybridRRFRetriever:
         embedding_model: Any,
         vector_db: Any,
         *,
-        store_path: Optional[str] = None,
         rank_constant: int = RRF_RANK_CONSTANT,
         candidate_pool_size: int = CANDIDATE_POOL_SIZE,
     ) -> None:
         self.embedding_model = embedding_model
         self.vector_db = vector_db
-        self.store_path = store_path
         self.rank_constant = rank_constant
         self.candidate_pool_size = candidate_pool_size
         self.chunks_list: List[DocumentChunk] = []
@@ -122,6 +124,21 @@ class HybridRRFRetriever:
         }
 
     # ------------------------------------------------------ index status
+    def _manifest(self) -> Optional[Dict[str, Any]]:
+        """What the store says wrote its vectors, or ``None``.
+
+        Asked of the store rather than of a path, and never fatal: an
+        unreadable manifest means "unknown", which is already one of the
+        states below and is exactly how a missing file behaved.
+        """
+        reader = getattr(self.vector_db, "read_manifest", None)
+        if not callable(reader):
+            return None
+        try:
+            return reader()
+        except Exception:
+            return None
+
     def refresh_index_status(self) -> Dict[str, Any]:
         """Re-read the manifest and the store; the answer is cached until
         the next build or write."""
@@ -137,7 +154,7 @@ class HybridRRFRetriever:
         except Exception:
             stored_count = len(self.chunks_list)
         self._index_status = index_status(
-            manifest=read_manifest(self.store_path),
+            manifest=self._manifest(),
             identity=_identity(self.embedding_model),
             stored_dimension=stored_dimension,
             stored_count=stored_count,
@@ -156,16 +173,20 @@ class HybridRRFRetriever:
 
     def record_index(self, dimension: int) -> Dict[str, Any]:
         """The store was just written by the current model: say so."""
-        if not self.store_path:
+        writer = getattr(self.vector_db, "write_manifest", None)
+        if not callable(writer):
+            # A store that keeps no manifest -- the reference implementation,
+            # a double in a test. Nothing to record, and the status is
+            # recomputed rather than left stale.
             self._index_status = None
             return {}
         try:
             count = int(self.vector_db.count())
         except Exception:
             count = len(self.chunks_list)
-        manifest = write_manifest(
-            self.store_path, _identity(self.embedding_model), dimension=dimension, chunk_count=count
-        )
+        manifest = writer(build_manifest(
+            _identity(self.embedding_model), dimension=dimension, chunk_count=count
+        ))
         self._index_status = None
         return manifest
 

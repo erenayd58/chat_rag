@@ -68,7 +68,7 @@ KB = {
 
 def taken():
     return provenance.build_snapshot(
-        Pipeline(), KB, kb_id="kb-1", storage_path="/store"
+        Pipeline(), KB, kb_id="kb-1", vector_collection="kb-1"
     )
 
 

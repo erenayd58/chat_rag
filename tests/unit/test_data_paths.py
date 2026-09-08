@@ -43,8 +43,8 @@ def test_without_a_data_directory_every_path_is_the_one_it_always_was(no_data_di
     assert paths.ingested_documents() == ".ingested_documents.json"
     assert paths.gold_set() == "./.gold_set.json"
     assert paths.logs() == "logs"
-    assert paths.vector_store_root() == "./chroma_db"
     assert paths.canonical_cache() == ".cache/canonical-units"
+    assert paths.viewer_live_analysis() == "./artifacts/viewer-live"
 
 
 def test_the_managers_default_to_those_same_paths(no_data_dir):
@@ -52,10 +52,15 @@ def test_the_managers_default_to_those_same_paths(no_data_dir):
     assert DocumentTracker().tracking_file == ".ingested_documents.json"
 
 
-def test_a_per_knowledge_base_store_keeps_its_historical_shape(no_data_dir):
-    assert paths.vector_store("kb-1").replace("\\", "/") == (
-        "./chroma_db/kb-1"
-    )
+def test_no_path_names_a_vector_store_any_more(no_data_dir):
+    """A knowledge base's vectors are rows reached by ``DATABASE_URL``, so
+    there is nothing here that could name one. The functions that did --
+    ``vector_store``, ``vector_store_root``, ``fallback_vector_store`` -- are
+    gone rather than kept as aliases, because an alias is how a filesystem
+    dependency survives a migration that removed it."""
+    for gone in ("vector_store", "vector_store_root", "fallback_vector_store"):
+        assert not hasattr(paths, gone), gone
+    assert "VECTOR_DB_PATH" not in paths.STATE_PATH_ENV
 
 
 # --------------------------------------------------------------------- set
@@ -69,9 +74,8 @@ def test_a_data_directory_gathers_everything_under_it(with_data_dir):
     assert normal(paths.ingested_documents()) == "/data/state/ingested_documents.json"
     assert normal(paths.gold_set()) == "/data/state/gold_set.json"
     assert normal(paths.logs()) == "/data/logs"
-    assert normal(paths.vector_store_root()) == "/data/chroma"
-    assert normal(paths.vector_store("kb-1")) == "/data/chroma/kb-1"
     assert normal(paths.canonical_cache()) == "/data/cache/canonical-units"
+    assert normal(paths.viewer_live_analysis()) == "/data/viewer-live"
 
 
 def test_an_explicit_parser_cache_still_wins(with_data_dir, monkeypatch):

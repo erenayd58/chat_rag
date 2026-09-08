@@ -31,8 +31,15 @@ domain, which is what the Step 6 characterisation tests hold it to. Every edge
 that *is* referential -- a variant to its content, a membership to its
 content -- is a real foreign key with a real cascade.
 
-Nothing here stores a vector. Embeddings stay in the vector store until
-Step 9; what a document row knows about them is how many chunks were written.
+Since Step 9 the vectors are here too, in the two tables at the bottom of
+this module: a *collection* (one per knowledge base, plus the one the console
+uses when none is selected) and the chunk rows it holds, each with its
+embedding in a ``pgvector`` column. They are kept apart from the five
+concepts above on purpose -- a chunk row is derived state, rebuilt by a
+re-ingest or a re-index, and the only edge it has into the relational schema
+is the one that must cascade: delete a knowledge base and its vectors go with
+it, in the same transaction, by the database rather than by a caller
+remembering to.
 """
 
 from __future__ import annotations
@@ -52,6 +59,28 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 #: They are text, not uuids, because they are *already* public in ``/api/v1``
 #: and re-minting them would change identities the contract pins.
 ID = String(128)
+
+
+def _vector_column_type():
+    """The ``vector`` column type, or ``JSONB`` where pgvector is not installed.
+
+    ``pgvector`` is a production dependency and PostgreSQL is where the
+    vectors live, so the first branch is what every deployment and every test
+    takes. The fallback exists for the one thing this repository guarantees
+    without a database or a full install -- importing the application, which
+    ``tools/import_smoke.py`` and ``python -m cli manifest`` do on machines
+    that have neither. A column that is never queried there cannot be wrong
+    there; a failed import would be.
+    """
+    try:
+        from pgvector.sqlalchemy import Vector
+    except ImportError:  # pragma: no cover - the install is the normal case
+        return JSONB
+    # No argument: the column takes any width. See ``ChunkVector.embedding``.
+    return Vector()
+
+
+_VECTOR = _vector_column_type()
 
 
 class Base(DeclarativeBase):
@@ -94,14 +123,13 @@ class KnowledgeBase(TimestampedMixin, Base):
     )
     embedding_model_name: Mapped[Optional[str]] = mapped_column(Text)
     embedding_provider: Mapped[Optional[str]] = mapped_column(Text)
+    #: Which store holds this knowledge base's vectors. ``pgvector`` is the
+    #: only value this application writes or accepts; the column is kept
+    #: because every record carries it and the provenance snapshot reports
+    #: what a corpus was written with.
     vector_db_provider: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default="chroma"
+        Text, nullable=False, server_default="pgvector"
     )
-    #: Where this knowledge base keeps its vectors when it does not take the
-    #: default. A path, and the only one left in the relational schema: it
-    #: addresses the *vector store*, which is a directory until Step 9, and it
-    #: is never an identity -- the primary key above is.
-    vector_db_path: Mapped[Optional[str]] = mapped_column(Text)
     retrieval_method: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="hybrid"
     )
@@ -370,6 +398,123 @@ class GoldSetEntry(Base):
     updated_at_text: Mapped[str] = mapped_column("updated_at", Text, nullable=False)
 
 
+# --------------------------------------------------------------------------
+# the vectors
+# --------------------------------------------------------------------------
+class VectorCollection(TimestampedMixin, Base):
+    """One searchable corpus, and which embedding space it is in.
+
+    A collection is what a directory of Chroma files used to be: the unit a
+    query is scoped to, and the unit a knowledge base owns. Its name *is* the
+    knowledge base id, except for the one collection the console uses when no
+    knowledge base is selected -- that one has no ``kb_id`` and is named by
+    ``VECTOR_DB_COLLECTION`` (``documents``).
+
+    The manifest columns are the ``embedding_index.json`` that used to sit
+    beside the store, moved here for the same reason the vectors were: a
+    knowledge base is a row now, not a directory, and a file beside a
+    directory that no longer exists cannot describe it. They say which model
+    wrote the vectors this collection holds, so a query embedded by a
+    different one is refused rather than compared across spaces
+    (``components/embedding/index_manifest.py`` is the comparison).
+
+    ``kb_id`` **is** a foreign key, and it cascades -- unlike the ``kb_id`` on
+    a document or a content, which deliberately outlives its knowledge base.
+    The difference is what the row is: a ledger row records that a file was
+    once ingested and is worth keeping after the collection it went into is
+    gone; a vector is only meaningful inside the corpus it belongs to, and
+    keeping it would be an orphan a later knowledge base could match against.
+    """
+
+    __tablename__ = "vector_collections"
+
+    collection: Mapped[str] = mapped_column(ID, primary_key=True)
+    kb_id: Mapped[Optional[str]] = mapped_column(
+        ID, ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True
+    )
+
+    embedding_provider: Mapped[Optional[str]] = mapped_column(Text)
+    embedding_model: Mapped[Optional[str]] = mapped_column(Text)
+    embedding_endpoint: Mapped[Optional[str]] = mapped_column(Text)
+    embedding_dimension: Mapped[Optional[int]] = mapped_column(Integer)
+    embedding_fingerprint: Mapped[Optional[str]] = mapped_column(Text)
+    #: What the manifest recorded at the last write. Not a count of the rows
+    #: below -- it is what the writer *said*, kept verbatim so a store whose
+    #: rows changed underneath still reports the number its manifest carries,
+    #: exactly as the file did.
+    manifest_chunk_count: Mapped[Optional[int]] = mapped_column(Integer)
+    #: The application's own ISO stamp, as the manifest file carried it.
+    written_at: Mapped[Optional[str]] = mapped_column(Text)
+
+    chunks: Mapped[list["ChunkVector"]] = relationship(
+        back_populates="collection_row", cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class ChunkVector(TimestampedMixin, Base):
+    """One chunk of one document: its text, its metadata and its embedding.
+
+    The columns are the fields something other than the chunk itself reads --
+    the document a chunk belongs to, its position in it, the heading it sits
+    under, the method that produced it. Everything else the chunker wrote
+    stays whole in ``metadata``, because two derived renderings the answer
+    chain depends on (``search_text`` and ``table_view``) are carried there
+    and a store that widened its record for them would have to widen it again
+    for the next one.
+
+    ``embedding`` has no declared width. The application supports more than
+    one embedding space -- 384 dimensions from the local sentence-transformer,
+    4096 from the demo's gateway model, and a 1-wide placeholder a
+    lexical-only ingestion writes because nothing embeds its text -- and a
+    ``vector(n)`` column would have to pick one and break the others. The
+    width that was actually written is recorded beside it, which is what the
+    manifest comparison reads.
+    """
+
+    __tablename__ = "chunk_vectors"
+
+    collection: Mapped[str] = mapped_column(
+        ID, ForeignKey("vector_collections.collection", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    #: The chunker's own id for this chunk, unique within its collection.
+    #: Re-ingesting the same document overwrites the row rather than adding a
+    #: second one with the same name.
+    chunk_id: Mapped[str] = mapped_column(Text, primary_key=True)
+
+    doc_id: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    doc_title: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    total_chunks: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    section_title: Mapped[Optional[str]] = mapped_column(Text)
+    #: Which chunking method produced this row (``metadata['chunker_type']``),
+    #: projected out so a corpus can be described without reading every row's
+    #: json.
+    method: Mapped[Optional[str]] = mapped_column(String(64))
+
+    #: The document's own text, byte for byte. A citation quotes this.
+    content: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    chunk_metadata: Mapped[dict] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict, server_default="{}"
+    )
+
+    #: Declared as ``vector`` with no width; see the class docstring. The type
+    #: comes from :func:`_vector_column_type` so this module still imports on
+    #: a machine with no pgvector installed (``python -m cli manifest`` must).
+    embedding: Mapped[Optional[list]] = mapped_column(_VECTOR, nullable=True)
+    embedding_dim: Mapped[Optional[int]] = mapped_column(Integer)
+
+    collection_row: Mapped[VectorCollection] = relationship(back_populates="chunks")
+
+    __table_args__ = (
+        # The two access paths: everything in a collection (the lexical index
+        # build, the browse, the re-index) and everything of one document in
+        # it (the scoped query, the deletion, the rollback).
+        Index("ix_chunk_vectors_collection_doc", "collection", "doc_id"),
+    )
+
+
 #: Every table this application owns, ordered so a truncation or a delete may
 #: walk it front to back without tripping a foreign key.
 ALL_TABLES = (
@@ -379,5 +524,7 @@ ALL_TABLES = (
     "content_variants",
     "content_documents",
     "contents",
+    "chunk_vectors",
+    "vector_collections",
     "knowledge_bases",
 )

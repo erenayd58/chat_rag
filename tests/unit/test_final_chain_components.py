@@ -23,9 +23,8 @@ from components.embedding.index_manifest import (
     STATE_EMPTY,
     STATE_NO_DENSE_INDEX,
     STATE_REINDEX_REQUIRED,
+    build_manifest,
     index_status,
-    read_manifest,
-    write_manifest,
 )
 from components.llm import FallbackLLM, OpenAICompatibleLLM
 from components.llm.base import BaseLLM
@@ -50,16 +49,29 @@ def chunk(chunk_id, text, doc="doc", index=0, heading="Bolum 1", pages=(1,), mod
 
 
 class VectorStub:
-    """A vector store with a fixed dense ranking and a known width."""
+    """A vector store with a fixed dense ranking and a known width.
+
+    It keeps a manifest the way a real store does -- in itself. The retriever
+    asks the store rather than a path for it, so a double that answers
+    ``read_manifest`` is all a retriever test needs.
+    """
 
     def __init__(self, chunks, dense_order, dimension=8):
         self.chunks = chunks
         self.dense_order = dense_order
         self.dimension = dimension
         self.queries = 0
+        self.manifest = None
 
     def _stored_dimension(self):
         return self.dimension if self.chunks else None
+
+    def read_manifest(self):
+        return self.manifest
+
+    def write_manifest(self, manifest):
+        self.manifest = dict(manifest)
+        return self.manifest
 
     def count(self):
         return len(self.chunks)
@@ -123,13 +135,24 @@ def test_manifest_states():
     assert index_status(manifest=narrower, identity=identity, stored_dimension=4, stored_count=3)["state"] == STATE_REINDEX_REQUIRED
 
 
-def test_manifest_round_trip_keeps_names_only(tmp_path):
+def test_manifest_round_trip_keeps_names_only():
+    """Written to the store the product ships and read back out of it.
+
+    ``identity`` carries the *name* of the variable a key is read from, and
+    that is the closest thing to a credential that ever reaches this record --
+    so the round trip is asserted against the real persistence rather than
+    against a dictionary that never left the process.
+    """
+    from components.vectordb import PgVectorStore
+
     identity = {"provider": "openai_compatible", "model": "qwen/qwen3-embedding-8b",
                 "endpoint": "https://gw/v1/embeddings", "api_key_env": "OPENROUTER_API_KEY",
                 "fingerprint": "abc"}
-    write_manifest(str(tmp_path), identity, dimension=4096, chunk_count=12)
-    manifest = read_manifest(str(tmp_path))
+    store = PgVectorStore(collection="manifest-round-trip")
+    store.write_manifest(build_manifest(identity, dimension=4096, chunk_count=12))
+    manifest = store.read_manifest()
     assert manifest["embedding_dimension"] == 4096 and manifest["chunk_count"] == 12
+    assert manifest["embedding_model"] == "qwen/qwen3-embedding-8b"
     assert "api_key" not in json.dumps(manifest).replace("api_key_env", "")
 
 
@@ -213,13 +236,16 @@ def test_documents_and_queries_use_one_transport_and_cache(tmp_path):
 
 
 # -------------------------------------------------------------- retriever
-def build_retriever(dense_order, fingerprint="fp-current", manifest_fp="fp-current", tmp_path=None):
+def build_retriever(dense_order, fingerprint="fp-current", manifest_fp="fp-current",
+                    tmp_path=None):
+    """``tmp_path`` is accepted and unused: the manifest lives in the store."""
     store = VectorStub(CORPUS, dense_order)
     embedding = EmbeddingStub(fingerprint=fingerprint)
-    retriever = HybridRRFRetriever(embedding, store, store_path=str(tmp_path) if tmp_path else None)
-    if tmp_path is not None and manifest_fp is not None:
-        write_manifest(str(tmp_path), {"provider": "openai_compatible", "model": "test/embed",
-                                       "fingerprint": manifest_fp}, dimension=8, chunk_count=len(CORPUS))
+    retriever = HybridRRFRetriever(embedding, store)
+    if manifest_fp is not None:
+        store.write_manifest(build_manifest(
+            {"provider": "openai_compatible", "model": "test/embed",
+             "fingerprint": manifest_fp}, dimension=8, chunk_count=len(CORPUS)))
     retriever.build_index(CORPUS)
     return retriever, store, embedding
 

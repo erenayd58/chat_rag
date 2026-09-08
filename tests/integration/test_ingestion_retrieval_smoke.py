@@ -19,7 +19,7 @@ from amsc.document.models import EmbeddingBatch, SemanticEmbeddingProvenance
 from components.chunker import FrozenV4Chunker, StructuralChunker
 from components.llm import BaseLLM
 from components.retriever import BenchmarkAlignedEmbedding
-from components.vectordb import ChromaVectorDB
+from components.vectordb import PgVectorStore
 from pipeline import RAGPipeline
 
 
@@ -98,9 +98,7 @@ def test_benchmark_aligned_profile_ingests_and_retrieves_without_context_or_rera
     pipeline = RAGPipeline(
         llm_model=fake_llm,
         embedding_model=BenchmarkAlignedEmbedding(embedder=FakeFrozenRetrievalEmbedder()),
-        vector_db=ChromaVectorDB(
-            path=str(tmp_path / f"benchmark-{chunker_type}"), collection_name="documents"
-        ),
+        vector_db=PgVectorStore(collection=f"benchmark-{chunker_type}"),
         chunker=_chunker(chunker_type),
         settings=settings,
     )

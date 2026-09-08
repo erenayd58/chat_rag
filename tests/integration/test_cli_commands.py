@@ -109,7 +109,7 @@ def workspace(tmp_path, monkeypatch):
                                if kb_id == "kb-1" else None),
             "find_by_name": staticmethod(lambda name: "kb-1" if name == "kb-one" else None),
             "list": staticmethod(lambda: [{"kb_id": "kb-1", "name": "kb-one"}]),
-            "storage_path": staticmethod(lambda kb_id, root=".": "/tmp/store"),
+            "collection": staticmethod(lambda kb_id: "kb-1"),
         })(),
     )
     monkeypatch.setattr(runtime, "document_sha", lambda doc_id: "abc123")

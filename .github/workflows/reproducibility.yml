@@ -36,7 +36,7 @@ permissions:
 jobs:
   gate:
     runs-on: ubuntu-latest
-    # The image build installs torch, chromadb, faiss and the parsers from
+    # The image build installs torch, psycopg, pgvector and the parsers from
     # scratch; that is the bulk of the time and it is the point.
     timeout-minutes: 60
     steps:

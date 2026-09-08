@@ -3,10 +3,11 @@
 # runs in-process.
 #
 # The database is where the knowledge bases, the ingest ledger, the content
-# identities and their analysis state, the ingest journal and the gold set
-# live. The vector stores are still files under the mounted data directory
-# (Step 9 moves them); so are the parser cache, the packaged Viewer artifacts
-# and the logs.
+# identities and their analysis state, the ingest journal, the gold set and --
+# since Step 9 -- the chunks and their embeddings live. It runs the pgvector
+# image because of that last pair: `alembic upgrade head` creates the `vector`
+# extension, and a stock postgres image cannot. The parser cache, the packaged
+# Viewer artifacts and the logs are still files under the mounted directory.
 #
 # The schema is created by a migration, not by the application: run
 #
@@ -17,7 +18,7 @@
 # reviewable rather than a side effect of a deploy.
 services:
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: chat-rag-db
     environment:
       POSTGRES_USER: chat_rag
@@ -57,23 +58,25 @@ services:
         required: false
 
     environment:
-      # Structural, not configuration: this says where state lives inside the
-      # container, and must match the mount below. It is the only path this
-      # deployment sets -- the vector stores, the ledger, the knowledge base
-      # records, the parser's canonical-unit cache and the logs are all
-      # derived from it, and a .env left over from local development can no
-      # longer override any of them.
+      # Structural, not configuration: this says where the container's *files*
+      # live, and must match the mount below. It is the only path this
+      # deployment sets -- the parser's canonical-unit cache, the packaged
+      # Viewer artifacts, the embedding caches, the uploads and the logs are
+      # all derived from it, and a .env left over from local development can
+      # no longer override any of them. The records and the vectors are not
+      # files at all; DATABASE_URL says where they are.
       CHAT_RAG_DATA_DIR: /data
 
     volumes:
-      # Everything the application persists -- knowledge base records, the
-      # ingest ledger, the runtime gold set, the vector stores, the parser's
-      # canonical-unit cache and the logs -- lives under one directory, so a
-      # rebuilt container finds its data where it left it.
+      # Every *file* the application persists -- the parser's canonical-unit
+      # cache, the packaged Viewer artifacts, the embedding caches, the
+      # uploads and the logs -- lives under one directory, so a rebuilt
+      # container finds them where it left them. The records and the vectors
+      # are in the database volume above.
       #
-      # This is a fresh directory, separate from the checkout's own
-      # chroma_db/, .knowledge_bases.json and .cache/: running the container
-      # never touches local development state.
+      # This is a fresh directory, separate from the checkout's own .cache/
+      # and artifacts/viewer-live/: running the container never touches local
+      # development state.
       - ./.docker-data:/data
       # Evaluation output written by `python -m cli`. Mounted per
       # subdirectory so artifacts/gold/ keeps coming from the image, where

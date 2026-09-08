@@ -1,7 +1,7 @@
 """Knowledge Base manager, on PostgreSQL.
 
-Each KB defines: name, chunker config, embedding model, vector db
-provider/path, retrieval method defaults.
+Each KB defines: name, chunker config, embedding model, vector store provider,
+retrieval method defaults.
 
 Step 8 moved the records from ``.knowledge_bases.json`` into the
 ``knowledge_bases`` table. The class did not move: every caller -- the use
@@ -20,19 +20,21 @@ class enforces were only ever true for a single process:
   spent most of its code defending against. A row is written in a
   transaction; there is no half-written store to recover from.
 
-The vector store is still a directory (:meth:`storage_path`,
-:meth:`delete_with_storage`); that is Step 9's problem, and deleting a
-knowledge base is still two acts in a fixed order -- the store first, so a
-directory that cannot be removed leaves the record in place rather than
-orphaning itself.
+Step 9 removed the third act. The vector store was a directory named by
+``vector_db_path``, and deleting a knowledge base meant removing that
+directory *before* the record so a store that could not be removed -- on
+Windows an open Chroma handle was enough -- left the record in place rather
+than orphaning itself. The vectors are rows in ``chunk_vectors`` now, reached
+through a collection whose ``kb_id`` is a foreign key with ``ON DELETE
+CASCADE``, so one ``DELETE`` in one transaction removes the record and its
+corpus together or removes neither. :meth:`delete_with_storage` keeps its name
+and its answer; what it no longer has is a filesystem to be defeated by.
 """
-import os
-import shutil
 import uuid
 from typing import Any, Dict, List, Optional
 
 from config import paths
-from storage import KnowledgeBaseRepository, session_scope
+from storage import ChunkVectorRepository, KnowledgeBaseRepository, session_scope
 
 from components.chunker import registry as chunker_registry
 
@@ -115,8 +117,7 @@ class KnowledgeBaseManager:
         *,
         chunker: Dict[str, Any] = None,
         embedding_model_name: str = None,
-        vector_db_provider: str = "chroma",
-        vector_db_path: str = None,
+        vector_db_provider: str = "pgvector",
         retrieval_method: str = "hybrid",
         extra: Dict[str, Any] = None
     ) -> Dict[str, Any]:
@@ -127,15 +128,14 @@ class KnowledgeBaseManager:
         name = str(name or "").strip()
         if not name:
             raise ValueError("name is required")
-        provider = str(vector_db_provider or "chroma").strip().lower()
-        if provider != "chroma":
-            raise ValueError("vector_db_provider must be 'chroma'")
+        provider = str(vector_db_provider or "pgvector").strip().lower()
+        if provider != "pgvector":
+            raise ValueError("vector_db_provider must be 'pgvector'")
         cfg = {
             "name": name,
             "chunker": normalize_chunker_config(chunker),
             "embedding_model_name": embedding_model_name,
             "vector_db_provider": provider,
-            "vector_db_path": vector_db_path,
             "retrieval_method": retrieval_method,
             "extra": extra or {}
         }
@@ -169,8 +169,7 @@ class KnowledgeBaseManager:
             name=str(data.get("name") or "").strip() or "Knowledge Base",
             chunker=data.get("chunker"),
             embedding_model_name=data.get("embedding_model_name"),
-            vector_db_provider=data.get("vector_db_provider") or "chroma",
-            vector_db_path=data.get("vector_db_path"),
+            vector_db_provider=data.get("vector_db_provider") or "pgvector",
             retrieval_method=data.get("retrieval_method") or "hybrid",
             extra=data.get("extra"),
         )
@@ -185,40 +184,16 @@ class KnowledgeBaseManager:
             return None
         return {"kb_id": kb_id, **record}
 
-    def storage_path(self, kb_id: str, root: str = ".") -> Optional[str]:
-        """Where this knowledge base keeps its vectors.
+    def collection(self, kb_id: str) -> Optional[str]:
+        """Which vector collection holds this knowledge base's chunks.
 
-        Mirrors the resolution the app applies when it builds the pipeline: an
-        explicit ``vector_db_path`` wins, otherwise the store is named after
-        the knowledge base under the provider's root.
+        Its own id. There is no resolution left to do and nothing to
+        configure: the collection is named by the primary key, so the
+        pipeline builder and the deletion path cannot disagree about it the
+        way two path resolvers could -- and no record can name a collection
+        belonging to another knowledge base.
         """
-        cfg = self.get(kb_id)
-        if cfg is None:
-            return None
-        return self._storage_path_of(kb_id, cfg, root)
-
-    @staticmethod
-    def _storage_path_of(kb_id: str, cfg: Dict[str, Any], root: str) -> str:
-        configured = cfg.get("vector_db_path")
-        if configured:
-            return os.path.abspath(os.path.join(root, configured))
-        return os.path.abspath(os.path.join(root, paths.vector_store(kb_id)))
-
-    #: The root and the fallback store the app uses when no knowledge base
-    #: is selected. Deleting one of these would take every store with it.
-    PROTECTED_DIRECTORY_NAMES = ("chroma_db",)
-
-    def _protected_roots(self, root: str) -> List[str]:
-        """The shared roots, wherever this deployment puts them."""
-        resolved = [os.path.abspath(os.path.join(root, paths.vector_store_root()))]
-        resolved += [
-            os.path.abspath(os.path.join(root, name))
-            for name in self.PROTECTED_DIRECTORY_NAMES
-        ]
-        return resolved
-
-    def _is_protected(self, path: str, root: str) -> bool:
-        return os.path.abspath(path) in self._protected_roots(root)
+        return kb_id if self.get(kb_id) is not None else None
 
     def delete(self, kb_id: str) -> bool:
         """Remove the config record only. Storage is left in place."""
@@ -226,68 +201,47 @@ class KnowledgeBaseManager:
             return KnowledgeBaseRepository(session).delete(kb_id)
 
     def delete_with_storage(self, kb_id: str, root: str = ".") -> Dict[str, Any]:
-        """Remove the record and, when nothing else needs it, its vector store.
+        """Remove the record and the vectors that belong to it, together.
 
-        Several records can point at one directory -- that is exactly how eight
-        knowledge bases came to share a single empty store here -- so the
-        directory goes only once the last record referencing it is gone.
+        One transaction. The row is locked for the length of it, so two
+        deletions of the same knowledge base cannot both decide they are the
+        one clearing its corpus: the second waits, finds no record and reports
+        "not found". The chunk rows go by the cascade from
+        ``vector_collections.kb_id``, and the count of what went is read
+        before the delete so the answer says how much was removed rather than
+        how many rows the statement touched.
 
-        The record is read and deleted inside one transaction, with the row
-        locked for the length of it, so two deletions of the same knowledge
-        base cannot both decide they are the last owner of its directory. The
-        second waits, then finds no record and reports "not found" -- rather
-        than both removing the same directory, which is what happened when the
-        read and the write were two acts with a file rewrite between them.
+        A database that refuses the clearance -- a lock timeout, a connection
+        lost mid-statement -- rolls the whole transaction back and is reported
+        as a refusal rather than raised: the record is still there, its
+        vectors are still there, and the caller is told which. That is the
+        409 an undeletable store used to produce, kept because the rule it
+        encodes has not changed.
+
+        ``root`` is accepted and unused. It named the directory the vector
+        stores sat under, and every caller still passes one; the vectors are
+        rows now and the argument names nothing.
         """
-        with session_scope() as session:
-            repository = KnowledgeBaseRepository(session)
-            cfg = repository.get(kb_id, lock=True)
-            if cfg is None:
-                return {"deleted": False, "reason": "not found"}
-            records = repository.all()
+        from sqlalchemy.exc import SQLAlchemyError
 
-            path = self._storage_path_of(kb_id, cfg, root)
-            sharers = sorted(
-                other for other, other_cfg in records.items()
-                if other != kb_id and self._storage_path_of(other, other_cfg, root) == path
-            )
-            note = None
-            removed = False
-
-            # Clear the store *before* the record. If the directory cannot go
-            # -- on Windows an open ChromaDB handle is enough to stop it -- the
-            # record stays too, so the two never drift apart. Dropping the
-            # record first would leave exactly the orphaned store this method
-            # exists to prevent, and here it would also commit that decision.
-            if not path:
-                note = "no storage path"
-            elif sharers:
-                note = "kept: still used by " + ", ".join(sharers)
-            elif self._is_protected(path, root):
-                note = "kept: shared/default store"
-            elif not os.path.isdir(path):
-                note = "already absent"
-            else:
-                try:
-                    shutil.rmtree(path)
-                    removed = True
-                except OSError as exc:
-                    # The transaction is abandoned by raising nothing and
-                    # returning: nothing was written in it, so there is
-                    # nothing to undo, and the record is still there.
-                    return {
-                        "deleted": False,
-                        "kb_id": kb_id,
-                        "storage_path": path,
-                        "storage_removed": False,
-                        "reason": f"vector store is in use and could not be removed: {exc}",
-                    }
-
-            repository.delete(kb_id)
+        try:
+            with session_scope() as session:
+                repository = KnowledgeBaseRepository(session)
+                if repository.get(kb_id, lock=True) is None:
+                    return {"deleted": False, "reason": "not found"}
+                vectors = ChunkVectorRepository(session).delete_collection(kb_id)
+                repository.delete(kb_id)
+                return {
+                    "deleted": True,
+                    "kb_id": kb_id,
+                    "vector_collection": kb_id,
+                    "vectors_removed": vectors,
+                }
+        except SQLAlchemyError as error:
             return {
-                "deleted": True,
+                "deleted": False,
                 "kb_id": kb_id,
-                "storage_path": path,
-                "storage_removed": removed,
-                **({"storage_note": note} if note else {}),
+                "vector_collection": kb_id,
+                "reason": f"the vector store is in use and could not be cleared: "
+                          f"{type(error).__name__}",
             }

@@ -19,8 +19,8 @@ engineer depends on.
 So every check here runs against material fetched from the remote, in an
 environment built from nothing, and each one is written to fail if it could
 only have passed because of this machine: an editable sibling checkout, a
-globally installed package, a developer ``.env``, a warm model cache, existing
-Chroma data or leftovers from a previous run.
+globally installed package, a developer ``.env``, a warm model cache, a
+developer's own database or leftovers from a previous run.
 
 What it reports
 ---------------
@@ -75,7 +75,6 @@ DEVELOPER_STATE = (
     ".ingested_documents.json",
     ".knowledge_bases.json",
     ".gold_set.json",
-    "chroma_db/chroma.sqlite3",
 )
 
 #: Things a clean clone must not contain. Each is real state or real output
@@ -86,7 +85,6 @@ MUST_NOT_BE_CLONED = (
     ".knowledge_bases.json",
     ".ingested_documents.json",
     ".gold_set.json",
-    "chroma_db",
     ".cache",
     "venv",
     ".venv",
@@ -550,7 +548,7 @@ def check_docker(report: Report, clone: Path | None, docker: str | None,
         # /app is the image, and a write there would be state in a layer.
         listing = run(["docker", "exec", name, "sh", "-c",
                        "ls -1 /data; echo ---; ls -a /app | "
-                       "grep -E 'chroma_db|knowledge_bases|ingested_documents|^[.]cache' "
+                       "grep -E 'knowledge_bases|ingested_documents|^[.]cache' "
                        "|| true"], timeout=120)
         under_data, _, in_app = listing.stdout.partition("---")
         if in_app.strip():
@@ -602,7 +600,7 @@ def main(argv: list[str] | None = None) -> int:
 
         changed = [name for name, was in before.items() if fingerprint().get(name) != was]
         report.add(FAIL if changed else PASS, "state.untouched",
-                   "the developer's knowledge bases, ledger, gold set and Chroma store "
+                   "the developer's knowledge bases, ledger and gold set "
                    "are unchanged" if not changed else "changed: " + ", ".join(changed))
     finally:
         if args.keep:

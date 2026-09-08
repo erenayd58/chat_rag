@@ -39,8 +39,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from .models import (
-    Content, ContentDocument, ContentVariant, Document, GoldSetEntry,
-    IngestJobRecord, KnowledgeBase,
+    ChunkVector, Content, ContentDocument, ContentVariant, Document,
+    GoldSetEntry, IngestJobRecord, KnowledgeBase, VectorCollection,
 )
 
 
@@ -95,7 +95,6 @@ class KnowledgeBaseRepository:
             **({"embedding_provider": row.embedding_provider}
                if row.embedding_provider else {}),
             "vector_db_provider": row.vector_db_provider,
-            "vector_db_path": row.vector_db_path,
             "retrieval_method": row.retrieval_method,
             "extra": dict(row.extra or {}),
         }
@@ -169,8 +168,15 @@ class KnowledgeBaseRepository:
     #: must still read back whole.
     MAPPED = frozenset({
         "name", "chunker", "embedding_model_name", "embedding_provider",
-        "vector_db_provider", "vector_db_path", "retrieval_method", "extra",
+        "vector_db_provider", "retrieval_method", "extra",
     })
+
+    #: Keys a record may still arrive with and that this schema no longer
+    #: keeps. ``vector_db_path`` addressed a Chroma directory; a knowledge
+    #: base is identified by its id and its vectors are rows. Dropped rather
+    #: than swept into ``attributes``, which would hand the value straight
+    #: back and keep the field alive in every payload that echoes a record.
+    DISCARDED = frozenset({"vector_db_path"})
 
     @classmethod
     def _columns(cls, config: dict[str, Any]) -> dict[str, Any]:
@@ -183,11 +189,11 @@ class KnowledgeBaseRepository:
             "chunker_params": dict(chunker.get("params") or {}),
             "embedding_model_name": config.get("embedding_model_name"),
             "embedding_provider": config.get("embedding_provider"),
-            "vector_db_provider": config.get("vector_db_provider") or "chroma",
-            "vector_db_path": config.get("vector_db_path"),
+            "vector_db_provider": config.get("vector_db_provider") or "pgvector",
             "retrieval_method": config.get("retrieval_method") or "hybrid",
             "extra": dict(config.get("extra") or {}),
-            "attributes": {k: v for k, v in config.items() if k not in cls.MAPPED},
+            "attributes": {k: v for k, v in config.items()
+                           if k not in cls.MAPPED and k not in cls.DISCARDED},
         }
 
 
@@ -739,3 +745,333 @@ class GoldSetRepository:
         )
         self.session.flush()
         return bool(result.rowcount)
+
+
+# ==========================================================================
+# the vectors
+# ==========================================================================
+#: The chunk fields that have a column of their own. They are also written
+#: *into* ``metadata``, because that is where the product has always read them
+#: back from -- a store hands metadata to the retrievers whole and they look
+#: ``doc_id`` up in it. The columns exist so a query can filter and order
+#: without opening the json; the json is what the callers read.
+CHUNK_FIELDS = ("doc_id", "doc_title", "chunk_index", "total_chunks", "section_title")
+
+
+class ChunkVectorRepository:
+    """The chunk rows and their embeddings, scoped to one collection.
+
+    A *collection* is one searchable corpus -- one knowledge base, or the
+    console's default when none is selected. Every method here takes it,
+    because there is no such thing as a query across two of them: that is the
+    isolation a directory per knowledge base used to provide, and it is a
+    ``WHERE`` clause now.
+
+    Distances are cosine, in the range the product has always read: ``0``
+    identical, ``1`` orthogonal, ``2`` opposite, lower is better. PostgreSQL's
+    ``<=>`` operator is that number exactly, which is why the retrievers, the
+    RRF fusion and the console's ``1 - distance / 2`` needed no change.
+    """
+
+    def __init__(self, session: Session):
+        self.session = session
+
+    # ---------------------------------------------------------- collections
+    def ensure_collection(self, collection: str, kb_id: Optional[str] = None) -> None:
+        """Make sure the collection exists, without failing a race for it.
+
+        Two ingests into one knowledge base start at the same moment and both
+        find no row; ``ON CONFLICT DO NOTHING`` makes that one row and no
+        error, where a read-then-insert would make one of them fail on the
+        primary key.
+        """
+        statement = pg_insert(VectorCollection.__table__).values(
+            collection=collection, kb_id=kb_id
+        ).on_conflict_do_nothing(index_elements=["collection"])
+        self.session.execute(statement)
+        self.session.flush()
+
+    def collections(self) -> list[str]:
+        return list(self.session.scalars(
+            select(VectorCollection.collection).order_by(VectorCollection.collection)
+        ))
+
+    def delete_collection(self, collection: str) -> int:
+        """Remove a collection and every vector in it. Returns the row count.
+
+        The count is taken before the delete rather than from ``rowcount``,
+        which reports the collection row alone -- the chunk rows go by the
+        cascade, and an operator asking "how many vectors did that remove"
+        means the chunks.
+        """
+        removed = self.count(collection)
+        self.session.execute(
+            delete(VectorCollection).where(VectorCollection.collection == collection)
+        )
+        self.session.flush()
+        return removed
+
+    # ------------------------------------------------------------- manifest
+    def read_manifest(self, collection: str) -> Optional[dict[str, Any]]:
+        """Which embedding space this collection holds, or ``None``.
+
+        ``None`` means the same thing the missing ``embedding_index.json``
+        meant: nothing has recorded what wrote these vectors, so the dense leg
+        is not used (``index_manifest.index_status``).
+        """
+        row = self.session.get(VectorCollection, collection)
+        if row is None or row.embedding_fingerprint is None:
+            return None
+        return {
+            "schema_version": 1,
+            "embedding_provider": row.embedding_provider,
+            "embedding_model": row.embedding_model,
+            "embedding_endpoint": row.embedding_endpoint,
+            "embedding_dimension": row.embedding_dimension,
+            "embedding_fingerprint": row.embedding_fingerprint,
+            "chunk_count": row.manifest_chunk_count,
+            "written_at": row.written_at,
+        }
+
+    def write_manifest(self, collection: str, manifest: dict[str, Any],
+                       kb_id: Optional[str] = None) -> dict[str, Any]:
+        """Record the space this collection now holds."""
+        values = {
+            "collection": collection,
+            "kb_id": kb_id,
+            "embedding_provider": manifest.get("embedding_provider"),
+            "embedding_model": manifest.get("embedding_model"),
+            "embedding_endpoint": manifest.get("embedding_endpoint"),
+            "embedding_dimension": manifest.get("embedding_dimension"),
+            "embedding_fingerprint": manifest.get("embedding_fingerprint"),
+            "manifest_chunk_count": manifest.get("chunk_count"),
+            "written_at": manifest.get("written_at"),
+        }
+        statement = pg_insert(VectorCollection.__table__).values(**values)
+        # ``kb_id`` is not in the update set: the collection's owner is decided
+        # when it is created and a later manifest write must not move it.
+        self.session.execute(statement.on_conflict_do_update(
+            index_elements=["collection"],
+            set_={k: statement.excluded[k] for k in values
+                  if k not in ("collection", "kb_id")},
+        ))
+        self.session.flush()
+        return self.read_manifest(collection) or {}
+
+    # -------------------------------------------------------------- filters
+    @staticmethod
+    def _conditions(collection: str, filter_dict: Optional[dict[str, Any]] = None):
+        """``WHERE`` for one collection, plus whatever the caller filtered on.
+
+        A filter key that has a column of its own is compared against the
+        column; anything else is compared inside the metadata json, so a
+        caller may filter on any key a chunker wrote -- which is what the
+        store it replaced did, and what the reference implementation does.
+        """
+        where = [ChunkVector.collection == collection]
+        for key, value in (filter_dict or {}).items():
+            column = _CHUNK_COLUMNS.get(key)
+            if column is not None:
+                where.append(column == value)
+            else:
+                where.append(ChunkVector.chunk_metadata[key].astext == str(value))
+        return where
+
+    #: Rows come back in document order, then by chunk id, so a page is the
+    #: same page whenever it is asked for. Nothing in the product depends on
+    #: any *particular* order, but three routes page through this and a store
+    #: that answered in an arbitrary one would repeat and skip rows.
+    _ORDER = (ChunkVector.doc_id, ChunkVector.chunk_index, ChunkVector.chunk_id)
+
+    # -------------------------------------------------------------- reading
+    @staticmethod
+    def _record(row: ChunkVector) -> dict[str, Any]:
+        """One chunk in the shape every caller reads: id, text, metadata."""
+        return {
+            "chunk_id": row.chunk_id,
+            "content": row.content,
+            "metadata": dict(row.chunk_metadata or {}),
+        }
+
+    def get(self, collection: str, chunk_id: str) -> Optional[dict[str, Any]]:
+        row = self.session.get(ChunkVector, (collection, chunk_id))
+        if row is None:
+            return None
+        embedding = row.embedding
+        return {
+            **self._record(row),
+            "embedding": None if embedding is None else [float(v) for v in embedding],
+        }
+
+    def rows(self, collection: str, filter_dict: Optional[dict[str, Any]] = None,
+             *, offset: int = 0, limit: Optional[int] = None) -> list[dict[str, Any]]:
+        query = (select(ChunkVector)
+                 .where(*self._conditions(collection, filter_dict))
+                 .order_by(*self._ORDER))
+        if offset:
+            query = query.offset(offset)
+        if limit is not None:
+            query = query.limit(limit)
+        return [self._record(row) for row in self.session.scalars(query)]
+
+    def count(self, collection: str,
+              filter_dict: Optional[dict[str, Any]] = None) -> int:
+        return int(self.session.scalar(
+            select(func.count()).select_from(ChunkVector)
+            .where(*self._conditions(collection, filter_dict))
+        ) or 0)
+
+    def search_text(self, collection: str, needle: str, *, offset: int = 0,
+                    limit: int = 20) -> dict[str, Any]:
+        """Rows whose text contains a phrase, case-insensitively.
+
+        A substring scan, which is what this has always been: the browse
+        screen's filter, not a retrieval leg. ``ILIKE`` with the wildcards
+        escaped so a phrase containing ``%`` matches itself rather than
+        everything.
+        """
+        pattern = "%" + (needle or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        where = self._conditions(collection) + [
+            ChunkVector.content.ilike(pattern, escape="\\")
+        ]
+        total = int(self.session.scalar(
+            select(func.count()).select_from(ChunkVector).where(*where)
+        ) or 0)
+        rows = self.session.scalars(
+            select(ChunkVector).where(*where).order_by(*self._ORDER)
+            .offset(offset).limit(limit)
+        )
+        return {"chunks": [self._record(row) for row in rows], "total": total,
+                "offset": offset, "limit": limit}
+
+    def search(self, collection: str, embedding: Sequence[float], *, top_k: int = 10,
+               filter_dict: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
+        """The nearest ``top_k`` rows, nearest first.
+
+        Exact cosine distance over the collection, not an approximation: see
+        ``docs/database.md`` for why this schema carries no ANN index. The
+        chunk id breaks a tie, so a page of equally distant rows is the same
+        page every time it is asked for -- the determinism the RRF fusion
+        above this relies on.
+        """
+        vector = [float(v) for v in embedding]
+        distance = ChunkVector.embedding.cosine_distance(vector).label("distance")
+        rows = self.session.execute(
+            select(ChunkVector, distance)
+            .where(*self._conditions(collection, filter_dict),
+                   ChunkVector.embedding.is_not(None))
+            .order_by(distance, ChunkVector.chunk_id)
+            .limit(top_k)
+        )
+        return [{**self._record(row), "distance": float(value)}
+                for row, value in rows]
+
+    def stored_dimension(self, collection: str) -> Optional[int]:
+        """The width of the vectors this collection holds, if it holds any."""
+        return self.session.scalar(
+            select(ChunkVector.embedding_dim)
+            .where(ChunkVector.collection == collection,
+                   ChunkVector.embedding_dim.is_not(None))
+            .limit(1)
+        )
+
+    # -------------------------------------------------------------- writing
+    @staticmethod
+    def _values(collection: str, row: dict[str, Any]) -> dict[str, Any]:
+        metadata = dict(row.get("metadata") or {})
+        embedding = row.get("embedding")
+        values = {
+            "collection": collection,
+            "chunk_id": row["chunk_id"],
+            "content": row.get("content") or "",
+            "metadata": metadata,
+            "method": metadata.get("chunker_type"),
+            "embedding": None if embedding is None else [float(v) for v in embedding],
+            "embedding_dim": None if embedding is None else len(embedding),
+        }
+        for field in CHUNK_FIELDS:
+            values[field] = metadata.get(field)
+        values["doc_id"] = values["doc_id"] or ""
+        values["doc_title"] = values["doc_title"] or ""
+        values["chunk_index"] = int(values["chunk_index"] or 0)
+        values["total_chunks"] = int(values["total_chunks"] or 0)
+        return values
+
+    def upsert(self, collection: str, rows: Sequence[dict[str, Any]]) -> int:
+        """Write chunk rows, replacing any row with the same id.
+
+        One statement for the whole batch, inside the caller's transaction: an
+        ingest either makes all of its chunks searchable or none of them, and
+        a row-at-a-time loop is what would leave half a document behind after
+        a failure in the middle.
+        """
+        if not rows:
+            return 0
+        values = [self._values(collection, row) for row in rows]
+        statement = pg_insert(ChunkVector.__table__).values(values)
+        updates = {name: statement.excluded[name] for name in values[0]
+                   if name not in ("collection", "chunk_id")}
+        updates["updated_at"] = func.now()
+        self.session.execute(statement.on_conflict_do_update(
+            index_elements=["collection", "chunk_id"], set_=updates
+        ))
+        self.session.flush()
+        return len(values)
+
+    def update(self, collection: str, chunk_id: str, *,
+               content: Optional[str] = None,
+               metadata: Optional[dict[str, Any]] = None,
+               embedding: Optional[Sequence[float]] = None) -> bool:
+        row = self.session.get(ChunkVector, (collection, chunk_id))
+        if row is None:
+            return False
+        if content is not None:
+            row.content = content
+        if metadata is not None:
+            merged = {**(row.chunk_metadata or {}), **metadata}
+            row.chunk_metadata = merged
+            row.method = merged.get("chunker_type")
+            for field in CHUNK_FIELDS:
+                if field in merged and merged[field] is not None:
+                    setattr(row, field, merged[field])
+        if embedding is not None:
+            row.embedding = [float(v) for v in embedding]
+            row.embedding_dim = len(row.embedding)
+        self.session.flush()
+        return True
+
+    def delete_chunk(self, collection: str, chunk_id: str) -> bool:
+        result = self.session.execute(
+            delete(ChunkVector).where(ChunkVector.collection == collection,
+                                      ChunkVector.chunk_id == chunk_id)
+        )
+        self.session.flush()
+        return bool(result.rowcount)
+
+    def delete_by_doc_id(self, collection: str, doc_id: str) -> int:
+        result = self.session.execute(
+            delete(ChunkVector).where(ChunkVector.collection == collection,
+                                      ChunkVector.doc_id == doc_id)
+        )
+        self.session.flush()
+        return int(result.rowcount or 0)
+
+    def clear(self, collection: str) -> int:
+        """Empty a collection, keeping the collection itself."""
+        result = self.session.execute(
+            delete(ChunkVector).where(ChunkVector.collection == collection)
+        )
+        self.session.flush()
+        return int(result.rowcount or 0)
+
+
+#: The chunk columns a filter may name directly. Everything else a caller
+#: filters on is looked up inside ``metadata``.
+_CHUNK_COLUMNS = {
+    "doc_id": ChunkVector.doc_id,
+    "doc_title": ChunkVector.doc_title,
+    "chunk_index": ChunkVector.chunk_index,
+    "total_chunks": ChunkVector.total_chunks,
+    "section_title": ChunkVector.section_title,
+    "chunker_type": ChunkVector.method,
+}
