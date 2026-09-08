@@ -6,6 +6,7 @@
  * three, so moving a route or changing a refusal is one edit in one package.
  */
 
+import * as analysis from './analysis';
 import * as asking from './asking';
 import * as documents from './documents';
 import * as ingestJobs from './ingestJobs';
@@ -14,6 +15,6 @@ import * as meta from './meta';
 
 export { ApiError, API_PREFIX, MAX_PAGE_SIZE, collect, queryString, request } from './client';
 
-export const api = { asking, documents, ingestJobs, knowledgeBases, meta };
+export const api = { analysis, asking, documents, ingestJobs, knowledgeBases, meta };
 
 export default api;

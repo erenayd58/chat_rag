@@ -1,17 +1,26 @@
-"""`/api/v1/queries` and `/api/v1/searches` -- asking, and looking.
+"""`/api/v1/queries`, `/api/v1/searches` and `/api/v1/analysis-queries`.
 
-Two verbs that are one shape apart. A **query** retrieves and then asks the
+Asking, looking, and comparing.
+
+The first two are one shape apart. A **query** retrieves and then asks the
 answer model for a cited answer; a **search** stops after retrieval and returns
 the ranked chunks. They are separate resources rather than one endpoint with a
 flag because they cost different things and refuse for different reasons: only
 a query can run out of answer-model capacity, and only a query can come back
 ungrounded.
 
-Both run under the same bounds (``application.query``): admission, so a burst
-of retrieval cannot take every request thread, and the query deadline. A
-refusal is **503** ``overloaded`` with a ``Retry-After``, or **504**
-``timeout``; neither is queued, and neither is decided here --
-``interfaces.http.v1.errors`` holds the whole table.
+The third asks a different question of a different corpus. Both of the first
+two search a knowledge base -- one document set, chunked the one way its
+knowledge base ingests. An **analysis query** searches one document's *analysis
+arms*: the same document chunked several ways, one index per chunking method,
+with only the chunker differing. It is therefore the only thing on this
+contract that compares chunkers, and it is what the Viewer runs on.
+
+All three run under the same bounds: admission, so a burst of retrieval cannot
+take every request thread, and the query deadline. A refusal is **503**
+``overloaded`` with a ``Retry-After``, or **504** ``timeout``; neither is
+queued, and neither is decided here -- ``interfaces.http.v1.errors`` holds the
+whole table.
 """
 
 from __future__ import annotations
@@ -20,12 +29,16 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body
 
+from application import analysis_query as analysis_use_case
 from application import chunks as search_use_case
 from application import query as use_case
 from application.errors import InvalidRequest
 
 from ..dependencies import Container, FreshSessionId
-from ..schemas import Answer, QueryRequest, ScoredChunk, SearchRequest, SearchResults
+from ..schemas import (
+    AnalysisQueryRequest, AnalysisQueryResult, Answer, QueryRequest, ScoredChunk,
+    SearchRequest, SearchResults,
+)
 
 router = APIRouter(tags=["queries"])
 
@@ -92,3 +105,52 @@ def search(services: Container, session: FreshSessionId,
     return SearchResults.of(items, offset=0, limit=limit, total=len(items),
                             method=found["retrieval_method"],
                             knowledge_base_id=payload.knowledge_base_id)
+
+
+@router.post("/analysis-queries", response_model=AnalysisQueryResult, tags=["analysis"],
+             summary="One question, over one document, through each chunking method")
+def analysis_query(services: Container, session: FreshSessionId,
+                   payload: Annotated[AnalysisQueryRequest,
+                                      Body(default_factory=AnalysisQueryRequest)]
+                   ) -> AnalysisQueryResult:
+    """The comparison a knowledge-base query cannot make.
+
+    ``/queries`` searches a corpus that was chunked one way -- the way its
+    knowledge base ingests. This puts the same question to the same document
+    chunked several ways, over indexes built from the analysis's own packaged
+    rows, with only the chunker differing between arms. What comes back is
+    therefore a comparison of chunkers, and it is the Viewer's reason to
+    exist.
+
+    It runs under the query path's own admission and deadline: retrieval and
+    an answer-model call per arm is not a lighter thing than a query, and
+    leaving it outside the bound would make it the way around it.
+
+    An arm that could not be answered does not fail the request -- it comes
+    back with its ``status`` and its sources -- because in a comparison the
+    other arms are still the answer.
+    """
+    found = analysis_use_case.ask(
+        services,
+        document_id=payload.document_id,
+        question=payload.question,
+        session_id=session,
+        methods=_methods(payload.methods),
+        top_k=max(1, min(MAX_SEARCH_RESULTS, payload.top_k)),
+        answer=payload.answer,
+    )
+    return AnalysisQueryResult.of(found, document_id=payload.document_id)
+
+
+def _methods(selection) -> list[str] | None:
+    """The methods a request named, from either spelling.
+
+    A list, or one comma-separated string: both are what a registry's keys
+    arrive as, and the same reading as ``AnalysisMethods`` on the upload path.
+    ``None`` means "every ready one", which is not the same as an empty list.
+    """
+    if selection is None:
+        return None
+    if isinstance(selection, str):
+        return [part.strip() for part in selection.replace(";", ",").split(",") if part.strip()]
+    return [str(part).strip() for part in selection if str(part).strip()]

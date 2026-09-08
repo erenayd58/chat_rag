@@ -3,8 +3,9 @@
 Upload a PDF into a knowledge base, and ask questions of it. The document is
 parsed once into canonical units, chunked by a chosen method, embedded and
 indexed; a question retrieves from that index, assembles a labelled context
-and gets one answer that cites its sources. A companion **Viewer** shows where
-each chunking method put its boundaries, on the same documents.
+and gets one answer that cites its sources. The console's **Viewer** screen
+shows where each chunking method put its boundaries, on the same documents,
+and asks the same question of several of them side by side.
 
 The system is two repositories:
 
@@ -59,20 +60,22 @@ cp env.example .env                       # PowerShell: Copy-Item env.example .e
 # 3. prove the declared source installs and runs (minutes; needs Docker)
 python tools/verify_reproducibility.py --local
 
-# 4. start the product and the Viewer
-.\start-demo.ps1                          # or: python app.py  (see "Running it by hand")
+# 4. start the backend and the console
+.\start-demo.ps1                          # or: python app.py + npm run dev --prefix frontend
 ```
 
 Then, in the browser and the terminal:
 
-5. **upload a PDF** — open <http://127.0.0.1:5005>, create a knowledge base,
+5. **upload a PDF** — open <http://localhost:3000>, create a knowledge base,
    upload a document, choose **Deep Analysis** if a provider key is configured
    and **Standard** if not. The first parse of a PDF takes minutes; the second
    takes under a second.
 6. **ask a question** — `/chat`, pick the knowledge base, ask. The answer
    cites `[S1]`, `[S2]`… back to the chunks it used.
-7. **open the Viewer** — <http://127.0.0.1:8765>, pick the document, select
-   two methods, and step through the boundaries where they disagree.
+7. **open the Viewer** — <http://localhost:3000/viewer>, pick the document,
+   select two methods, and step through the boundaries where they disagree.
+   Then ask the same question of both on **Sorgu** and compare what each
+   chunking found.
 8. **look at the instruments** — `GET /api/health` (three fields: alive,
    ready, what an operator should do) and `GET /api/ops/metrics` (counters,
    stage latency, error categories, budgets, caches).
@@ -147,8 +150,8 @@ Both serve <http://127.0.0.1:5005>. Which one is running is not a detail —
 |---|---|
 | `ValueError` naming an env variable, before the server binds | a configuration value was refused. That is deliberate: bad values stop the process while someone is looking. [docs/configuration.md](docs/configuration.md) |
 | `ModuleNotFoundError: amsc` | `pip install -r requirements.txt` did not run, or the pinned commit is unreachable. `python tools/import_smoke.py` says which `amsc` answered |
-| the Viewer link is dead, or `start-demo.ps1` fails on the Viewer | the Viewer page is a build artifact, not in version control. The launcher builds it; by hand it is `py -3.11 -m amsc.viewer.build --output artifacts/viewer-v3/index.html` in `../chunk` |
-| a port is already in use | `start-demo.ps1` recognises a server it already started and refuses a port held by something else. `-ProductPort` / `-ViewerPort` move them |
+| the console will not start | it is a Next.js application and needs Node.js 18+ on `PATH`. The launcher runs `npm install` once when `frontend/node_modules` is missing; by hand it is `npm install --prefix frontend` |
+| a port is already in use | `start-demo.ps1` recognises a server it already started and refuses a port held by something else. `-ProductPort` / `-ConsolePort` move them |
 | the first upload seems to hang | it does not — layout parsing is minutes per document on CPU, and the job is running. Poll `GET /api/ingest/jobs/<job_id>` |
 | answers fail but search works | no provider key, or an unreachable gateway. The answer model carries the reason; retrieval never depended on it |
 
@@ -217,8 +220,8 @@ question.
 An upload also chooses **which chunking methods to analyse the document
 with**, independently of the mode it is indexed under: the PDF is parsed once
 and every chosen method runs over that one canonical, so the Viewer can
-compare them side by side. `GET /api/demo/methods` says which methods this
-machine can run, and why one cannot.
+compare them side by side. `GET /api/v1/meta/chunking-methods` says which
+methods this machine can run, and why one cannot.
 
 ### Default demo profile
 
@@ -318,54 +321,64 @@ path and a re-ingest.
 
 ---
 
-## Demo mode (product + Agentic Chunking Viewer)
+## Demo mode (backend + console)
 
-The proof of concept has two faces: this product (how it is used) and the
-chunk repository's **Viewer v3** (what the chunking technology does
-underneath — where each method put its boundaries, and why). They stay
-separate servers; one script starts both for a presentation.
+The proof of concept has two faces and one browser tab. The product is how it
+is used; the **Viewer** screen is what the chunking technology does underneath
+— where each method put its boundaries, and why. Both are the console, so one
+script starts what there is to start.
 
 ```powershell
-.\start-demo.ps1      # start both, wait until each answers, open the product
+.\start-demo.ps1      # start both, wait until each answers, open the console
 .\stop-demo.ps1       # stop what start-demo started
 ```
 
 | | Address | Server |
 |---|---|---|
-| Product (chat_rag) | http://127.0.0.1:5005 | `venv\Scripts\python.exe app.py` (the development server; `FLASK_PORT`, reloader off) |
-| Viewer (chunk, Viewer v3) | http://127.0.0.1:8765 | `py -3.11 -m amsc.viewer.server --viewer artifacts/viewer-v3/index.html --console-url http://127.0.0.1:5005` in the chunk repo |
+| Console (Next.js) | http://localhost:3000 | `npm run dev` in [`frontend/`](frontend/README.md) — every screen, including `/viewer` |
+| Backend (chat_rag) | http://127.0.0.1:5005 | `venv\Scripts\python.exe app.py` (the development server; `FLASK_PORT`, reloader off) |
 
-The chunk repository is expected next to this one (`..\chunk`); override with
-`-ChunkPath` or `CHUNK_REPO`. The Viewer page itself is a build artifact and is
-not in version control, so on a fresh clone the launcher builds it first --
-`py -3.11 -m amsc.viewer.build --output artifacts\viewer-v3\index.html`, the
-product shell, which carries no corpus of its own and reads every document
-live from this console. A page that is already there is served unchanged.
-How the two repositories divide the Viewer up, and what to look at when a
-document's analysis fails, is in `..\chunk\docs\viewer-architecture.md`.
+**There is no third process.** The Viewer used to be one: a server in the
+`chunk` repository on `:8765` that served its own HTML page and relayed this
+console over `/api/demo/*`. Step 12 moved it into the console as five screens
+over `/api/v1`, so nothing starts it, nothing links to it, and a demo needs
+only what is in the table. `amsc.viewer.server` still exists in `chunk` as a
+way to serve *that* repository's frozen benchmark corpus, which this product
+has no copy of; it is not part of running the product.
 
-The launcher checks readiness over HTTP
-(`/api/health` on both), recognises servers that are already running instead
-of starting a second copy, refuses a port held by something else, writes the
-servers' output to `.demo\logs\` and the started process ids to
-`.demo\state.json` (both git-ignored). `stop-demo.ps1` stops only processes it
-can identify as those servers; `-All` extends that to a product/viewer server
-on the demo ports that it did not start. Nothing from `.env` is printed; the
-Viewer's chat gets `OPENROUTER_API_KEY` from the environment or `.env`
-(without it the Viewer runs BM25-only, no answers — use `-Lexical` to force
-that). Options: `-NoBrowser`, `-OpenViewer` (second tab), `-ProductPort`,
-`-ViewerPort`, `-TimeoutSeconds`.
+The browser only ever talks to the console's own origin: `next.config.mjs`
+rewrites `/api/v1/*` to the backend, so there is no CORS grant and exactly one
+place (`CHAT_RAG_API_URL`, which the launcher sets) knows the backend address.
 
-The two windows share one state. `GET /api/demo/workspace` returns this
-console's knowledge bases, their documents and chunk counts as a read-only
-snapshot; the Viewer's server reads it (`--console-url`, which `start-demo.ps1`
-points back here) and serves it to its own page. So a knowledge base created
-here, or a document ingested into it, appears in the Viewer's workspace strip
-on its next refresh — there is no second copy of that state to keep in step,
-and the browser never has to reach a second origin. The snapshot carries names,
-counts and ingest metadata only: no absolute paths and no full file hashes.
+The launcher checks readiness over HTTP, recognises servers that are already
+running instead of starting a second copy, refuses a port held by something
+else, writes each server's output to `.demo\logs\` and the started process ids
+to `.demo\state.json` (both git-ignored). It runs `npm install` once if
+`frontend
+ode_modules` is missing. `stop-demo.ps1` stops only processes it can
+identify as those servers; `-All` extends that to a backend or console on the
+demo ports that it did not start. Nothing from `.env` is printed. Options:
+`-NoBrowser`, `-NoInstall`, `-ProductPort`, `-ConsolePort`, `-TimeoutSeconds`.
 
-**A document uploaded here becomes a document you can analyse over there.**
+### What the Viewer screen shows
+
+Five tabs over one document, all of them reading `/api/v1`:
+
+| tab | answers |
+|---|---|
+| **Genel** | what is in the system, what is ready, where to go next |
+| **İncele** | the document itself, with up to three chunking methods printed onto it — the same text in the same row in every column, so a boundary one method draws and another does not is visible on the words. `‹ Fark ›` steps through the disagreements |
+| **Sorgu** | one question, several methods at once (`POST /api/v1/analysis-queries`), with each one's sources and how much of the evidence they agreed on |
+| **Debug** | where every boundary came from: parser, structural pass, rule layer, model proposal, verification. Only recorded values |
+| **Benchmark** | the methods side by side on measurements that were actually taken; a document with no gold set is told so rather than shown a number nobody produced |
+
+Two routes exist for it and no more: `GET /api/v1/documents/<id>/analysis/payload`
+(the render model — the canonical units and, per method, the chunks *and the
+unit offsets they cut at*) and `POST /api/v1/analysis-queries`. Everything else
+the screen needs is what every other screen uses. See
+[docs/api-v1.md](docs/api-v1.md).
+
+**An upload is already most of what the Viewer needs.**
 The Viewer reads one shape — a packaged Deep Analysis tree pinned to the
 canonical it was chunked from — and an ingest already produces every expensive
 input that tree needs, so nothing is computed twice:
@@ -382,12 +395,12 @@ input that tree needs, so nothing is computed twice:
   model-backed run.
 
 `components/viewer/analysis.py` does the packaging on a background worker, so
-no HTTP call waits on it: an upload records the ingest and returns, and the
-Viewer's refresh (`?prepare=1`) only *queues* what is missing. Each document's
-state — `missing` / `pending` / `running` / `ready` / `failed` — travels with
-it in the workspace snapshot, so the Viewer lists a ready document in its own
-document picker and shows one that is still being prepared as a disabled entry
-saying so.
+no HTTP call waits on it: an upload records the ingest and returns, and
+`POST /api/v1/documents/<id>/analysis` only *queues* a build. Each document's
+state — `missing` / `pending` / `running` / `ready` / `failed` — is on its
+`analysis` block in `GET /api/v1/documents`, so the Viewer lists a ready
+document in its picker, says plainly that one is still being prepared, and
+picks up a method that finished while the screen was open.
 
 An upload chooses **which chunking methods to analyse the document with**
 (`methods=markdown&methods=structure-only&methods=agentic`, or the older
@@ -396,14 +409,14 @@ that one canonical and is packaged as its own arm, so the Viewer can compare
 them side by side under a single document. Identity is the file's content
 hash: uploading the same PDF again adds variants to the document that is
 already there instead of making a second one, and
-`POST /api/demo/viewer-analysis/<doc_id>/methods` adds a method later without
-re-reading the file. The *analysis* is shared that way; the *choice* is not.
+`POST /api/v1/documents/<document_id>/analysis/methods` adds a method later
+without re-reading the file. The *analysis* is shared that way; the *choice* is not.
 Each upload record keeps the methods it asked for, and that is what the Viewer
 opens it on — an upload that ticked Standard and Hybrid is not shown the
 Markdown and Deep Analysis variants another upload of the same file left
 behind. The shared analysis keeps all of them, so neither upload costs a
-second parse. `GET /api/demo/methods` says which methods this machine
-can actually run, and why one cannot. The methods themselves are defined once,
+second parse. `GET /api/v1/meta/chunking-methods` says which methods this
+machine can actually run, and why one cannot. The methods themselves are defined once,
 in the library's registry (`amsc.chunking.registry` in the chunk repository): key,
 engine kind, product name, summary and capabilities. `components/viewer/methods.py`
 is this console's view of that registry and adds only what the deployment
@@ -425,17 +438,17 @@ have no gold query set, so no Hit@k or MRR is computed for them — the Viewer
 says so rather than inventing numbers — and they never enter the frozen
 benchmark tables or the cross-document contract table.
 
-Inside the product, **Tools → Agentic Chunking Viewer** (sidebar, with a
-live/offline dot) and the card at the top of **Lab** open the Viewer in a new
-tab. The address comes from `VIEWER_URL` (default `http://127.0.0.1:8765/`;
-empty hides the link).
+The Flask-era screens still served beside the console keep their old
+**Tools → Agentic Chunking Viewer** link, pointing at `VIEWER_URL` (default
+`http://127.0.0.1:8765/`; empty hides it). That link and the screens holding
+it go together in Step 13; nothing on the Next.js console uses it, and the
+Viewer it points at is not required for anything.
 
-Presentation order: **1.** chat_rag — a knowledge base and its documents;
-**2.** upload a document with **Deep Analysis** (status and quality summary
-under the chunking badge, *Details* for before/after); **3.** Chat — an answer
-with sources; **4.** Agentic Chunking Viewer; **5.** Sunum (the four methods
-side by side) → Debug (why each boundary) → Benchmark; then back to the
-product.
+Presentation order: **1.** Knowledge Bases — a base and its documents;
+**2.** upload a document with **Deep Analysis** and a second method;
+**3.** Sohbet — an answer with sources; **4.** Viewer → **İncele** (the
+methods side by side on the page) → **Sorgu** (the same question through each
+of them) → **Debug** (why each boundary) → **Benchmark**.
 
 ---
 

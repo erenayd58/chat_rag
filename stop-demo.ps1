@@ -5,17 +5,20 @@
 .DESCRIPTION
     Reads .demo\state.json, and for every server the launcher itself started
     checks that the recorded process id still belongs to that server (its
-    command line names app.py or amsc.viewer.server) before stopping it. A
-    server that was already running when the launcher ran is left alone
-    unless -All is given, and no unrelated process is ever touched.
+    command line names app.py or next) before stopping it. A server that was
+    already running when the launcher ran is left alone unless -All is given,
+    and no unrelated process is ever touched.
+
+    Two servers, not three: since Step 12 the Viewer is a screen of the
+    console rather than its own process, so there is nothing on :8765 to stop.
 
 .PARAMETER All
-    Also stop a chat_rag / Viewer server on the demo ports that this launcher
-    did not start, provided its command line identifies it as one of ours.
+    Also stop a chat_rag backend / console on the demo ports that this
+    launcher did not start, provided its command line identifies it as ours.
 .PARAMETER ProductPort
     Port to inspect with -All (default 5005).
-.PARAMETER ViewerPort
-    Port to inspect with -All (default 8765).
+.PARAMETER ConsolePort
+    Port to inspect with -All (default 3000).
 
 .EXAMPLE
     .\stop-demo.ps1
@@ -26,7 +29,7 @@
 param(
     [switch]$All,
     [int]$ProductPort = 5005,
-    [int]$ViewerPort = 8765
+    [int]$ConsolePort = 3000
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,7 +49,10 @@ function Fail { param($Name, $Detail) Write-Line -Mark ([char]0x2717) -Name $Nam
 function Info { param($Name, $Detail) Write-Line -Mark ([char]0x2022) -Name $Name -Detail $Detail -Color DarkGray }
 function Warn { param($Name, $Detail) Write-Line -Mark '!' -Name $Name -Detail $Detail -Color Yellow }
 
-$Signatures = @{ product = 'app.py'; viewer = 'amsc.viewer.server' }
+# What a process's command line has to name before this script will stop it.
+# The console's listener is the `next` worker npm.cmd spawned, so the pattern
+# is the framework's own module rather than the npm script that started it.
+$Signatures = @{ product = 'app.py'; console = 'next' }
 
 function Get-CommandLine {
     param([int]$ProcessId)
@@ -92,7 +98,7 @@ if (Test-Path $StatePath) {
     $state = Get-Content $StatePath -Raw | ConvertFrom-Json
     foreach ($service in @($state.services)) {
         $name = [string]$service.name
-        $label = if ($name -eq 'viewer') { 'Viewer v3' } else { 'chat_rag' }
+        $label = if ($name -eq 'console') { 'console' } else { 'chat_rag' }
         $handled[$name] = $true
         if ($service.started_by_launcher) {
             Stop-Service -Name $label -ProcessId ([int]$service.pid) -Signature $Signatures[$name]
@@ -108,7 +114,7 @@ if (Test-Path $StatePath) {
 }
 
 if ($All) {
-    foreach ($entry in @(@{ name = 'product'; port = $ProductPort; label = 'chat_rag' }, @{ name = 'viewer'; port = $ViewerPort; label = 'Viewer v3' })) {
+    foreach ($entry in @(@{ name = 'product'; port = $ProductPort; label = 'chat_rag' }, @{ name = 'console'; port = $ConsolePort; label = 'console' })) {
         if ($handled[$entry.name]) { continue }
         $conn = Get-NetTCPConnection -LocalPort $entry.port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($conn) {

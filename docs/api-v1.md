@@ -187,6 +187,7 @@ that down with it.
 | `POST /api/v1/documents/<document_id>/analysis` | queue or retry → **202** |
 | `POST /api/v1/documents/<document_id>/analysis/methods` | add variants → **202** |
 | `GET /api/v1/documents/<document_id>/analysis/methods/<method>/chunks` | one method's rows |
+| `GET /api/v1/documents/<document_id>/analysis/payload` | the whole analysis, as a reader's view of it |
 
 The analysis resource keeps two levels apart, because they are two facts and a
 screen that merges them lies in one direction or the other:
@@ -217,6 +218,28 @@ difference matters to a client:
 - **409 `not_ready`** — selected, not built yet. Keep polling; the body carries
   the state.
 
+### The payload
+
+`.../analysis/payload` answers the same analysis as one document rather than as
+one method at a time: the parser's canonical units in reading order, and per
+ready method the chunks **plus the unit offsets each one cuts at**.
+
+Those offsets are why it exists beside the per-method rows. `.../methods/<m>/chunks`
+says what a method produced; only the payload says where a chunk starts and
+ends *inside* a canonical unit, which is what lets several methods be drawn
+down one column of text and compared on the page instead of by chunk number.
+Nothing else on this contract carries it, and a client cannot compute it: the
+mapping is written by the packager, from the chunker's own record of what it
+consumed.
+
+It answers **409 `not_ready`** while nothing this upload selected has been
+built, with the analysis state, so a screen polls rather than gives up. Its
+`payload` object is **pass-through**, for the same reason a chunk's `metadata`
+is: it is a render model, it grows a field whenever a chunker records something
+new, and freezing it here would spend a version number on internals this
+contract exists to leave free. `ready_methods` beside it is not pass-through —
+it is exactly the arms the payload carries.
+
 ## Ingest jobs
 
 | endpoint | |
@@ -241,6 +264,7 @@ document in the ledger was fully committed.
 |---|---|
 | `POST /api/v1/queries` | retrieve, then answer with citations |
 | `POST /api/v1/searches` | retrieve only: the ranked chunks |
+| `POST /api/v1/analysis-queries` | one question, one document, through each chunking method |
 
 Both are POSTs and neither creates anything: a question is user text of
 unbounded length that should not land in an access log or be cached in
@@ -256,6 +280,40 @@ retriever cannot serve is **400** with the reason — a lexical-only profile has
 no vectors, and saying so is the answer. `GET /api/v1/meta/retrieval-methods`
 is how a client knows in advance.
 
+### Asking the analysis instead of the corpus
+
+A query and a search both read a knowledge base: one document set, chunked the
+one way its knowledge base ingests. An **analysis query** reads one document's
+*analysis arms* — the same document chunked several ways, one index per method,
+built from the packaged rows — so the only thing that differs between arms is
+the chunker. That is what makes the answer a comparison of chunkers, and it is
+the one question this contract answers that a knowledge base cannot.
+
+```jsonc
+{ "document_id": "doc-1", "question": "...", "methods": ["standard", "agentic"],
+  "top_k": 5, "answer": true }
+```
+
+`methods` absent means every method this upload has ready. A name this
+deployment does not know is **400** with the supported list; a name it knows
+that is not built for *this* upload is **404** with what is — the same two
+refusals, meaning the same two things, as everywhere else on the analysis.
+`answer: false` stops after retrieval.
+
+The answer is one entry per method, always in the same shape whether one ran or
+four: a comparison of one is still a comparison, and a client that branches on
+the count has two rendering paths where it needs one. Each entry carries its
+own `status` (`ok`, `insufficient`, `no_answer_model`, `answer_error`), so an
+arm that could not be answered does not fail the request — in a comparison the
+other arms are still the answer — and `unit_overlap`, how much of its retrieved
+context the other arms also retrieved, which is the number that says whether
+two chunkers found the same evidence or different evidence. `sources` is
+pass-through, like a chunk's `metadata`.
+
+It runs under the same admission and deadline as `/queries`. Retrieval plus an
+answer-model call per arm is not a lighter thing than a query, and leaving it
+outside the bound would make it the way around it.
+
 ---
 
 ## Not here, on purpose
@@ -266,7 +324,7 @@ Each of these is served by the legacy surface and was not promoted:
 |---|---|
 | `PUT`/`DELETE` on a single chunk | editing an indexed chunk changes the corpus behind the ingest ledger's back. It is a lab affordance, not a product operation |
 | the gold set | an offline evaluation input, driven by `python -m cli`. It is not part of what a console client does |
-| `/api/demo/viewer`, `/api/demo/workspace` | a probe of a companion dev server, and a snapshot that `GET /api/v1/documents` now answers truthfully per document |
+| `/api/demo/viewer`, `/api/demo/workspace` | a probe of a companion dev server, and a snapshot that `GET /api/v1/documents` and `GET /api/v1/knowledge-bases` now answer truthfully, per document and per base |
 | `/api/ops/metrics` | an operator surface whose contents are deliberately free to change. `GET /api/v1/health` is the stable half |
 | a synchronous upload | it exists on the legacy surface because it always did, and it is the reason that adapter needs a semaphore to stop uploads holding every request thread |
 

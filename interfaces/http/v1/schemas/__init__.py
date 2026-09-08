@@ -17,6 +17,10 @@ pass-through in ``docs/api-v1.md``.
 
 from __future__ import annotations
 
+from .analysis import (
+    AnalysisAnswer, AnalysisArmResult, AnalysisPayload, AnalysisQueryRequest,
+    AnalysisQueryResult,
+)
 from .chunks import (
     CanonicalUnit, CanonicalUnitCollection, Chunk, ChunkCollection, ScoredChunk,
     SearchResults,
@@ -40,7 +44,9 @@ from .meta import (
 from .queries import Answer, AnswerTiming, Citation, QueryRequest, SearchRequest
 
 __all__ = [
-    "ANALYSIS_STATES", "Analysis", "AnalysisChunks", "AnalysisMethods", "Answer",
+    "ANALYSIS_STATES", "Analysis", "AnalysisAnswer", "AnalysisArmResult",
+    "AnalysisChunks", "AnalysisMethods", "AnalysisPayload", "AnalysisQueryRequest",
+    "AnalysisQueryResult", "Answer",
     "AnswerTiming", "ApiError", "CanonicalUnit", "CanonicalUnitCollection", "Capacity",
     "Chunk", "ChunkCollection", "ChunkingMethod", "ChunkingMethodCollection", "Citation",
     "Collection", "ContentAnalysis", "Document", "DocumentCollection",

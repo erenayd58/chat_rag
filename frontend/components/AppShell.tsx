@@ -49,6 +49,18 @@ const NAV: { href: string; label: string; icon: ReactNode; section?: string }[] 
     ),
   },
   {
+    href: '/viewer',
+    label: 'Viewer',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <path d="M12 3v18" />
+        <path d="M6 8h3M6 12h3M6 16h3" />
+        <path d="M15 8h3M15 13h3" />
+      </svg>
+    ),
+  },
+  {
     href: '/analysis',
     label: 'Analysis',
     icon: (

@@ -152,35 +152,53 @@ all three until wave 3 takes the screen.
 ## Wave 2 — the Viewer's relay
 
 Called by `amsc.viewer.server` in the `chunk` repository, over HTTP, from a
-separate process. Moving them is a change in **that** repository followed by a
-pin bump here (`tools/promote_chunk_pin.py`), so it cannot happen in the same
-commit as the front end.
+separate process. **Step 12 removed the caller**: the Viewer is a screen of
+this front end now, it reads `/api/v1` directly, and no `:8765` process is
+part of the product any more. Every row below therefore has a replacement and
+a caller of `none`; the routes themselves come out in Step 13 with the rest of
+the legacy layer.
 
 | legacy | replacement | caller |
 |---|---|---|
-| `GET /api/demo/workspace` | — | `console_workspace` |
-| `POST /api/demo/viewer-analysis/<doc_id>` | `POST /api/v1/documents/<document_id>/analysis` | `console_prepare` |
-| `GET /api/demo/viewer-analysis/<doc_id>/payload` | — | `console_document` |
-| `GET /api/demo/viewer-analysis/<doc_id>/chunks` | `GET /api/v1/documents/<document_id>/analysis/methods/<method>/chunks` | `console_arm_chunks` |
+| `GET /api/demo/workspace` | `GET /api/v1/knowledge-bases` | none |
+| `POST /api/demo/viewer-analysis/<doc_id>` | `POST /api/v1/documents/<document_id>/analysis` | none |
+| `GET /api/demo/viewer-analysis/<doc_id>/payload` | `GET /api/v1/documents/<document_id>/analysis/payload` | none |
+| `GET /api/demo/viewer-analysis/<doc_id>/chunks` | `GET /api/v1/documents/<document_id>/analysis/methods/<method>/chunks` | none |
 | `GET /api/demo/viewer` | — | `api.js` |
 | `GET /api/demo/viewer-analysis/<doc_id>` | `GET /api/v1/documents/<document_id>/analysis` | none |
 | `POST /api/demo/viewer-analysis/<doc_id>/methods` | `POST /api/v1/documents/<document_id>/analysis/methods` | none |
 
-Two of these have no replacement and would need one:
+The two that had no replacement got one, and both were kept as small as the
+parity actually needed:
 
-- **`/payload`** is `amsc.viewer.corpus.load_corpus` output plus a `live`
-  block. It is the Viewer's own document shape, pinned in the `chunk`
-  repository, and putting it on the product contract would freeze a shape that
-  belongs to the Viewer.
-- **`/api/demo/workspace`** is one request that answers "every knowledge base,
-  every document, and where each document's analysis got to", optionally
-  queuing the missing ones. `GET /api/v1/documents` now answers the same
-  question truthfully per document; what it does not do is the `?prepare=1`
-  half, which is a bulk queue.
+- **`/payload`** became `GET /api/v1/documents/<document_id>/analysis/payload`.
+  What it carries is still the render model the packager writes, and it is
+  published as **pass-through** for exactly the reason this row used to give
+  for not promoting it — the shape belongs to the analysis, it grows a field
+  whenever a chunker records something new, and no version number should be
+  spent on it. What is contractual is the resource around it: which document,
+  which content, which methods are in it, and a **409 `not_ready`** while
+  nothing is built.
+- **`/api/demo/workspace`** did not need one. It answered "every knowledge
+  base, every document, and where each document's analysis got to" in one
+  request, which is `GET /api/v1/knowledge-bases` and `GET /api/v1/documents`
+  — the latter already carrying each document's `analysis` block. The
+  `?prepare=1` half, a bulk queue of every missing analysis, was not promoted:
+  the screen queues the document a reader actually opened.
+
+One route the Viewer relayed had no `/api/v1` answer at all, and it was not the
+payload. The Viewer's *Sorgu* asks one question of one document through several
+chunking methods at once, over indexes built from the analysis arms — a
+comparison of chunkers, which no knowledge-base query can make because a
+knowledge base has one chunker. That is now
+`POST /api/v1/analysis-queries`, and the engine behind it is the library's own
+(`amsc.viewer.chat`), which moved from `SERVICE` to `CONSOLE_API` in the same
+step. The relay never appeared in this table because it was not a console
+route: the old Viewer server answered it itself, out of its own process.
 
 `GET /api/demo/viewer` is a probe of whether a companion Viewer process is
-running. It is a development affordance and there is nothing to replace it
-with; it goes with the console screen that shows the link.
+running. There is no companion process any more; it goes with the console
+screen that shows the link.
 
 ---
 

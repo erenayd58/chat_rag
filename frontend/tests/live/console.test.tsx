@@ -30,6 +30,7 @@ import KnowledgeBasePage from '@/app/knowledge-bases/[kbId]/page';
 import DocumentPage from '@/app/documents/[documentId]/page';
 import SearchPage from '@/app/search/page';
 import ChatPage from '@/app/chat/page';
+import ViewerPage from '@/app/viewer/page';
 import { ConfirmProvider } from '@/components/Modal';
 import { ToastProvider } from '@/components/Toast';
 import api from '@/lib/api';
@@ -179,6 +180,55 @@ describe('Analysis', () => {
     await userEvent.click(screen.getByRole('tab', { name: /Kanonik birimler/ }));
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument(), { timeout: 30000 });
     expect(screen.getByRole('alert')).toHaveTextContent('Bulunamadı');
+  });
+});
+
+describe('Viewer', () => {
+  /**
+   * The screen that replaced a whole second server.
+   *
+   * Driven the way a reader drives it: pick the knowledge base and the
+   * document out of the breadcrumb, put the document on the board, then ask
+   * it a question through its own chunking. Nothing here names a method —
+   * the chips come from the registry and from what this upload has ready, so
+   * this test keeps working when the catalogue changes.
+   */
+  it('puts a real document on the board and asks its chunking', async () => {
+    window.localStorage.setItem('chat_rag.selected_kb', state.kbId);
+    const view = ui(<ViewerPage />);
+
+    await userEvent.click(await screen.findByRole('tab', { name: 'İncele' }));
+    await userEvent.click(await screen.findByRole('button', { name: /Doküman/ }));
+    const menu = await screen.findByRole('menu');
+    await userEvent.click(await within(menu).findByText('rapor.md'));
+
+    // The payload arrives, the first ready method goes on the board, and the
+    // document's own text is printed onto it.
+    await waitFor(() => expect(view.container.querySelector('.sheet')).not.toBeNull(), {
+      timeout: 120000,
+    });
+    await waitFor(() =>
+      expect(view.container.querySelectorAll('.cell[data-chunk]').length).toBeGreaterThan(0),
+    );
+
+    // Every method this upload has ready is offered as a chip, and one of
+    // them is on the board.
+    const chips = view.container.querySelectorAll<HTMLButtonElement>('.chips .chip');
+    expect(chips.length).toBeGreaterThan(0);
+    expect(
+      Array.from(chips).filter((chip) => chip.getAttribute('aria-pressed') === 'true').length,
+    ).toBe(1);
+
+    // Sorgu: the same document, through the chunking it actually has.
+    await userEvent.click(screen.getByRole('tab', { name: 'Sorgu' }));
+    const box = await screen.findByLabelText('Soru');
+    await userEvent.type(box, 'net kâr ne kadar oldu?');
+    await userEvent.click(screen.getByRole('button', { name: 'Sor' }));
+
+    await waitFor(() => expect(screen.getByText(/Kaynaklar ·/)).toBeInTheDocument(), {
+      timeout: 180000,
+    });
+    expect(view.container.querySelectorAll('.qsrc').length).toBeGreaterThan(0);
   });
 });
 

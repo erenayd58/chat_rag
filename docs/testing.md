@@ -223,18 +223,19 @@ state: each runs against a throwaway data root.
 
 ## The Viewer shell build
 
-The Viewer page is a build artifact and is not in version control. From the
-`chunk` checkout:
+The standalone Viewer page is a build artifact and is not in version control.
+The product no longer uses it -- the Viewer is a screen of the console, at
+`/viewer` -- so nothing in this repository builds it and `start-demo.ps1` does
+not. Building it is only for serving the `chunk` repository's own frozen
+corpus out of that checkout:
 
 ```bash
 py -3.11 -m amsc.viewer.build --output artifacts/viewer-v3/index.html
 ```
 
-With no `--benchmark` / `--deep` arguments this builds the **product shell**:
-no embedded corpus, every document read live from the console. That is the
-build a fresh clone can always make, and the one `start-demo.ps1` runs when
-the page is missing. It prints the path it wrote and how many documents it
-embedded (`0` for the shell).
+With no `--benchmark` / `--deep` arguments this is the **shell**: no embedded
+corpus, every document read live. It prints the path it wrote and how many
+documents it embedded (`0` for the shell).
 
 ---
 

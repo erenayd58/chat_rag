@@ -196,7 +196,7 @@ open it.
 |---|---|---|
 | `application/` | **the product's behaviour, with no web framework under it**: one module per behaviour group (`knowledge_bases`, `documents`, `ingest`, `chunks`, `query`, `workspace`, `catalogue`, `goldsets`, `ops`), plus `errors.py` (what a refusal means) and `services.py` (the container everything is handed) | changing what the product *does* |
 | `interfaces/http/v1/` | **the product contract** (`/api/v1`), as a FastAPI application: `routers/` (one per concept), `schemas/` (the API's own Pydantic types), `errors.py` (the one refusal-to-status table), `openapi.py` (the refusal body, the two headers and the status the document must not advertise), `application.py` (the app and its lifespan) — see [api-v1.md](api-v1.md) | adding or changing a supported endpoint |
-| `interfaces/http/legacy/` | the Flask-era surface the console and the Viewer's relay still speak; one directory to delete when they do not | keeping the current screens working |
+| `interfaces/http/legacy/` | the Flask-era surface the old rendered screens still speak; one directory to delete when they are gone | keeping those screens working |
 | `interfaces/http/coexistence.py` | the ASGI-inside-WSGI bridge that lets one process serve both surfaces over one container; temporary, and deleted with the legacy directory | debugging why a `/api/v1` request behaves differently through the console's port |
 | `runtime/bootstrap.py` | what a process does before it serves: the banner, restart settlement, the staging sweep, the development server's options | changing start-up or restart behaviour |
 | `app.py` | the Flask application itself: the app object, the session key, CORS, and which container the blueprints are given | changing framework-level wiring |
@@ -212,6 +212,7 @@ open it.
 | `components/chunker/factory.py` + `registry.py` | which **indexing** chunker a knowledge base may be created with (`structure_first`, `v4`) — deliberately *not* the analysis-method registry | adding an indexing chunker |
 | `components/viewer/methods.py` | this deployment's view of `amsc.chunking.registry`: availability on this machine, display order, the default | changing which analysis methods are offered |
 | `components/viewer/analysis.py` | the packaging worker and each document's `missing`/`pending`/`running`/`ready`/`failed` state | debugging a Viewer package |
+| `application/analysis_query.py` | asking one document's analysis arms — the engine, its models and its bounds; the only path that compares chunkers | changing what the Viewer's *Sorgu* does |
 | `components/retriever/` | the retrieval profiles (`bm25_only`, `hybrid_rrf`, `benchmark_aligned`) | changing how candidates are found or fused |
 | `components/llm/` | the answer transports: OpenAI-compatible, Ollama, Azure, the unavailable carrier and the fallback pair | adding a provider — see [Adding a provider](#adding-a-provider) |
 | `components/parsers/` | file → text/units, and the parser factory that picks one | adding a file type |
@@ -223,8 +224,9 @@ open it.
 | `tools/` | `import_smoke.py`, `serve_smoke.py`, `verify_reproducibility.py`, `import_legacy_state.py` (a pre-Step-8 installation's JSON records into PostgreSQL) | proving a build works — see [testing.md](testing.md) |
 | `tests/` | `unit/` (fast, no network), `application/` (the use cases with no Flask at all), `integration/` (the real Flask app), `migration/` (the contracts a platform change must keep), `storage/` (the repositories, the invariants, the transactions, the concurrency and the Alembic gate), `conftest.py` (moves the process out of the checkout, blanks keys, builds and truncates the test database) | always |
 | `evaluation/experiment-log.md` | the record of the retrieval experiments behind the shipped context budget and top-k | asking why a number is what it is |
-| `templates/`, `static/` | the console UI | changing a screen |
-| `start-demo.ps1` / `stop-demo.ps1` | the demo launcher: builds the Viewer shell if missing, starts both servers, waits for health | running the demo |
+| `frontend/` | **the console**: a Next.js application over `/api/v1` and nothing else. `app/viewer/` and `components/viewer/` are the Viewer's five screens; `lib/viewer/rows.ts` is the alignment rule the comparison is built on | changing a screen |
+| `templates/`, `static/` | the Flask-era screens, served beside the console until Step 13 | keeping an old screen working |
+| `start-demo.ps1` / `stop-demo.ps1` | the demo launcher: starts the backend and the Next.js console, waits until each answers | running the demo |
 
 ## Repository map — `chunk`
 
@@ -241,8 +243,9 @@ is only the part this console depends on.
 | `src/amsc/providers.py` | how a generative provider is called, and nothing about chunking: the protocol, the OpenAI-compatible transport, cache-first parallel calls | changing provider transport |
 | `src/amsc/canonical/adapter.py` + `prepare.py` | PDF → canonical units, and the manifest that pins them | changing canonical extraction |
 | `src/amsc/viewer/corpus.py` | **the payload reader the Viewer and this console share** — the cross-repo data contract | changing what the Viewer reads |
-| `src/amsc/viewer/build.py` + `template.py` | the Viewer product page and its build | changing the Viewer |
-| `src/amsc/viewer/server.py` | the Viewer's own server process (`python -m amsc.viewer.server`) | changing how the Viewer is served |
+| `src/amsc/viewer/chat/` | **the engine behind the Viewer's *Sorgu***: one retrieval index per analysis arm, and the comparison across them. Console API since Step 12 — `chat_rag` runs it in process | changing how an arm is retrieved or answered |
+| `src/amsc/viewer/build.py` + `template.py` | the standalone Viewer page and its build. Not the product's Viewer any more; kept for that repository's own corpus | serving the frozen benchmark out of `chunk` |
+| `src/amsc/viewer/server.py` | that page's server (`python -m amsc.viewer.server`). No part of running the product | as above |
 | `src/amsc/surface.py` | the product / service / research / legacy declaration, enforced against the real import graph | adding a module off the product path |
 | `src/amsc/document/io.py` | reading and writing artifact files, including `sha256_file` | changing artifact I/O |
 | `src/amsc/chunking/example.py` | the documented template for a new method — copy it | adding a method |

@@ -302,3 +302,84 @@ export interface Answer {
   timing: { query_id: string | null; total_seconds: number | null; stages: Record<string, unknown> };
   diagnostics: Record<string, unknown>;
 }
+
+/* ------------------------------------------------------------------ */
+/* The Viewer: a prepared analysis, and a question put to its arms      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One document's whole analysis, as a reader's view of it.
+ *
+ * `payload` is the render model the packager writes and the contract
+ * publishes as pass-through, so it is typed in `lib/viewer/model.ts` next to
+ * the code that reads it rather than pinned here: this file mirrors the
+ * contract, and the contract deliberately does not pin that shape.
+ */
+export interface AnalysisPayload {
+  document_id: string;
+  content_id: string | null;
+  label: string;
+  /** Exactly the arms `payload` carries, in product order. */
+  ready_methods: string[];
+  payload: Record<string, unknown>;
+}
+
+export interface AnalysisQueryRequest {
+  document_id: string;
+  question: string;
+  /** Absent means every method this upload has ready. */
+  methods?: string[];
+  top_k?: number;
+  /** False stops after retrieval: the sources, no answer-model call. */
+  answer?: boolean;
+}
+
+export type AnalysisArmStatus = 'ok' | 'insufficient' | 'no_answer_model' | 'answer_error';
+
+export interface AnalysisAnswer {
+  text: string;
+  /** The model's own judgement; null when its reply was not JSON. */
+  sufficient: boolean | null;
+  sources_used: string[];
+}
+
+/** A retrieved passage. Pass-through, like a chunk's `metadata`. */
+export interface AnalysisSource {
+  label?: string;
+  chunk_id?: string;
+  arm?: string;
+  text?: string;
+  pages?: number[];
+  token_count?: number;
+  heading?: string | null;
+  section_path?: string[];
+  unit_ids?: string[];
+  used?: boolean;
+  [key: string]: unknown;
+}
+
+export interface AnalysisArmResult {
+  method: string;
+  engine: string | null;
+  label: string | null;
+  status: AnalysisArmStatus | string;
+  error: string | null;
+  answer: AnalysisAnswer | null;
+  sources: AnalysisSource[];
+  /** How much of this arm's context the other arms also found; null alone. */
+  unit_overlap: number | null;
+  /** False is BM25 alone, which is an answer and not a failure. */
+  dense: boolean;
+  note: string | null;
+  seconds: number | null;
+}
+
+export interface AnalysisQueryResult {
+  document_id: string;
+  question: string;
+  methods: string[];
+  arms: AnalysisArmResult[];
+  embedding_model: string | null;
+  answer_model: string | null;
+  total_seconds: number | null;
+}

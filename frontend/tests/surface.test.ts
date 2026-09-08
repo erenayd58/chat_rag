@@ -42,6 +42,7 @@ const CONTRACT = [
   '/ingest-jobs',
   '/queries',
   '/searches',
+  '/analysis-queries',
 ];
 
 function sourceFiles(root: string, found: string[] = []): string[] {

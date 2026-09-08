@@ -22,8 +22,9 @@ from ..dependencies import Container, Page, SessionId, optional_number
 from ..envelope import slice_of
 from ..openapi import LOCATION_HEADER
 from ..schemas import (
-    Analysis, AnalysisChunks, AnalysisMethods, CanonicalUnit, CanonicalUnitCollection,
-    Chunk, ChunkCollection, DocumentCollection, DocumentWithAnalysis, IngestJob,
+    Analysis, AnalysisChunks, AnalysisMethods, AnalysisPayload, CanonicalUnit,
+    CanonicalUnitCollection, Chunk, ChunkCollection, DocumentCollection,
+    DocumentWithAnalysis, IngestJob,
 )
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -192,6 +193,28 @@ def add_analysis_methods(
     file again. The canonical is on disk, so nothing is parsed twice and no
     variant already built is rebuilt."""
     return Analysis.of(workspace.add_methods(document_id, payload.methods))
+
+
+@router.get("/{document_id}/analysis/payload", response_model=AnalysisPayload,
+            tags=["analysis"], summary="The whole analysis, as a reader's view of it")
+def analysis_payload(document_id: str) -> AnalysisPayload:
+    """Every ready method's chunks **and the unit offsets they cut at**, over
+    the parser's canonical units in reading order.
+
+    That mapping is why this exists beside ``.../methods/{method}/chunks``.
+    Those rows say what one method produced; only this says where each chunk
+    starts and ends inside a canonical unit, which is what lets several
+    methods be drawn onto one column of text and compared on the page rather
+    than by chunk number.
+
+    **409** ``not_ready`` while nothing this upload selected has been built --
+    with the analysis state, so a client polls rather than gives up.
+    """
+    return AnalysisPayload.of(
+        workspace.payload(document_id),
+        document_id=document_id,
+        state=workspace.analysis_state(document_id),
+    )
 
 
 @router.get("/{document_id}/analysis/methods/{method}/chunks",

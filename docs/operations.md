@@ -494,24 +494,25 @@ work. Wait, do not restart. See the first entry above.
 
 ### A Viewer analysis never becomes `ready`
 
-Each document carries its own state in `GET /api/demo/workspace`:
-`missing` → `pending` → `running` → `ready` | `failed`.
+Each document carries its own state on its `analysis` block in
+`GET /api/v1/documents`: `missing` → `pending` → `running` → `ready` |
+`failed`.
 
-**Look at:** `GET /api/demo/viewer-analysis/<doc_id>` for that document's state
-and error, `metrics.stages.viewer_stage` for how long packaging takes, and
-`artifacts/viewer-live/<doc_id>/` on disk for what was written.
+**Look at:** `GET /api/v1/documents/<document_id>/analysis` for that document's
+state and error, `metrics.stages.viewer_stage` for how long packaging takes,
+and `artifacts/viewer-live/<doc_id>/` on disk for what was written.
 
-**Next:** `POST /api/demo/viewer-analysis/<doc_id>` re-queues one document;
-`?prepare=1` on the workspace queues everything missing. Packaging runs on a
-single background thread and makes no provider call, so a stuck package is
-never a budget problem. What each file in a packaged tree is, and which step
+**Next:** `POST /api/v1/documents/<document_id>/analysis` re-queues one
+document. Packaging runs on a single background thread and makes no provider
+call, so a stuck package is never a budget problem. What each file in a packaged tree is, and which step
 writes it, is in
 [chunk/docs/viewer-architecture.md](../../chunk/docs/viewer-architecture.md).
 
-If the Viewer *page* is missing rather than a document's analysis: the page is
-a build artifact and is not in version control. Build the shell with
-`py -3.11 -m amsc.viewer.build --output artifacts/viewer-v3/index.html` in the
-`chunk` checkout, or let `start-demo.ps1` do it.
+If the Viewer *screen* shows nothing rather than a document's analysis being
+stuck: it is a screen of the Next.js console (`/viewer`), so check that the
+console is running and that `GET /api/v1/documents/<id>/analysis` says
+`ready`. There is no second server to start; the standalone page in the
+`chunk` checkout is not part of this product.
 
 ### The pipeline cache looks wrong
 

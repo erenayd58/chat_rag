@@ -14,6 +14,7 @@ The modules are the product's behaviour groups, not layers:
     ingest            the upload decision and the job that carries it out
     chunks            chunk inspection and the Lab's bounded retrieval
     query             one question, under admission and a deadline
+    analysis_query    one question, through several chunkings of one document
     workspace         the Viewer read model and the analysis lifecycle
     catalogue         what this deployment can offer: methods, models, profiles
     goldsets          the confirmed answers a knowledge base is evaluated on
