@@ -10,7 +10,7 @@ The system is two repositories:
 
 | repo | what it is |
 |---|---|
-| **`chat_rag`** (this one) | the product — Flask console and API, ingest jobs, retrieval, the answer chain, resource limits, observability, configuration |
+| **`chat_rag`** (this one) | the product — the `/api/v1` contract and the application under it, the Next.js console in [`frontend/`](frontend/README.md), ingest jobs, retrieval, the answer chain, resource limits, observability, configuration |
 | **`chunk`** (`amsc-poc`) | the chunking library, installed from a pinned commit — chunking methods, Deep Analysis, the canonical PDF adapter, the Viewer page builder and server, all research and benchmark code |
 
 `chunk` is expected beside this checkout (`../chunk`).
@@ -577,11 +577,31 @@ curl -X POST localhost:5005/api/v1/queries -H 'content-type: application/json' \
 curl localhost:5005/api/v1/openapi.json            # the contract, machine-readable
 ```
 
+## The console — `frontend/`
+
+A Next.js application over `/api/v1`, and nothing else. Knowledge bases,
+documents and their ingestion, a document's chunking analysis, search and
+chat with citations.
+
+```bash
+cd frontend
+npm install
+npm run dev            # http://localhost:3000, against localhost:5005
+```
+
+It holds no catalogue of its own: the chunking methods, the retrieval methods
+and the model chain are read from `/api/v1/meta/...` at run time, so a method
+added to the library's registry appears in the picker without a line changing.
+`frontend/lib/api/` is the only place it calls `fetch`, and the contract's
+refusal `type` — not a status code — is what its screens branch on.
+[frontend/README.md](frontend/README.md) is the rest.
+
 ## The console API
 
-The Flask-era surface. The screens speak it, the Viewer's relay speaks it, and
-it stays until they do not — new clients want `/api/v1` above. The screens are
-`/` (knowledge bases), `/kb/<kb_id>`, `/chat` and `/lab`. Everything they do is an HTTP call you can make yourself:
+The Flask-era surface. The screens it renders speak it, the Viewer's relay
+speaks it, and it stays until they do not — the Next.js console above speaks
+`/api/v1`, and so should any new client. The screens are `/` (knowledge
+bases), `/kb/<kb_id>`, `/chat` and `/lab`. Everything they do is an HTTP call you can make yourself:
 
 | group | endpoints |
 |---|---|

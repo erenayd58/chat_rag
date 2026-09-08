@@ -1,21 +1,23 @@
-# Python
+# Python. Anchored to the repository root on purpose: an unanchored `lib/`
+# matches at every depth, and `frontend/lib/` -- the console's API layer -- is
+# source that has to be committed.
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+/build/
+/develop-eggs/
+/dist/
+/downloads/
+/eggs/
+/.eggs/
+/lib/
+/lib64/
+/parts/
+/sdist/
+/var/
+/wheels/
 *.egg-info/
 .installed.cfg
 *.egg

@@ -153,6 +153,36 @@ python -m pytest tests/integration/test_api_v1_failure_and_concurrency.py -q
 | `test_api_v1_restart_persistence.py` | what a second process reads back: the records, the vectors, the manifest, the analysis and its rows, a job settled against the ledger, a staged upload swept -- and retrieval on a process that indexed nothing itself, because the lexical index is process-local and rebuilt rather than persisted |
 | `test_api_v1_failure_and_concurrency.py` | the answers no seam can fake: a really full ingest queue refusing with `Retry-After`, the same bytes submitted twice at once becoming one parse, a delete racing an upload, a search running across a re-index, and a content two uploads share |
 
+### The console suite
+
+The front end has two suites, and the split is the same one this page draws
+everywhere else: one that must pass with nothing running, and one that says
+whether it *works*.
+
+```bash
+cd frontend
+npm test               # everything, with no server anywhere
+npm run typecheck      # tsc --noEmit
+npm run build          # the production build
+npm run test:live      # the real screens against a running console and server
+```
+
+`npm test` stubs `fetch` and holds the client to the contract's conventions --
+the refusal taxonomy, the 204 with no body, `Retry-After`, walking a
+collection -- and holds two architectural rules by reading the source: no
+module outside `lib/api/client.ts` calls `fetch`, and **no chunking method key
+is written down anywhere in the front end**. The picker is rendered against a
+catalogue of invented method keys and every one of them has to appear, which
+cannot pass if the component knows a real one.
+
+`npm run test:live` needs the application on its usual port and the console in
+front of it (`npm run dev` or `npm start`). It renders the shipped screens in
+jsdom and drives the real flows: a knowledge base created from the dialog, a
+document uploaded and its ingest job followed to `succeeded` by the shipped
+poller, the analysis polled to `ready` and one method's rows inspected, a
+search, a question answered with citations, and both deletions. It is not part
+of `npm test` for the reason the sentence above gives.
+
 ### The guards worth knowing by name
 
 These fail loudly and mean something specific:

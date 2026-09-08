@@ -52,8 +52,11 @@ LIBRARY_CONSTANTS = {
 }
 
 #: Files whose *content* is the source of truth for a variable name.
-_SOURCE_GLOBS = ("*.py", "*.ps1", "*.yml", "*.yaml", "Dockerfile", "env.example",
-                 ".env.docker", "requirements.txt")
+#: ``*.mjs`` is here because the console is a Next.js application now: its
+#: ``next.config.mjs`` reads a setting the documentation names, and a guard
+#: that could not see the front end would call that setting unread.
+_SOURCE_GLOBS = ("*.py", "*.ps1", "*.yml", "*.yaml", "*.mjs", "Dockerfile",
+                 "env.example", ".env.docker", "requirements.txt")
 
 
 def _tracked(*patterns: str) -> list[Path]:
