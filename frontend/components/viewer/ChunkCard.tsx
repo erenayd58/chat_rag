@@ -59,7 +59,7 @@ export function ChunkCard({
         <span className="mth">{methodLabel}</span>
       </div>
       <div className="meta">
-        {formatPages(chunk.pg)} · {chunk.n} token
+        {[formatPages(chunk.pg), `${chunk.n} token`].filter(Boolean).join(' · ')}
       </div>
       {section ? (
         <div className="row">
@@ -137,8 +137,13 @@ export function SourceCard({
         <span className="mth">{methodLabel}</span>
       </div>
       <div className="meta">
-        {formatPages(source.pages)} · {source.token_count} token
-        {source.used ? ' · cevapta kullanıldı' : ''}
+        {[
+          formatPages(source.pages),
+          `${source.token_count} token`,
+          source.used ? 'cevapta kullanıldı' : '',
+        ]
+          .filter(Boolean)
+          .join(' · ')}
       </div>
       {section ? (
         <div className="row">

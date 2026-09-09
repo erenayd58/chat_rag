@@ -10,6 +10,10 @@
  * not in the other, on the same words. That is the whole comparison, and it is
  * why this is not three lists side by side.
  *
+ * The board draws one page at a time, or the whole document when there are no
+ * pages to draw one of: Markdown and plain text carry no page number, and a
+ * screen that insisted on one would have nothing to show for them.
+ *
  * A cell is tinted by its chunk's index modulo three, so consecutive chunks
  * are told apart without a legend; a cell no method covers is a ghost at a
  * third opacity, because the text is still there and only its ownership is
@@ -48,7 +52,8 @@ export function Board({
   doc: ViewerDoc;
   methods: string[];
   board: BoardModel;
-  page: number;
+  /** The page to draw, or null for a document that has no page numbers. */
+  page: number | null;
   catalogue: ChunkingMethod[];
   selection: Selection | null;
   onSelect: (selection: Selection | null, anchor: Anchor | null) => void;
@@ -59,7 +64,7 @@ export function Board({
   const label = (key: string) =>
     catalogue.find((method) => method.key === key)?.label ?? key;
 
-  const pageRows = board.rows.filter((row) => row.unit.p === page);
+  const pageRows = page === null ? board.rows : board.rows.filter((row) => row.unit.p === page);
   const running = continuations(doc, methods, pageRows);
   const columns = methods.length;
   const gutter = columns > 1;
@@ -83,7 +88,7 @@ export function Board({
             {doc.label}
             {doc.live?.kbName ? ` · ${doc.live.kbName}` : ''}
           </span>
-          <span className="pl">Sayfa {page}</span>
+          <span className="pl">{page === null ? 'Tüm doküman' : `Sayfa ${page}`}</span>
         </header>
 
         <div
@@ -140,7 +145,9 @@ export function Board({
         </div>
 
         {pageRows.length ? null : (
-          <div className="emptypg">Bu sayfada canonical içerik yok.</div>
+          <div className="emptypg">
+            {page === null ? 'Bu dokümanda canonical içerik yok.' : 'Bu sayfada canonical içerik yok.'}
+          </div>
         )}
       </section>
     </div>

@@ -24,6 +24,7 @@ import {
   SMELLS,
   deepSeconds,
   formatDuration,
+  numbered,
   type StorySection,
   type ViewerDoc,
 } from '@/lib/viewer/model';
@@ -239,8 +240,8 @@ export function Debug({
                           <td>§{String(row.section.i).padStart(3, '0')}</td>
                           <td className="l">
                             {(row.section.h ?? '(başlıksız bölüm)').slice(0, 70)}
-                            {row.section.pg?.length ? (
-                              <span className="tech">s. {row.section.pg[0]}</span>
+                            {numbered(row.section.pg).length ? (
+                              <span className="tech">s. {numbered(row.section.pg)[0]}</span>
                             ) : null}
                           </td>
                           <td style={{ textAlign: 'left' }}>
@@ -381,7 +382,7 @@ function Detail({
   const add = (key: string, value: unknown) => {
     if (value !== null && value !== undefined && value !== '') cells.push([key, String(value)]);
   };
-  add('Sayfa', (section.pg ?? []).join(', '));
+  add('Sayfa', numbered(section.pg).join(', '));
   add('Bölüm tokeni', section.tt);
   if (section.std && section.fin) {
     add('Kesim sayısı', `${section.std.length} → ${section.fin.length}`);
@@ -409,7 +410,7 @@ function Detail({
           <span className="v2">{value}</span>
         </span>
       ))}
-      {section.pg?.length ? (
+      {numbered(section.pg).length ? (
         <span>
           <span className="k">Görünüm</span>
           <button
@@ -417,7 +418,7 @@ function Detail({
             className="qjump"
             onClick={(event) => {
               event.stopPropagation();
-              onJumpToPage(section.pg![0]);
+              onJumpToPage(numbered(section.pg)[0]);
             }}
           >
             İncele&apos;de aç →

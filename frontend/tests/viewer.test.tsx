@@ -14,6 +14,9 @@
  *   `POST /api/v1/analysis-queries`.
  * * **wait honestly** — an analysis still building says so and does not
  *   pretend the document is empty.
+ * * **draw a document with no pages** — Markdown and plain text carry no page
+ *   number, so the packager reports `pages: [null]`. The board is the whole
+ *   document then, and there is no page navigation to offer.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -88,13 +91,13 @@ function analysis(status: string, ready: string[]) {
   };
 }
 
-function documents(status: string, ready: string[]) {
+function documents(status: string, ready: string[], name = 'Faaliyet Raporu.pdf') {
   return {
     items: [
       {
         id: 'doc-1',
         knowledge_base_id: 'kb-1',
-        name: 'Faaliyet Raporu.pdf',
+        name,
         content_id: 'sha-1',
         size_bytes: 1000,
         chunk_count: 3,
@@ -150,6 +153,28 @@ const PAYLOAD = {
         },
       },
     },
+  },
+};
+
+/**
+ * The same document as the parser reads a Markdown file: every unit's page is
+ * null, so the packager's `pages` is `[null]` — one page called nothing, which
+ * is not a page.
+ */
+const PAGELESS = {
+  ...PAYLOAD,
+  label: 'rapor.md',
+  payload: {
+    ...PAYLOAD.payload,
+    label: 'rapor.md',
+    pages: [null],
+    units: UNITS.map((unit) => ({ ...unit, p: null })),
+    arms: Object.fromEntries(
+      Object.entries(PAYLOAD.payload.arms).map(([method, arm]) => [
+        method,
+        { ...arm, chunks: arm.chunks.map((chunk) => ({ ...chunk, pg: [null] })) },
+      ]),
+    ),
   },
 };
 
@@ -220,9 +245,18 @@ interface StubOptions {
   status?: string;
   ready?: string[];
   onQuery?: (body: unknown) => Response;
+  /** The prepared analysis this document has; the paged one unless told. */
+  payload?: unknown;
+  name?: string;
 }
 
-function stub({ status = 'ready', ready = ['alpha-cut', 'beta-cut'], onQuery }: StubOptions = {}) {
+function stub({
+  status = 'ready',
+  ready = ['alpha-cut', 'beta-cut'],
+  onQuery,
+  payload = PAYLOAD,
+  name = 'Faaliyet Raporu.pdf',
+}: StubOptions = {}) {
   const calls: { url: string; body?: unknown }[] = [];
   const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -233,7 +267,7 @@ function stub({ status = 'ready', ready = ['alpha-cut', 'beta-cut'], onQuery }: 
     if (url.startsWith('/api/v1/analysis-queries')) {
       return onQuery ? onQuery(body) : json(ANSWER);
     }
-    if (url.startsWith('/api/v1/documents?')) return json(documents(status, ready));
+    if (url.startsWith('/api/v1/documents?')) return json(documents(status, ready, name));
     if (url.includes('/analysis/payload')) {
       if (status !== 'ready') {
         return json(
@@ -241,7 +275,7 @@ function stub({ status = 'ready', ready = ['alpha-cut', 'beta-cut'], onQuery }: 
           409,
         );
       }
-      return json(PAYLOAD);
+      return json(payload);
     }
     if (url.includes('/analysis')) return json(analysis(status, ready));
     return json({ error: { type: 'not_found', message: url } }, 404);
@@ -269,10 +303,13 @@ async function openKnowledgeBase(user: ReturnType<typeof userEvent.setup>) {
   await pickFromMenu(user, 'Yıllık raporlar');
 }
 
-async function openDocument(user: ReturnType<typeof userEvent.setup>) {
+async function openDocument(
+  user: ReturnType<typeof userEvent.setup>,
+  name = 'Faaliyet Raporu.pdf',
+) {
   await openKnowledgeBase(user);
   await user.click(await screen.findByRole('button', { name: /Doküman/ }));
-  await pickFromMenu(user, 'Faaliyet Raporu.pdf');
+  await pickFromMenu(user, name);
 }
 
 describe('Viewer', () => {
@@ -361,6 +398,29 @@ describe('Viewer', () => {
     expect(await screen.findByText(/Analiz hazırlanıyor/)).toBeInTheDocument();
     // And no method chip is offered for a document that has none ready.
     expect(screen.queryByRole('button', { name: /Alfa Kesim/ })).not.toBeInTheDocument();
+  });
+
+  it('puts a document with no page numbers on the board whole', async () => {
+    stub({ payload: PAGELESS, name: 'rapor.md' });
+    const user = userEvent.setup();
+    render(<ViewerPage />);
+
+    await user.click(await screen.findByRole('tab', { name: 'İncele' }));
+    await openDocument(user, 'rapor.md');
+
+    // The board is drawn, with the document's own text on it -- a page the
+    // format never recorded is not a page to wait for.
+    await waitFor(() => expect(document.querySelector('.sheet')).not.toBeNull());
+    expect(document.querySelectorAll('.cell[data-chunk]').length).toBeGreaterThan(0);
+    expect(screen.getByText('Tüm doküman')).toBeInTheDocument();
+
+    // And nothing offers to page through what has no pages.
+    expect(screen.queryByLabelText('Sayfa')).not.toBeInTheDocument();
+
+    // The chunk card says what it knows, and does not name a null page.
+    await user.click(document.querySelector('.cell[data-chunk]') as HTMLElement);
+    const card = await screen.findByRole('dialog');
+    expect(within(card).getByText('40 token')).toBeInTheDocument();
   });
 
   it('reads the whole overview from the contract', async () => {

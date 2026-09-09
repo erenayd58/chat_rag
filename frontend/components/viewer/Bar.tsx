@@ -42,7 +42,9 @@ export interface BarProps {
   methods: string[];
   selected: string[];
   onToggleMethod: (method: string) => void;
-  /** Page navigation, shown only on İncele with a board on screen. */
+  /** Page navigation, shown only on İncele with a board on screen. Empty for
+   *  a document whose format carries no page numbers, and `page` is null then:
+   *  the board is the whole document and there is nothing to step through. */
   pages: number[];
   page: number | null;
   onPage: (page: number) => void;
@@ -71,7 +73,8 @@ export function Bar(props: BarProps) {
   const labelOf = (key: string) => labels.get(key) ?? key;
 
   const ready = props.documents.filter((entry) => entry.analysis.status === 'ready').length;
-  const boardVisible = props.mode === 'incele' && props.selected.length > 0 && props.page !== null;
+  const onBoard = props.mode === 'incele' && !!props.doc && props.selected.length > 0;
+  const stepsDifferences = props.selected.length > 1 && props.differences > 0;
 
   return (
     <>
@@ -149,9 +152,9 @@ export function Bar(props: BarProps) {
             </span>
           ) : null}
 
-          {boardVisible ? (
+          {onBoard && (props.pages.length > 0 || stepsDifferences) ? (
             <div className="nav">
-              {props.selected.length > 1 && props.differences > 0 ? (
+              {stepsDifferences ? (
                 <div className="grp">
                   <button type="button" title="Önceki ayrışma" onClick={() => props.onStepDifference(-1)}>
                     ‹ Fark
@@ -167,37 +170,39 @@ export function Bar(props: BarProps) {
                   <span className="vr" />
                 </div>
               ) : null}
-              <div className="grp">
-                <button
-                  type="button"
-                  title="Önceki sayfa"
-                  disabled={props.pages.indexOf(props.page as number) <= 0}
-                  onClick={() => step(props, -1)}
-                >
-                  ‹
-                </button>
-                <span className="lbl">Sayfa</span>
-                <select
-                  aria-label="Sayfa"
-                  value={String(props.page ?? '')}
-                  onChange={(event) => props.onPage(Number(event.target.value))}
-                >
-                  {props.pages.map((page) => (
-                    <option key={page} value={page}>
-                      {page}
-                    </option>
-                  ))}
-                </select>
-                <span className="lbl">/ {props.pages[props.pages.length - 1]}</span>
-                <button
-                  type="button"
-                  title="Sonraki sayfa"
-                  disabled={props.pages.indexOf(props.page as number) >= props.pages.length - 1}
-                  onClick={() => step(props, 1)}
-                >
-                  ›
-                </button>
-              </div>
+              {props.pages.length ? (
+                <div className="grp">
+                  <button
+                    type="button"
+                    title="Önceki sayfa"
+                    disabled={props.pages.indexOf(props.page as number) <= 0}
+                    onClick={() => step(props, -1)}
+                  >
+                    ‹
+                  </button>
+                  <span className="lbl">Sayfa</span>
+                  <select
+                    aria-label="Sayfa"
+                    value={String(props.page ?? '')}
+                    onChange={(event) => props.onPage(Number(event.target.value))}
+                  >
+                    {props.pages.map((page) => (
+                      <option key={page} value={page}>
+                        {page}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="lbl">/ {props.pages[props.pages.length - 1]}</span>
+                  <button
+                    type="button"
+                    title="Sonraki sayfa"
+                    disabled={props.pages.indexOf(props.page as number) >= props.pages.length - 1}
+                    onClick={() => step(props, 1)}
+                  >
+                    ›
+                  </button>
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>

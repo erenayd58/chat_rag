@@ -49,11 +49,18 @@ export function humanise(value: string | null | undefined): string {
   return words.charAt(0).toLocaleUpperCase('tr-TR') + words.slice(1);
 }
 
-/** `p. 4` / `pp. 4–9`, from whatever the source recorded. */
+/**
+ * `p. 4` / `pp. 4–9`, from whatever the source recorded.
+ *
+ * A format with no pages records a null rather than a number — Markdown and
+ * plain text do — and a null page is no page at all, so it is dropped instead
+ * of printed.
+ */
 export function formatPages(pages: unknown[] | null | undefined): string | null {
-  if (!pages || !pages.length) return null;
-  if (pages.length === 1) return `s. ${String(pages[0])}`;
-  return `s. ${String(pages[0])}–${String(pages[pages.length - 1])}`;
+  const found = (pages ?? []).filter((page) => page !== null && page !== undefined);
+  if (!found.length) return null;
+  if (found.length === 1) return `s. ${String(found[0])}`;
+  return `s. ${String(found[0])}–${String(found[found.length - 1])}`;
 }
 
 /** A score as the API gave it. Never rendered as a percentage or a confidence. */

@@ -36,7 +36,7 @@ import { Failed } from '@/components/ui';
 import api from '@/lib/api';
 import { useAsync } from '@/lib/hooks/useAsync';
 import { useSelectedKb } from '@/lib/hooks/useSelectedKb';
-import { methodsOf } from '@/lib/viewer/model';
+import { methodsOf, numbered, pagesOf } from '@/lib/viewer/model';
 import { buildBoard } from '@/lib/viewer/rows';
 import { useAnalysis } from '@/lib/viewer/useAnalysis';
 import type {
@@ -62,7 +62,11 @@ export default function ViewerPage() {
   const [documentId, setDocumentId] = useState('');
   const [mode, setMode] = useState<Mode>('home');
   const [selected, setSelected] = useState<string[]>([]);
-  const [page, setPage] = useState<number | null>(null);
+  // The page the reader picked. What is *drawn* is `page` below, which is
+  // this narrowed to a page the open document has — a document with no page
+  // numbers at all draws as one board rather than waiting for a page that is
+  // never going to arrive.
+  const [picked, setPicked] = useState<number | null>(null);
   const [differenceIndex, setDifferenceIndex] = useState(-1);
   const [card, setCard] = useState<Card | null>(null);
   const [scrollTo, setScrollTo] = useState<{ row?: number; method?: string; chunk?: number } | null>(
@@ -104,7 +108,7 @@ export default function ViewerPage() {
   // belong to the previous one.
   useEffect(() => {
     setSelected([]);
-    setPage(null);
+    setPicked(null);
     setDifferenceIndex(-1);
     setCard(null);
   }, [documentId]);
@@ -121,12 +125,11 @@ export default function ViewerPage() {
   }, [available.join('|')]);
 
   const board = useMemo(() => buildBoard(doc, selected), [doc, selected]);
-  const pages = doc?.pages ?? [];
-
-  useEffect(() => {
-    if (!pages.length) return;
-    setPage((current) => (current !== null && pages.includes(current) ? current : pages[0]));
-  }, [pages.join(',')]);
+  const pages = useMemo(() => pagesOf(doc), [doc]);
+  // Derived, not stored: a page the open document does not have is not a page
+  // to keep, and `null` means this document has none — Markdown and plain text
+  // carry no page number and the board shows the whole of them.
+  const page = pages.length ? (picked !== null && pages.includes(picked) ? picked : pages[0]) : null;
 
   const remember = useCallback((run: QueryRun) => {
     setHistory((current) => [run, ...current].slice(0, HISTORY));
@@ -152,7 +155,7 @@ export default function ViewerPage() {
         : (differenceIndex + delta + board.differences.length) % board.differences.length;
     setDifferenceIndex(next);
     const row = board.rows[board.differences[next]];
-    if (row.unit.p !== page) setPage(row.unit.p);
+    if (row.unit.p !== page) setPicked(row.unit.p);
     setCard(null);
     setScrollTo({ row: row.index });
   };
@@ -167,7 +170,7 @@ export default function ViewerPage() {
       const chunk = arm.chunks[index];
       setSelected((current) => (current.includes(method) ? current : [method]));
       setMode('incele');
-      setPage(chunk.pg?.[0] ?? doc!.pages[0]);
+      setPicked(numbered(chunk.pg)[0] ?? null);
       setCard(null);
       setScrollTo({ method, chunk: index });
       return true;
@@ -178,7 +181,7 @@ export default function ViewerPage() {
   const jumpToPage = useCallback(
     (target: number) => {
       setMode('incele');
-      setPage(target);
+      setPicked(target);
       setCard(null);
       setScrollTo(null);
       window.scrollTo({ top: 0 });
@@ -196,10 +199,10 @@ export default function ViewerPage() {
         setCard(null);
         return;
       }
-      if (mode !== 'incele' || !doc || !selected.length || page === null) return;
-      const at = pages.indexOf(page);
-      if (event.key === 'ArrowLeft' && at > 0) setPage(pages[at - 1]);
-      else if (event.key === 'ArrowRight' && at < pages.length - 1) setPage(pages[at + 1]);
+      if (mode !== 'incele' || !doc || !selected.length) return;
+      const at = page === null ? -1 : pages.indexOf(page);
+      if (event.key === 'ArrowLeft' && at > 0) setPicked(pages[at - 1]);
+      else if (event.key === 'ArrowRight' && at >= 0 && at < pages.length - 1) setPicked(pages[at + 1]);
       else if (event.key === 'n') stepDifference(1);
       else if (event.key === 'p') stepDifference(-1);
     };
@@ -245,7 +248,7 @@ export default function ViewerPage() {
         pages={pages}
         page={page}
         onPage={(next) => {
-          setPage(next);
+          setPicked(next);
           setCard(null);
           window.scrollTo({ top: 0 });
         }}
@@ -385,6 +388,7 @@ function Stage({
   available: string[];
   catalogue: ChunkingMethod[];
   board: ReturnType<typeof buildBoard>;
+  /** The page on the board, or null when this document has no page numbers. */
   page: number | null;
   scrollTo: { row?: number; method?: string; chunk?: number } | null;
   orchestration: string | null;
@@ -495,8 +499,6 @@ function Stage({
       </div>
     );
   }
-
-  if (page === null) return null;
 
   return (
     <Board

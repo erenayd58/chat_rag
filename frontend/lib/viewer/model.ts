@@ -29,8 +29,8 @@ export interface Unit {
   i: string;
   /** type: heading | paragraph | list | table | ... */
   t: string;
-  /** page */
-  p: number;
+  /** the page it was read from, or null when the format has no pages */
+  p: number | null;
   /** the text itself */
   x: string;
   /** pre-rendered HTML, or 0 when it is the same as the escaped text */
@@ -57,8 +57,8 @@ export interface Chunk {
   num: number;
   /** token count */
   n: number;
-  /** pages */
-  pg: number[];
+  /** pages, or a single null when the format has none */
+  pg: (number | null)[];
   /** heading, raw */
   hd?: string | null;
   /** heading, pre-rendered */
@@ -141,7 +141,7 @@ export interface DeepMeta {
 export interface StorySection {
   i: number;
   h?: string | null;
-  pg?: number[];
+  pg?: (number | null)[];
   tt?: number;
   st: string;
   cons?: boolean;
@@ -166,7 +166,8 @@ export interface ViewerDoc {
   kind: string;
   units: Unit[];
   arms: Record<string, Arm>;
-  pages: number[];
+  /** every page the units name; `[null]` when the format has no pages */
+  pages: (number | null)[];
   gold?: GoldQuery[];
   parser?: { count: number; findings: { t: string; r: string; p?: number }[] };
   meta: {
@@ -300,12 +301,32 @@ export const smellNames = (list?: string[] | null): string =>
 /* Small readings of the payload                                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The pages a document actually has, in reading order.
+ *
+ * A parser records a page number only when the format carries one: a PDF unit
+ * comes back with `p: 4`, a Markdown or plain-text unit with `p: null`, and
+ * the packager reports that faithfully — such a document's `pages` is
+ * `[null]`. That is one page called nothing, which is not a page, so it is
+ * dropped here: a pageless document has **no** pages, and every screen that
+ * asks "which pages" gets that answer instead of a null to render.
+ */
+export function pagesOf(doc: ViewerDoc | null): number[] {
+  return numbered(doc?.pages);
+}
+
+/** The page numbers in a list, dropping the null a pageless format records. */
+export function numbered(pages?: (number | null)[] | null): number[] {
+  return (pages ?? []).filter((page): page is number => typeof page === 'number');
+}
+
 /** `Sayfa 4` / `Sayfa 4–6`, or nothing when a chunk names no page. */
-export function formatPages(pages?: number[] | null): string {
-  if (!pages || !pages.length) return '';
-  return pages.length === 1
-    ? `Sayfa ${pages[0]}`
-    : `Sayfa ${pages[0]}–${pages[pages.length - 1]}`;
+export function formatPages(pages?: (number | null)[] | null): string {
+  const found = numbered(pages);
+  if (!found.length) return '';
+  return found.length === 1
+    ? `Sayfa ${found[0]}`
+    : `Sayfa ${found[0]}–${found[found.length - 1]}`;
 }
 
 /** A chunk's section, as a breadcrumb. */
