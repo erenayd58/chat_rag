@@ -100,6 +100,93 @@ def test_several_uploads_of_one_document_create_one_content():
     )
 
 
+def test_the_dedup_holds_over_repeated_collisions():
+    """The same invariant, several times over, because it failed *rarely*.
+
+    The test above went red roughly once in sixty runs, only ever inside a full
+    suite, and passed every time it was re-run on its own -- the shape of thing
+    that gets called a flake and muted. It was not one. ``contents`` carries
+    two unique constraints, ``content_key`` and ``content_sha256``, and
+    ``ON CONFLICT`` takes exactly one arbiter index; a conflict on any other
+    unique index is a hard error, by PostgreSQL's design. Two uploads of the
+    same bytes collide on *both* at once, so when a racing writer committed in
+    the window between the arbiter check and the write of the sha index entry,
+    the loser came back ``UniqueViolation`` instead of doing nothing -- and the
+    upload failed rather than being deduplicated, which is the whole point of
+    the row.
+
+    ``ContentRepository._create`` catches that conflict on a SAVEPOINT now. One
+    round reproduces the bug about as often as a coin lands on its edge, so
+    this runs several, which is the difference between a guard and a hope.
+    """
+    rounds = 5
+    for attempt in range(rounds):
+        key = f"doc-repeat-{attempt}"
+
+        # New upload ids each round: a document belongs to exactly one content,
+        # so reusing them would be moving the last round's memberships rather
+        # than testing this round's race.
+        def upload(index: int, key=key, attempt=attempt):
+            with session_scope() as session:
+                return ContentRepository(session).upsert_state(
+                    key,
+                    merge=lambda state: {
+                        "doc_ids": sorted(
+                            set(state["doc_ids"]) | {f"upload-{attempt}-{index}"})
+                    },
+                    fields={"status": analysis.STATUS_PENDING},
+                    content_sha=f"repeat-bytes-{attempt}",
+                )
+
+        _, errors = _race(upload)
+        assert not errors, f"round {attempt}: {errors}"
+
+        expected = sorted(f"upload-{attempt}-{i}" for i in range(WRITERS))
+        with session_scope() as session:
+            state = ContentRepository(session).get(key)
+        assert state and state["doc_ids"] == expected, (
+            f"round {attempt}: an upload was dropped"
+        )
+
+    with session_scope() as session:
+        assert session.query(Content).count() == rounds
+
+
+def test_a_conflict_on_the_other_unique_key_does_not_poison_the_transaction():
+    """The mechanism of the fix, deterministically.
+
+    The contended test above can only *sometimes* reach this path. This one
+    reaches it every time: a committed content already holds the sha, under a
+    different key, so creating a second content for those bytes conflicts on
+    ``uq_contents_sha256`` -- which is not the arbiter, so PostgreSQL raises.
+
+    What is pinned is that the failure stays where it happened. Before the fix
+    the exception escaped the caller's transaction and aborted it, so the
+    *session* was unusable and every later statement on it failed with "current
+    transaction is aborted" -- a second, unrelated-looking error that hid the
+    first. The insert runs on a SAVEPOINT now, so the session survives whatever
+    this call decides to do about it.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    with session_scope() as session:
+        ContentRepository(session).upsert_state(
+            "doc-original", fields={"status": analysis.STATUS_PENDING},
+            content_sha="shared-bytes")
+
+    with session_scope() as session:
+        repository = ContentRepository(session)
+        try:
+            repository.upsert_state("doc-other-name", content_sha="shared-bytes")
+        except (SQLAlchemyError, RuntimeError):
+            pass  # refusing is fine; being unable to say so afterwards is not
+
+        # The session still works. This is the assertion: it read nothing but a
+        # count, and before the fix even that raised.
+        assert session.query(Content).count() == 1
+        assert repository.get("doc-original")["status"] == analysis.STATUS_PENDING
+
+
 def test_concurrent_writers_do_not_drop_each_others_selections():
     """The same collision one level down: each upload records the methods *it*
     asked for, and none of them may lose another's.

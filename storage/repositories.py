@@ -36,6 +36,7 @@ from typing import Any, Callable, Iterable, Optional, Sequence
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .models import (
@@ -481,17 +482,44 @@ class ContentRepository:
     def _create(self, key: str, content_sha: Optional[str]) -> Content:
         """Insert this content, or adopt the one a racing writer just made.
 
-        ``ON CONFLICT DO NOTHING`` followed by a locking read: whichever
-        transaction inserts, both end up holding the same row, which is the
-        duplicate-content invariant the schema is here to make impossible
-        rather than unlikely.
+        An insert that does nothing on conflict, followed by a locking read:
+        whichever transaction inserts, both end up holding the same row, which
+        is the duplicate-content invariant the schema is here to make
+        impossible rather than unlikely.
+
+        **Why the conflict is caught as well as declared.** ``contents`` has
+        *two* unique constraints -- ``content_key`` and ``content_sha256`` --
+        and ``ON CONFLICT`` takes exactly one arbiter index. A conflict on any
+        other unique index is a hard error, by PostgreSQL's design and not by
+        accident: naming an arbiter is a statement about which collision you
+        mean. Two uploads of the same bytes collide on *both* at once, so which
+        one the insert reports depends on the order the indexes happen to be
+        checked in -- and roughly one race in sixty came back as
+        ``UniqueViolation`` on ``uq_contents_sha256`` instead of doing nothing.
+        The upload that lost then failed outright, which is exactly the
+        deduplication this method exists to provide.
+
+        A second arbiter cannot be declared (``ON CONFLICT`` takes one), and
+        widening it to both columns would name a composite index that does not
+        exist. So the *other* collision is caught instead, on a SAVEPOINT so it
+        does not abort the caller's transaction, and the locking read below
+        adopts the row the winner made. The outcome is identical either way,
+        which is the point: this method has one postcondition, and it is the
+        row.
         """
-        self.session.execute(
-            pg_insert(Content.__table__)
-            .values(id=new_id(), content_key=key, content_sha256=content_sha or None,
-                    status="pending", requested_methods=[])
-            .on_conflict_do_nothing(index_elements=["content_key"])
-        )
+        try:
+            with self.session.begin_nested():
+                self.session.execute(
+                    pg_insert(Content.__table__)
+                    .values(id=new_id(), content_key=key,
+                            content_sha256=content_sha or None,
+                            status="pending", requested_methods=[])
+                    .on_conflict_do_nothing(index_elements=["content_key"])
+                )
+        except IntegrityError:
+            # A racing writer inserted this content under the other unique
+            # key. Nothing to do: the read below is what this method promises.
+            pass
         row = self._row(key, lock=True)
         if row is None:  # pragma: no cover - the insert above guarantees a row
             raise RuntimeError(f"could not create or read the content {key!r}")
