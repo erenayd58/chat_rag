@@ -626,7 +626,8 @@ not supply one. `.env.docker` sets it; `.env.docker.local` overrides it.
 
 **`exec /usr/local/bin/docker-entrypoint.sh: no such file or directory`** on a
 file that plainly exists -- the script has CRLF line endings, so the kernel is
-looking for an interpreter called `/bin/sh`. The message names the
+looking for an interpreter called `/bin/sh
+`. The message names the
 interpreter, not the script, which is what makes it confusing.
 `.gitattributes` pins the file to LF and
 `tests/unit/test_deployment.py` checks it.
@@ -673,7 +674,9 @@ your working tree, so it fails on things a green suite cannot see.
 | `chunk.install` | the pinned commit is on no remote branch — push the `chunk` branch |
 | `chunk.import` | the pinned revision lacks a symbol the product imports — bump the pin with `python tools/promote_chunk_pin.py` |
 | `clone.clean` | developer state got committed; it belongs in `.gitignore` |
-| `docker.*` | Docker is not running, or the image build genuinely broke |
+| `docker.build` | Docker is not running, or the image build genuinely broke |
+| `docker.run` | the stack did not come up healthy from a clean clone: read the compose logs it prints. "the schema was not built from empty" means the migration step did not run — check `CHAT_RAG_MIGRATE_ON_START` |
+| `docker.console` | the console is serving but cannot reach the application. Almost always `CHAT_RAG_API_URL`: it must be the *service name*, and it must be resolved at request time (see [architecture.md](architecture.md#what-ships)) |
 | `state.untouched` | the gate wrote to your real data — a bug, not a flake |
 
 ---

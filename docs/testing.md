@@ -263,11 +263,20 @@ python tools/verify_reproducibility.py
 
 It clones this repository from the remote, checks the clone carries no state
 from your machine, installs the pinned `amsc` revision into a fresh Python 3.11
-environment, imports it, builds the Viewer v3 product shell from it, then
-builds and runs the container and asks it for `/api/v1/health`. Every check
-reports PASS, FAIL or SKIP -- SKIP means a capability is missing (no Docker, no
-Python 3.11, no network) or a tier was not asked for, never that something was
-checked and forgiven.
+environment, imports it, builds the Viewer v3 product shell from it, and then
+brings up **the whole stack** from that clone with `docker compose up` --
+database, application and console -- and asks it the two questions no health
+check answers: was the schema built from an empty database by the container's
+own migration step, and does `/api/v1` reach the application *through* the
+console. Every check reports PASS, FAIL or SKIP -- SKIP means a capability is
+missing (no Docker, no Python 3.11, no network) or a tier was not asked for,
+never that something was checked and forgiven.
+
+The gate runs *beside* your own stack, not through it: its own compose project,
+its own published ports and its own image tags, so nothing it does touches the
+containers or images this checkout built. It tears down with `-v`, because a
+database volume left behind would let the next run's "built from empty" pass
+for the wrong reason.
 
 | Flag | What it adds |
 |---|---|
@@ -288,7 +297,10 @@ PASS  pin.shape              amsc-poc @ <sha>, on a line of its own
 PASS  chunk.install          pip installed <sha> into a fresh 3.11 venv
 PASS  chunk.import           amsc <sha> from site-packages, not an editable sibling
 PASS  chunk.viewer           shell built twice, byte-identical
-PASS  docker.build / docker.run / docker.state
+PASS  docker.build           built from the clone; the import and serve smokes ran inside it
+PASS  docker.run             compose up: three services healthy, schema built from empty
+PASS  docker.console         the console forwards /api/v1 to the application by service name
+PASS  docker.state           state under /data only, none in /app
 PASS  state.untouched        the developer's data is unchanged
 ```
 
