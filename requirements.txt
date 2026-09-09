@@ -20,7 +20,7 @@ pgvector>=0.3
 # `from amsc... import` in product code has to resolve at this revision;
 # tests/unit/test_amsc_pin.py checks that against the sibling checkout's
 # git history, so a stale pin fails the suite instead of the Docker build.
-amsc-poc @ git+https://github.com/erenayd58/chunk.git@5a8c82e7f346ffc3d1740fd239c66d890a51de69
+amsc-poc @ git+https://github.com/erenayd58/chunk.git@f8409805a9cd9c5f1db771b2fdbf28d891c1c54b
 openai
 rank-bm25
 numpy
