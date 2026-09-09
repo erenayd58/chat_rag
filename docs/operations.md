@@ -13,7 +13,24 @@ second source of truth.
 
 ## Running it
 
-There is one entrypoint, and it is what the container's `CMD` runs.
+The deployment is `docker compose up --build`: three containers, and nothing to
+install first.
+
+| service | what it runs | port | waits for |
+|---|---|---|---|
+| `db` | PostgreSQL 16 with pgvector | not published | — |
+| `app` | `python -m asgi` — uvicorn, one process | `5005` | `db` **healthy** |
+| `frontend` | Next.js, the console | `3000` | `app` **healthy** |
+
+Both waits are on a health check rather than on "the process exists".
+PostgreSQL accepts connections a few seconds after it starts and the
+application refuses to serve without a reachable one, so `service_started`
+would give a container that exits and restarts until the timing happened to
+work. The console waits on the application because its first screen lists
+knowledge bases, and because waiting on the application means waiting for the
+migration in front of it.
+
+By hand, for development, it is the same two processes without the containers:
 
 | | Command | Server | Binds |
 |---|---|---|---|
@@ -35,13 +52,36 @@ three. `asgi.py` says so in more detail.
 
 It stops on SIGTERM (what `docker stop` and service managers send) as well as on
 Ctrl+C: uvicorn stops accepting, then the lifespan drains the ingest jobs
-already running and returns the database pool.
+already running and returns the database pool. The container's entrypoint
+`exec`s the server rather than running it as a child, so that signal reaches
+uvicorn itself; a shell left in front of it would take the signal and the
+server would be killed at the end of the grace period instead of draining.
 
 There were two other entrypoints until Step 13 -- `python app.py` (Werkzeug,
 loopback, the debugger) and `python -m wsgi` (waitress) -- and they served the
 Flask console, its rendered screens and the Viewer's relay. Both went with that
 surface ([legacy-removal.md](legacy-removal.md)); nothing reads `FLASK_DEBUG`
 any more, and there is no debug mode to leave on by accident.
+
+### How the console reaches the application
+
+The browser never learns where the backend is. Every `/api/v1/...` call goes to
+the console's own origin, and the console forwards it
+(`frontend/lib/api/proxy.ts`, reached through the catch-all route
+`frontend/app/api/v1/[...path]/route.ts`). One setting knows the address:
+
+```
+CHAT_RAG_API_URL=http://app:5005      # the compose service name
+CHAT_RAG_API_URL=http://127.0.0.1:5005  # the default, for a local backend
+```
+
+It is read **on every request**, so one console image runs against any backend.
+That is worth stating because it was not always true: the forwarding was a
+`rewrites()` entry in `next.config.mjs`, and Next.js resolves `rewrites()`
+during `next build` and freezes the destination into the build output. The
+image carried `127.0.0.1`, which inside a container is that container, so the
+console failed against an application that was healthy one hop away and setting
+the variable changed nothing.
 
 ### The database
 
@@ -52,16 +92,43 @@ identities and their analysis state, the ingest journal and the gold set are
 rows, and every screen begins by listing knowledge bases. There is no degraded
 mode that serves without one.
 
-Create the schema before the first start, and after any upgrade that ships a
-migration:
+**The container brings the schema to head before it serves.** The entrypoint
+runs
 
 ```bash
-alembic upgrade head
+python -m tools.migrate
 ```
 
-Nothing in the application creates a table. [database.md](database.md) is the
-schema, the migrations, the pool and the import path for an installation whose
-records are still JSON files.
+which is Alembic with three things a bare `alembic upgrade head` does not have,
+each of them a way a deploy has actually gone wrong:
+
+* it **waits** for a database that is accepting connections but still
+  recovering. Compose releases this container the moment the database's health
+  check passes, which is a little before it is ready; without the wait the
+  container exits, is restarted, and fails slightly later — a crash loop that
+  eventually resolves itself and looks exactly like one that will not.
+  `CHAT_RAG_DB_WAIT` (default 60s) bounds it, and past it a wrong
+  `DATABASE_URL` is reported by name.
+* it takes a PostgreSQL **advisory lock**, because Alembic does not. Two
+  application containers starting together would both read the same head and
+  both run the next migration, and the second would fail partway through a
+  schema the first was still creating.
+* it **says what it did** — the revision it moved from and the one it moved to,
+  and "already at head" as its own outcome rather than as silence. That is the
+  condition on which an automatic migration is acceptable at all.
+
+Nothing in the application creates a table, container or not. To apply the
+schema as a separate reviewed step instead, set `CHAT_RAG_MIGRATE_ON_START=0`
+and run the migration yourself; the application then starts against whatever
+schema is there and fails on the first query if it is behind. To look without
+changing anything:
+
+```bash
+docker compose exec app python -m tools.migrate --check   # or: alembic upgrade head
+```
+
+[database.md](database.md) is the schema, the migrations, the pool and the
+import path for an installation whose records are still JSON files.
 
 ### Where the rest of the state goes
 
@@ -542,7 +609,39 @@ database named in the URL exists -- `alembic upgrade head` creates the *schema*
 but not the database.
 
 `relation "knowledge_bases" does not exist` at the first request means the
-database is reachable and the migrations have not been run.
+database is reachable and the migrations have not been run. In the container
+that cannot normally happen -- the entrypoint migrates before the server
+starts -- so it means `CHAT_RAG_MIGRATE_ON_START` is off, or the application is
+pointed at a different database from the one that was migrated.
+
+### The container will not start
+
+**`[migrate] gave up waiting for the database`** -- the migration step waited
+`CHAT_RAG_DB_WAIT` seconds (default 60) and the database never answered. It is
+not a slow start at that point: check `DATABASE_URL`, and that `db` is on the
+same compose network.
+
+**`[migrate] DATABASE_URL is not set`** -- not retried, because waiting does
+not supply one. `.env.docker` sets it; `.env.docker.local` overrides it.
+
+**`exec /usr/local/bin/docker-entrypoint.sh: no such file or directory`** on a
+file that plainly exists -- the script has CRLF line endings, so the kernel is
+looking for an interpreter called `/bin/sh`. The message names the
+interpreter, not the script, which is what makes it confusing.
+`.gitattributes` pins the file to LF and
+`tests/unit/test_deployment.py` checks it.
+
+### The console is up but every screen says the server was not there
+
+The console is serving and cannot reach the application. `CHAT_RAG_API_URL` is
+what it forwards to, read per request; in compose it must be the service name
+(`http://app:5005`), because inside a container `127.0.0.1` is that container.
+
+**Look at:** `docker compose ps` (is `app` healthy?), then
+`docker compose exec frontend printenv CHAT_RAG_API_URL`, then
+`curl http://localhost:5005/api/v1/health` from the host. The console answers
+this case with a 502 carrying `type: network` and the address it tried, rather
+than an HTML error page.
 
 ### The process will not start
 

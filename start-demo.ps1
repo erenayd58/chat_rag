@@ -18,9 +18,11 @@
     Step 13 removed the relay it used and the Flask console beside it, so the
     backend below is the one contract and nothing else.
 
-    The browser only ever talks to the console's own origin: next.config.mjs
-    rewrites /api/v1/* to the backend, so there is no CORS grant and one place
-    (CHAT_RAG_API_URL) knows the backend's address. Logs go to .demo\logs\
+    The browser only ever talks to the console's own origin: the console
+    forwards /api/v1/* to the backend itself (frontend/lib/api/proxy.ts), so
+    there is no CORS grant and one place (CHAT_RAG_API_URL, set below) knows
+    the backend's address -- read per request, so -ProductPort moves it without
+    a rebuild. Logs go to .demo\logs\
     under this repository (git-ignored); the started process ids go to
     .demo\state.json for stop-demo.ps1. Nothing from .env is printed.
 

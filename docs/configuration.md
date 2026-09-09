@@ -52,6 +52,8 @@ the first upload.
 |---|---|---|
 | **database** | `DATABASE_URL`, `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`, `DATABASE_POOL_TIMEOUT`, `DATABASE_POOL_RECYCLE`, `DATABASE_CONNECT_TIMEOUT`, `DATABASE_ECHO` | where the relational records live and how many connections may reach them. `DATABASE_URL` has no default and cannot have one — see [database.md](database.md) |
 | **state** | `CHAT_RAG_DATA_DIR`, `STRUCTURED_PARSER_CACHE` | moves where every **file** the process persists lives. One directory covers all of them; the records and the vectors are not among them — they are in PostgreSQL |
+| **start-up** | `CHAT_RAG_MIGRATE_ON_START`, `CHAT_RAG_DB_WAIT` | whether the container brings the schema to head before it serves, and how long that step waits for a database that is up but still recovering. Read by `tools/migrate.py`, which the entrypoint runs — not by the application |
+| **the console** | `CHAT_RAG_API_URL` | where the Next.js console forwards `/api/v1`. Read per request by `frontend/lib/api/proxy.ts`, so one console image runs against any backend. It is the *only* setting the front end has |
 | **server** | `FLASK_HOST`, `FLASK_PORT`, `WAITRESS_THREADS`, `WAITRESS_CHANNEL_TIMEOUT` | the process itself. `WAITRESS_THREADS` is the number every other ration is sized against, and it sizes the worker pool the synchronous handlers run in |
 | **ingest limits** | `INGEST_WORKERS`, `INGEST_QUEUE_CAPACITY`, `INGEST_JOB_TIMEOUT`, `INGEST_SYNC_WAIT`, `INGEST_SYNC_WAITERS`, `INGEST_JOB_RETENTION` | how much uploading can happen at once and for how long |
 | **provider budgets** | `PROVIDER_MAX_INFLIGHT`, `DEEP_ANALYSIS_CONCURRENCY`, `EMBEDDING_MAX_INFLIGHT`, `ANSWER_MAX_INFLIGHT` | how many calls may be in flight to each external service. Three separate caps so no path can starve another |
@@ -129,14 +131,32 @@ be listed with a reason. The deliberate ones today:
 
 | setting | container value | why |
 |---|---|---|
+| `DATABASE_URL` | the `db` compose service | there is no application default and cannot be one; a real password belongs in `.env.docker.local` |
 | `LLM_PROVIDER` | `ollama` | the container talks to Ollama on the host, not Azure |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | reaches the host from inside a container |
 | `OLLAMA_MODEL` | `qwen2.5:3b` | the small model the demo image expects |
-| `CHUNKER_TYPE` | `structure_first` | the frozen proof-of-concept selection |
-| `RETRIEVAL_PROFILE` | `bm25_only` | needs no provider, so the image starts with no key |
+
+That is the whole list — the four entries `DELIBERATE_OVERRIDES` in
+`tests/unit/test_configuration.py` declares. Everything else `.env.docker`
+writes out (`RETRIEVAL_PROFILE=bm25_only`, `WAITRESS_THREADS=8`,
+`LOG_LEVEL=INFO`, …) is the application default *restated for visibility*, and
+the same test fails if any of them stops matching the code.
+
+Two settings the stack needs are **structural** rather than configuration, and
+they live in `docker-compose.yml` instead of `.env.docker`: they name
+containers, so an operator changing them is changing the topology and not a
+preference.
+
+| setting | value | why it is not in an env file |
+|---|---|---|
+| `CHAT_RAG_DATA_DIR` | `/data` | it has to match the volume mount beside it, and a `.env` left over from local development must not be able to move it |
+| `CHAT_RAG_API_URL` | `http://app:5005` | it is the compose service name; there is no value for it that is right in two deployments |
 
 Secrets go in `.env.docker.local`, which is git-ignored and overrides
-`.env.docker`.
+`.env.docker`. The database password is the compose variable
+`POSTGRES_PASSWORD`, defaulting to `chat_rag` — which is a default and not a
+secret only because the database publishes no port: it is reachable from the
+other two containers and nowhere else.
 
 `env.example` works the same way: **commented-out lines show the application
 default**; uncommented lines are the demo profile, which deliberately differs

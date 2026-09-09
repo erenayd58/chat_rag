@@ -56,11 +56,14 @@ LIBRARY_CONSTANTS = {
 }
 
 #: Files whose *content* is the source of truth for a variable name.
-#: ``*.mjs`` is here because the console is a Next.js application now: its
-#: ``next.config.mjs`` reads a setting the documentation names, and a guard
-#: that could not see the front end would call that setting unread.
-_SOURCE_GLOBS = ("*.py", "*.ps1", "*.yml", "*.yaml", "*.mjs", "Dockerfile",
-                 "env.example", ".env.docker", "requirements.txt")
+#: ``*.mjs`` and ``*.ts`` are here because the console is a Next.js application
+#: now, and it reads settings the documentation names. ``CHAT_RAG_API_URL`` was
+#: read by ``next.config.mjs`` until Step 14 and is read by
+#: ``frontend/lib/api/proxy.ts`` since; a guard that could not see the front
+#: end would have called it unread the moment it moved, which is the opposite
+#: of what this test is for. ``*.sh`` is here for the container entrypoint.
+_SOURCE_GLOBS = ("*.py", "*.ps1", "*.yml", "*.yaml", "*.mjs", "*.ts", "*.sh",
+                 "Dockerfile", "env.example", ".env.docker", "requirements.txt")
 
 
 def _tracked(*patterns: str) -> list[Path]:

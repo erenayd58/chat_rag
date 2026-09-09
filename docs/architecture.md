@@ -18,6 +18,46 @@ pin bump — see [testing.md](testing.md#changes-that-cross-both-repos).
 
 ---
 
+## What ships
+
+Three containers, brought up by one command
+(`docker compose up --build`, [README](../README.md#running-with-docker)):
+
+```
+      browser
+         │  :3000
+         ▼
+  ┌──────────────┐   /api/v1/*    ┌──────────────┐   SQL + pgvector   ┌────────┐
+  │  frontend    │───────────────▶│     app      │───────────────────▶│   db   │
+  │  Next.js     │  CHAT_RAG_API_ │  FastAPI on  │   DATABASE_URL     │ pg16 + │
+  │  the console │  URL, per req. │  uvicorn     │                    │ vector │
+  └──────────────┘                └──────────────┘                    └────────┘
+         │                               │  :5005                          ▲
+         │                               └── /api/ops/metrics ──▶ operator │
+         │                                                                 │
+         └── the browser never learns the app's address ───────────────────┘
+```
+
+Three facts about that picture are load-bearing:
+
+* **the console forwards, it does not redirect.** Every `/api/v1` call is
+  same-origin from the browser's point of view, so there is no CORS grant and
+  no preflight in front of an upload. `frontend/lib/api/proxy.ts` reads
+  `CHAT_RAG_API_URL` **per request**, so one console image runs against any
+  backend — it was a build-time `rewrites()` entry until Step 14, and the
+  address was frozen into the image.
+* **the schema is applied before the server serves**, by `tools/migrate.py`
+  from the container entrypoint: it waits for a recovering database, holds an
+  advisory lock so two containers cannot both migrate, and logs the revisions.
+  Nothing in the application creates a table.
+* **each service waits on the one below it being *healthy*,** not merely
+  started. [operations.md](operations.md) has the table.
+
+Ollama, when it is used, runs on the host and is reached at
+`host.docker.internal`. Nothing in the code knows that address.
+
+---
+
 ## The two runtime flows
 
 Everything the product does is one of these two. Both are bounded end to end;
@@ -193,6 +233,8 @@ open it.
 | `interfaces/http/__init__.py` | `create_app()` — the contract plus that route, over one container — and the walker that answers "what does this application serve" for the tests and the documents | adding a surface beside the contract |
 | `runtime/bootstrap.py` | what a process does before it serves: the banner, restart settlement, the staging sweep | changing start-up or restart behaviour |
 | `asgi.py` | **the entrypoint** (`python -m asgi`, uvicorn, one process): the composed container, the application, the lifespan and the worker-thread pool | changing how the server starts, stops or sizes itself |
+| `docker-entrypoint.sh`, `tools/migrate.py` | what happens between "the container started" and "the server serves": wait for the database, take an advisory lock, bring the schema to head, then `exec` the entrypoint above | changing how a deployment gets its schema |
+| `Dockerfile`, `frontend/Dockerfile`, `docker-compose.yml` | the deployment: two images and the three services, their health checks and their start-up order. Read as a contract by `tests/unit/test_deployment.py` | changing how the system is shipped or brought up |
 | `pipeline/rag_pipeline.py` | the pipeline object: builds the embedder / store / retriever / answer model from settings, and runs a query | changing retrieval or the answer chain end to end |
 | `components/ingest/jobs.py` | the job system: queue, workers, states, retention, cancellation | changing upload concurrency or job lifecycle |
 | `components/ingest/limits.py` | **the one owner of deadlines and provider budgets**: `current_guard()`, `deadline_timeout()`, the Deep and embedding semaphores | adding a transport, or anything that calls out over the network |

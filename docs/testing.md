@@ -170,14 +170,24 @@ npm run test:live      # the real screens against a running console and server
 
 `npm test` stubs `fetch` and holds the client to the contract's conventions --
 the refusal taxonomy, the 204 with no body, `Retry-After`, walking a
-collection -- and holds two architectural rules by reading the source: no
-module outside `lib/api/client.ts` calls `fetch`, and **no chunking method key
-is written down anywhere in the front end**. The picker is rendered against a
-catalogue of invented method keys and every one of them has to appear, which
-cannot pass if the component knows a real one.
+collection -- and holds two architectural rules by reading the source: exactly
+two modules call `fetch` (`lib/api/client.ts`, how a screen reaches the
+contract, and `lib/api/proxy.ts`, how this server reaches the application), and
+**no chunking method key is written down anywhere in the front end**. The
+picker is rendered against a catalogue of invented method keys and every one of
+them has to appear, which cannot pass if the component knows a real one.
+
+`tests/proxy.test.ts` is the newest of these and holds one property: the
+backend's address is resolved **per request**, not at build time. It was a
+`rewrites()` entry in `next.config.mjs` until Step 14, and Next.js resolves
+`rewrites()` during `next build` and freezes the destination into the build
+output -- so the container image carried the developer default `127.0.0.1`,
+which inside a container is that container, and `CHAT_RAG_API_URL` was read by
+nothing. A green suite could not see it, and neither could a local run, because
+the frozen value happens to be right on a developer's machine.
 
 `npm run test:live` needs the application on its usual port and the console in
-front of it (`npm run dev` or `npm start`). It renders the shipped screens in
+front of it (`npm run dev` or `npm start`, or the containers). It renders the shipped screens in
 jsdom and drives the real flows: a knowledge base created from the dialog, a
 document uploaded and its ingest job followed to `succeeded` by the shipped
 poller, the analysis polled to `ready` and one method's rows inspected, a

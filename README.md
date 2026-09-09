@@ -350,9 +350,11 @@ the Flask console beside it and the server itself
 ([docs/legacy-removal.md](docs/legacy-removal.md)). A demo is the two rows in
 the table.
 
-The browser only ever talks to the console's own origin: `next.config.mjs`
-rewrites `/api/v1/*` to the backend, so there is no CORS grant and exactly one
+The browser only ever talks to the console's own origin: the console forwards
+`/api/v1/*` to the backend itself, so there is no CORS grant and exactly one
 place (`CHAT_RAG_API_URL`, which the launcher sets) knows the backend address.
+It is read per request, so `-ProductPort` moves the backend without rebuilding
+the console.
 
 The launcher checks readiness over HTTP, recognises servers that are already
 running instead of starting a second copy, refuses a port held by something
@@ -452,9 +454,10 @@ of them) → **Debug** (why each boundary) → **Benchmark**.
 
 ## Running with Docker
 
-One container runs the whole application. There is no separate database,
-queue or model service: Ollama stays on the host, and everything else runs
-in-process.
+The whole system, from a clean machine, in one command. Three containers: the
+Next.js console, the FastAPI application and PostgreSQL with pgvector. No
+queue and no model service — Ollama stays on the host, and everything else
+this application needs runs in-process.
 
 ### Prerequisites
 
@@ -464,13 +467,20 @@ in-process.
   with Ollama stopped; generation then returns an explanatory error instead of
   taking the application down.
 
+Nothing else. No Python, no Node.js and no `chunk` checkout: both images build
+from this repository and the pinned library commit, which is what
+[the reproducibility gate](docs/testing.md) checks on every push.
+
 ### Start
 
 ```bash
 docker compose up --build
 ```
 
-To have the QA report name the commit the image was built from -- the image
+Then open <http://localhost:3000>. The console lands on Knowledge Bases; Chat
+is at `/chat`, search at `/search`, and the chunk-boundary Viewer at `/viewer`.
+
+To have the QA report name the commit the image was built from — the image
 does not ship `.git`, so it otherwise reports it as unknown:
 
 ```bash
@@ -478,9 +488,44 @@ CHAT_RAG_GIT_SHA=$(git rev-parse HEAD) docker compose up --build
 # PowerShell: $env:CHAT_RAG_GIT_SHA = (git rev-parse HEAD); docker compose up --build
 ```
 
-Then open <http://localhost:5005>. The app lands on Knowledge Bases;
-Chat is at `/chat` and the technical tools (retrieval quality review,
-parser output, chunk browser) are under `/lab`.
+### What comes up, and in what order
+
+| service | port | waits for |
+|---|---|---|
+| `db` — PostgreSQL 16 with pgvector | not published | — |
+| `app` — the application, `python -m asgi` on uvicorn | `5005` | `db` reporting **healthy** |
+| `frontend` — the console, Next.js | `3000` | `app` reporting **healthy** |
+
+Each wait is on a health check, not on "the process exists". PostgreSQL accepts
+connections a few seconds after it starts, and the application refuses to serve
+without a reachable database, so `service_started` would give a container that
+exits and restarts until the timing happened to work.
+
+The database is not published at all: it is reachable from the other two
+containers and from nowhere else, which is what lets its password be a compose
+default rather than a secret. The application *is* published, because the
+contract and `/api/ops/metrics` are consumed from outside the stack.
+
+### The schema
+
+There is no step to remember. `app` runs `python -m tools.migrate` before the
+server starts, and that step:
+
+- waits for a database that is accepting connections but still recovering,
+  rather than exiting and being restarted until it is ready;
+- holds a PostgreSQL advisory lock, so two application containers starting
+  together cannot both run the same migration;
+- prints the revision it moved from and the one it moved to, and prints
+  "already at head" as its own outcome rather than as silence.
+
+It is still Alembic and still reviewable — nothing in the application creates a
+table. Set `CHAT_RAG_MIGRATE_ON_START=0` for a deployment that applies its
+schema as a separate step; the application then starts against whatever schema
+is there. To look without changing anything:
+
+```bash
+docker compose exec app python -m tools.migrate --check
+```
 
 ### Stop
 
@@ -488,29 +533,50 @@ parser output, chunk browser) are under `/lab`.
 docker compose down
 ```
 
-The container serves on uvicorn and shuts down on SIGTERM, draining in-flight
-requests and the ingest jobs already running; teardown takes about two seconds, and the compose file allows fifteen
-(`stop_grace_period`). A bare `docker stop` uses the daemon's own timeout, which
-on some installations is only one second -- short enough to kill the process
+The application serves on uvicorn and shuts down on SIGTERM, draining in-flight
+requests and the ingest jobs already running; teardown takes about two seconds,
+and the compose file allows fifteen (`stop_grace_period`). The entrypoint
+`exec`s the server, so the signal reaches uvicorn itself rather than a shell in
+front of it. A bare `docker stop` uses the daemon's own timeout, which on some
+installations is only one second — short enough to kill the process
 mid-shutdown and report exit 137. `docker stop -t 10` (Docker's documented
 default) or `docker compose down` both exit 0.
 
 ### Configuration
 
-`.env.docker` holds the container's settings and contains no secrets. Put
-anything private in `.env.docker.local`, which is git-ignored and overrides
-it. The local `.env` is deliberately not used by the container: it points at
+`.env.docker` holds the application's settings and contains no secrets. Put
+anything private in `.env.docker.local`, which is git-ignored and overrides it.
+The local `.env` is deliberately not used by the containers: it points at
 `localhost`, which inside a container means the container itself.
 
-Ollama is reached at `http://host.docker.internal:11434`. That address lives
-in `.env.docker`, not in the code; the compose file maps the name explicitly
-so it also works on plain Linux Docker.
+Two settings are *structural* and live in `docker-compose.yml` rather than in
+an env file, because they name containers rather than express a preference:
+
+| | |
+|---|---|
+| `CHAT_RAG_DATA_DIR=/data` | where the application's files go, matching the mount |
+| `CHAT_RAG_API_URL=http://app:5005` | where the console forwards `/api/v1`, by service name |
+
+The second is read **per request** by the console
+([`frontend/lib/api/proxy.ts`](frontend/lib/api/proxy.ts)), so one image runs
+against any backend. It used to be a `next.config.mjs` rewrite, which Next.js
+resolves at build time and freezes into the image — the console then carried
+`127.0.0.1`, which inside a container is that container.
+
+Ollama is reached at `http://host.docker.internal:11434`. That address lives in
+`.env.docker`, not in the code; the compose file maps the name explicitly so it
+also works on plain Linux Docker.
+
+The database password is `${POSTGRES_PASSWORD:-chat_rag}`. Set
+`POSTGRES_PASSWORD` in the shell, or in a `.env` beside the compose file (git
+ignores it), for any deployment where the database is not private to the stack
+— and set the matching `DATABASE_URL` in `.env.docker.local`.
 
 ### Where the data lives
 
-The records and the vectors are in PostgreSQL (`DATABASE_URL`); the *files*
-the container persists are under `./.docker-data`, which is a different place
-from the paths a local checkout uses. Running the container never reads or
+The records and the vectors are in PostgreSQL (`DATABASE_URL`); the *files* the
+application persists are under `./.docker-data`, which is a different place
+from the paths a local checkout uses. Running the containers never reads or
 writes your local `.cache/` or `artifacts/viewer-live/`.
 
 ```
@@ -526,17 +592,18 @@ writes your local `.cache/` or `artifacts/viewer-live/`.
 Frozen gold sets under `artifacts/gold/` are inputs, not state: they travel
 inside the image and are never written to.
 
-### Reset the container's data
+### Reset the stack's data
 
-Stop the container first, then delete the one directory:
+Stop the containers first, then delete the one directory:
 
 ```bash
 docker compose down
 rm -rf ./.docker-data          # PowerShell: Remove-Item -Recurse -Force .docker-data
 ```
 
-This removes only the container's knowledge bases, stores and logs. Your local
-development data is untouched.
+The next `up` finds an empty database and the migration builds the schema from
+nothing. This removes only the containers' knowledge bases, stores and logs;
+your local development data is untouched.
 
 ### The CLI, inside the container
 
@@ -555,10 +622,15 @@ Reports and runs land in `./.docker-data/artifacts/` on the host.
 ### Health
 
 `GET /api/v1/health` loads no model, parses nothing and does not touch the
-vector store. That is what the container's healthcheck calls.
+vector store. That is what the application container's health check calls, and
+what the console waits on before it starts. The console's own check asks itself
+for a page, so it says whether the console is serving without claiming anything
+about the application behind it.
 
 ```bash
-docker compose ps          # STATUS shows (healthy)
+docker compose ps          # STATUS shows (healthy) for all three
+curl http://localhost:5005/api/v1/health
+curl http://localhost:5005/api/ops/metrics
 ```
 
 ---
@@ -608,9 +680,11 @@ npm run dev            # http://localhost:3000, against localhost:5005
 It holds no catalogue of its own: the chunking methods, the retrieval methods
 and the model chain are read from `/api/v1/meta/...` at run time, so a method
 added to the library's registry appears in the picker without a line changing.
-`frontend/lib/api/` is the only place it calls `fetch`, and the contract's
-refusal `type` — not a status code — is what its screens branch on.
-[frontend/README.md](frontend/README.md) is the rest.
+`frontend/lib/api/` is the only place it calls `fetch` — `client.ts` for a
+screen, `proxy.ts` for this server forwarding `/api/v1` to the application —
+and the contract's refusal `type`, not a status code, is what its screens
+branch on. In the deployed stack it is a container of its own, and the only
+port a browser needs. [frontend/README.md](frontend/README.md) is the rest.
 
 ## The operator surface
 

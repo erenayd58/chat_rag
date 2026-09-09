@@ -35,6 +35,11 @@ persisted. What changed for it in Step 9 is only where the rows come from.
 
 ## Getting started
 
+The deployed stack does all of this for you: `docker compose up --build` starts
+PostgreSQL with pgvector, and the application container brings the schema to
+head before the server starts. What follows is the same thing by hand, for a
+local checkout.
+
 ```bash
 # 1. a database
 docker compose -f docker-compose.test.yml up -d      # local development and the suite
@@ -50,12 +55,23 @@ alembic upgrade head
 python -m asgi
 ```
 
-Step 3 is not optional and is not done for you. Nothing in the application
-creates a table — not at import, not at start-up, not in a test fixture.
-A fresh database is built by `alembic upgrade head` and by nothing else, which
-is what makes the schema reviewable, repeatable and reversible.
+Step 3 is not optional. Nothing in the application creates a table — not at
+import, not at start-up, not in a test fixture. A fresh database is built by
+`alembic upgrade head` and by nothing else, which is what makes the schema
+reviewable, repeatable and reversible.
 `tests/storage/test_migrations.py` fails if any source file grows a
 `create_all`.
+
+**Automatic is not the same as implicit.** In the container, step 3 is run by
+the entrypoint — but it is run by `tools/migrate.py`, which is Alembic plus
+three things the bare command does not have: it waits for a database that is
+accepting connections but still recovering, it holds an advisory lock so two
+containers starting together cannot both migrate, and it logs the revision it
+moved from and the one it moved to. The schema is still built by a migration
+that a person can read, roll back and reproduce; it is only the *running* of it
+that stopped being something to remember. `CHAT_RAG_MIGRATE_ON_START=0` turns
+it off for a deployment that wants that step separate, and
+`python -m tools.migrate --check` reports without changing anything.
 
 With `DATABASE_URL` unset or unreachable, `python -m asgi` refuses to start and
 says which host it could not reach. There is no degraded mode that serves

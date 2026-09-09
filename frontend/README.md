@@ -12,17 +12,42 @@ npm install
 npm run dev            # http://localhost:3000
 ```
 
-The backend is expected on `http://127.0.0.1:5005` (`python -m wsgi` in the
-repository root, or `python -m asgi` once the legacy surface is gone). Point
-it somewhere else with `CHAT_RAG_API_URL`; `next.config.mjs` rewrites
-`/api/v1/*` there, so the browser only ever calls this server's own origin and
-there is no CORS to configure.
+The backend is expected on `http://127.0.0.1:5005` (`python -m asgi` in the
+repository root). Point it somewhere else with `CHAT_RAG_API_URL`.
 
 ```bash
 npm run build          # production build
 npm test               # vitest
 npm run typecheck      # tsc --noEmit
 ```
+
+In the deployed stack this is a container of its own
+([`Dockerfile`](Dockerfile)), built by `docker compose up --build` beside the
+application and the database, and it is the only published port.
+
+## How it reaches the application
+
+The browser never learns where the backend is. Every `/api/v1/...` call goes to
+this server's own origin and this server forwards it, so the contract is
+same-origin -- no CORS, and no preflight in front of a multipart upload -- and
+exactly one setting knows the application's address.
+
+That forwarding is [`lib/api/proxy.ts`](lib/api/proxy.ts), reached through the
+catch-all route `app/api/v1/[...path]/route.ts`. It **was** a `rewrites()`
+entry in `next.config.mjs`, which reads like configuration and is not: Next.js
+resolves `rewrites()` during `next build` and writes the destination into
+`.next/routes-manifest.json`. The built console therefore carried the developer
+default `http://127.0.0.1:5005`, which inside a container is that container --
+so every screen failed against an application that was healthy one hop away,
+and setting `CHAT_RAG_API_URL` on the container changed nothing. The route
+handler reads the address on each request instead, and
+[`tests/proxy.test.ts`](tests/proxy.test.ts) holds that property.
+
+`proxy.ts` is the second and last module allowed to call `fetch`
+(`tests/surface.test.ts` enforces the pair): `client.ts` is how a *screen*
+reaches the contract, and this is how this server reaches the application. It
+streams the body rather than buffering it, and passes status, body and
+`Retry-After` through untouched -- the refusal taxonomy is the application's.
 
 ## How it is laid out
 
