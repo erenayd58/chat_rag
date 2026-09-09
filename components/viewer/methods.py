@@ -221,13 +221,35 @@ def normalise(selection: Any) -> list[str]:
     Unknown and unavailable names are dropped rather than half-honoured, and
     an empty selection falls back to Standard: a document with no analysis at
     all would be a document the Viewer cannot open.
+
+    A selection arrives in two shapes and both are the documented ones: a
+    sequence, which is what repeated ``methods`` form fields produce, and a
+    string that may list several separated by commas or semicolons. The two
+    used to be handled in separate branches, and the separation was the bug:
+    ``POST /api/v1/documents`` declares ``methods: list[str]``, so **one**
+    comma-separated form field reaches here as the one-element list
+    ``["structure-only,markdown"]`` -- a sequence, so the string branch never
+    ran and nothing split it. Neither name matched, the selection came out
+    empty, and the fallback below quietly replaced it with Standard. The
+    contract promised that spelling (``docs/api-v1.md``: "repeated, or one
+    comma-separated field") and the upload silently did something else.
+
+    So the split is applied to every item instead of to one shape of input. A
+    repeated field is unaffected -- its items carry no separator, and splitting
+    a name that has none yields the name.
     """
     if selection is None:
-        raw: Sequence[str] = ()
+        items: Sequence[Any] = ()
     elif isinstance(selection, str):
-        raw = [part.strip() for part in selection.replace(";", ",").split(",")]
+        items = (selection,)
     else:
-        raw = [str(part).strip() for part in selection]
+        items = selection
+    raw = [
+        part.strip()
+        for item in items
+        for part in str(item).replace(";", ",").split(",")
+        if part.strip()
+    ]
     chosen = [key for key in ORDER if key in raw and resolve(key).available]
     return chosen or list(DEFAULT_SELECTION)
 

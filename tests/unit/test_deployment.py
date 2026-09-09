@@ -219,17 +219,13 @@ def test_the_entrypoint_has_unix_line_endings():
     assert b"\r\n" not in (REPO / "docker-entrypoint.sh").read_bytes()
 
 
-def test_nothing_in_the_application_creates_a_table():
-    """The premise the migration story rests on. A ``create_all`` anywhere
-    would mean the schema could appear without a migration, and then no
-    deployment could be reproduced or rolled back."""
-    offenders = [
-        path.relative_to(REPO).as_posix()
-        for path in REPO.glob("**/*.py")
-        if not (set(path.relative_to(REPO).parts) & {"venv", ".venv", "__pycache__", "tests"})
-        and "create_all(" in _read(path)
-    ]
-    assert offenders == []
+# The premise this migration story rests on -- that no source file builds a
+# schema by itself -- is real, and it is asserted in exactly one place:
+# tests/storage/test_migrations.py, which reads the tracked files and keeps the
+# allow-list. It was briefly stated here as well, and the duplicate is the
+# whole argument against duplicating it: a second copy of the rule contains the
+# very string the first one searches for, so committing this file made the
+# original fail. One owner per invariant.
 
 
 # --------------------------------------------- the fixture is not the product

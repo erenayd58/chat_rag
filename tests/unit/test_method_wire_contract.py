@@ -106,6 +106,43 @@ def test_normalise_accepts_a_list_a_comma_string_or_nothing(hybrid_available):
     assert M.normalise("hybrid;markdown") == ["markdown", "hybrid"]
 
 
+def test_normalise_splits_a_separator_wherever_it_appears(hybrid_available):
+    """The shape the FastAPI route actually produces.
+
+    ``methods: list[str]`` means one comma-separated form field arrives as a
+    *one-element list containing a comma*, not as a string -- so a version that
+    only split bare strings never split anything, and the whole selection was
+    silently replaced by the fallback. Splitting is applied per item now, which
+    is why the list forms below and the string forms above agree.
+    """
+    assert M.normalise(["markdown,agentic"]) == ["markdown", "agentic"]
+    assert M.normalise(["markdown;agentic"]) == ["markdown", "agentic"]
+    assert M.normalise([" markdown , agentic "]) == ["markdown", "agentic"]
+    # Mixed: one repeated field that itself lists two. The answer is in display
+    # order, as it is for every other input -- derived from ORDER rather than
+    # written out, so adding a method cannot make this a false statement.
+    mixed = ["structure-only", "markdown", "agentic"]
+    assert M.normalise(["structure-only", "markdown,agentic"]) == [
+        key for key in M.ORDER if key in mixed]
+
+
+def test_normalise_leaves_a_plain_repeated_field_alone(hybrid_available):
+    """The spelling the browser uses must be untouched by the split above: a
+    name with no separator in it splits to itself."""
+    assert M.normalise(["markdown"]) == ["markdown"]
+    assert M.normalise(["markdown", "agentic"]) == ["markdown", "agentic"]
+    assert M.normalise(["hybrid", "agentic", "markdown", "structure-only"]) == list(WIRE_KEYS)
+
+
+def test_normalise_ignores_the_empty_pieces_a_separator_leaves(hybrid_available):
+    """A trailing comma, a doubled one, or a field that is only separators.
+    None of them is a method name, and none of them may become one."""
+    assert M.normalise(["markdown,"]) == ["markdown"]
+    assert M.normalise(["markdown,,agentic"]) == ["markdown", "agentic"]
+    assert M.normalise([","]) == ["structure-only"], "nothing usable falls back to Standard"
+    assert M.normalise([" "]) == ["structure-only"]
+
+
 def test_normalise_reorders_to_display_order_and_drops_unknown_names(hybrid_available):
     assert M.normalise(["hybrid", "agentic", "markdown", "structure-only"]) == list(WIRE_KEYS)
     assert M.normalise(["turbo", "markdown"]) == ["markdown"]
@@ -241,14 +278,53 @@ def test_no_methods_means_standard(upload):
     assert pipeline.seen_deep_analysis is False
 
 
-def test_the_wire_format_is_repeated_fields_not_a_comma_joined_one(upload):
-    """``normalise`` accepts a comma string, but the route reads the form with
-    ``getlist`` first, so a single comma-joined field arrives as one unknown
-    name and falls back to Standard. The browser sends repeated fields; this
-    pins that the other spelling is *not* part of the contract."""
+def test_the_wire_format_is_repeated_fields(upload):
+    """What the browser sends, and the spelling everything else is measured
+    against: one ``methods`` field per method."""
+    body, staged, pipeline = upload.post(("methods", "agentic"), ("methods", "markdown"))
+    assert staged["methods"] == ["markdown", "agentic"]
+    assert body["chunking_mode"] == "deep_analysis" and pipeline.seen_deep_analysis is True
+
+
+def test_one_comma_joined_field_is_the_other_documented_spelling(upload):
+    """``docs/api-v1.md``: "repeated, or one comma-separated field".
+
+    This test used to assert the opposite -- that the comma form was *not*
+    part of the contract -- on the reasoning that the route read the form with
+    ``getlist``. That was the Flask route. The FastAPI one declares
+    ``methods: list[str]``, so a single comma-joined field arrives as the
+    one-element list ``["agentic,markdown"]``: a sequence, so the branch in
+    ``normalise`` that split strings never ran, neither name matched, and the
+    selection fell back to Standard.
+
+    The failure was silent, which is what makes it worth a test rather than a
+    docs edit. A client using the documented spelling got a successful 202 for
+    an upload analysed with a method it did not ask for, and nothing anywhere
+    said so.
+    """
     body, staged, pipeline = upload.post(("methods", "agentic,markdown"))
-    assert staged["methods"] == ["structure-only"]
-    assert body["chunking_mode"] == "standard" and pipeline.seen_deep_analysis is False
+    assert staged["methods"] == ["markdown", "agentic"], (
+        "the comma-separated spelling the contract documents selects both"
+    )
+    assert body["chunking_mode"] == "deep_analysis" and pipeline.seen_deep_analysis is True
+
+
+def test_the_two_spellings_agree(upload):
+    """Neither is a dialect of the other: the same selection, written either
+    way, has to reach the pipeline as the same list."""
+    _, repeated, _ = upload.post(("methods", "markdown"), ("methods", "agentic"))
+    _, joined, _ = upload.post(("methods", "markdown,agentic"))
+    assert repeated["methods"] == joined["methods"]
+
+
+def test_a_comma_joined_field_drops_unknown_names_like_any_other(upload):
+    """Splitting is not admitting: what comes out of it goes through the same
+    registry check, so a name nobody registered is dropped and does not take
+    the valid names beside it with it."""
+    _, staged, _ = upload.post(("methods", "markdown, turbo ,agentic"))
+    assert staged["methods"] == ["markdown", "agentic"], (
+        "surrounding spaces are trimmed and the unknown name is dropped alone"
+    )
 
 
 def test_an_unavailable_method_is_dropped_from_the_upload(upload, hybrid_unavailable):
