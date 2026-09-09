@@ -482,10 +482,12 @@ def check_docker(report: Report, clone: Path | None, docker: str | None,
         why = "skipped by --no-docker" if asked_to_skip else "no Docker daemon on this machine"
         report.add(SKIP, "docker.build", why)
         report.add(SKIP, "docker.run", why)
+        report.add(SKIP, "docker.console", why)
         return
     if clone is None:
         report.add(SKIP, "docker.build", "no clone to build from")
         report.add(SKIP, "docker.run", "no clone to build from")
+        report.add(SKIP, "docker.console", "no clone to build from")
         return
 
     tag = "chat-rag:repro-gate"
@@ -510,46 +512,110 @@ def check_docker(report: Report, clone: Path | None, docker: str | None,
                f"built from the clone in {minutes:.1f} min ({how}); "
                "the import and serve smokes ran inside it")
 
-    name = "chat-rag-repro-gate"
-    port = free_port()
-    run(["docker", "rm", "-f", name], timeout=120)
-    up = run(["docker", "run", "-d", "--name", name, "-p", f"{port}:5005",
-              "-e", "RETRIEVAL_PROFILE=bm25_only", tag], timeout=300)
+    # The stack, not one container. `docker run` on the application image alone
+    # was what this check used to do, and it could not have passed since Step 8
+    # made PostgreSQL mandatory: the container exits before it binds, because
+    # there is no DATABASE_URL and no degraded mode. It failed for that reason
+    # and not for any reason about this commit, which is the worst kind of gate
+    # -- one whose red is meaningless.
+    #
+    # What a deployment *is* is `docker compose up --build`, so that is what is
+    # proved here: three services, brought up in the clone, waited on by their
+    # own health checks, and asked the two questions that matter.
+    project = "chat-rag-repro-gate"
+    api_port, console_port = free_port(), free_port()
+    compose = ["docker", "compose", "-p", project]
+    # Its own project name and its own published ports, so the gate can run
+    # beside a developer's stack without either noticing the other. Inside the
+    # network the addresses are unchanged.
+    environment = {
+        **os.environ,
+        "CHAT_RAG_PORT": str(api_port),
+        "CHAT_RAG_CONSOLE_PORT": str(console_port),
+        # And its own image tags, so building from the clone cannot overwrite
+        # the images this checkout built from a working tree that may not match
+        # the commit the gate is testing.
+        "CHAT_RAG_IMAGE": tag,
+        "CHAT_RAG_CONSOLE_IMAGE": "chat-rag-console:repro-gate",
+    }
+    run(compose + ["down", "-v", "--remove-orphans"], cwd=clone, env=environment, timeout=300)
+    up = run(compose + ["up", "-d", "--wait", "--wait-timeout", "300"],
+             cwd=clone, env=environment, timeout=900)
     if up.returncode != 0:
-        report.add(FAIL, "docker.run", "docker run failed", tail(up))
+        logs = run(compose + ["logs", "--tail", "60"], cwd=clone, env=environment, timeout=120)
+        report.add(FAIL, "docker.run",
+                   "docker compose up did not reach a healthy stack", tail(up) + "\n" + tail(logs))
+        run(compose + ["down", "-v", "--remove-orphans"], cwd=clone, env=environment, timeout=300)
         return
     try:
-        health = None
-        deadline = time.monotonic() + 180
-        while time.monotonic() < deadline:
-            try:
-                with urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}/api/v1/health", timeout=5
-                ) as response:
-                    health = (response.status, response.headers.get("Server", ""),
-                              json.loads(response.read().decode("utf-8") or "{}"))
-                    break
-            except (urllib.error.URLError, OSError, ValueError):
-                time.sleep(1)
-        if health is None:
-            logs = run(["docker", "logs", "--tail", "40", name], timeout=120)
-            report.add(FAIL, "docker.run", "the container never answered /api/v1/health", tail(logs))
+        # `--wait` already blocked on every service's health check, so reaching
+        # here means the database came up, the migration ran, the application
+        # answered its own health check and the console answered its own. What
+        # is left is what no health check covers: that the two are connected.
+        def ask(url: str):
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                try:
+                    with urllib.request.urlopen(url, timeout=5) as response:
+                        return (response.status, response.headers.get("Server", ""),
+                                json.loads(response.read().decode("utf-8") or "{}"))
+                except (urllib.error.URLError, OSError, ValueError):
+                    time.sleep(1)
+            return None
+
+        direct = ask(f"http://127.0.0.1:{api_port}/api/v1/health")
+        if direct is None:
+            logs = run(compose + ["logs", "--tail", "40", "app"], cwd=clone,
+                       env=environment, timeout=120)
+            report.add(FAIL, "docker.run", "the application never answered /api/v1/health",
+                       tail(logs))
             return
-        status, server, body = health
+        status, server, body = direct
         if status != 200 or body.get("ready") is not True:
             report.add(FAIL, "docker.run", f"/api/v1/health answered {status} {body!r}")
             return
         if "uvicorn" not in server.lower():
             report.add(FAIL, "docker.run", f"served by {server!r}, not the entrypoint the image runs")
             return
-        report.add(PASS, "docker.run", f"health 200 on {server}, in a container built from the clone")
+
+        # The migration is the step between "the container started" and "the
+        # server serves", and on an empty volume it has to have built the
+        # schema. Said out loud because a stack that came up against a database
+        # somebody had already migrated proves less.
+        migration = run(compose + ["logs", "app"], cwd=clone, env=environment, timeout=120)
+        migrated = [line for line in (migration.stdout or "").splitlines()
+                    if "[migrate]" in line]
+        if not any("empty database" in line for line in migrated):
+            report.add(FAIL, "docker.run",
+                       "the schema was not built from empty by the container's own "
+                       "migration step", "\n".join(migrated[-5:]))
+            return
+        report.add(PASS, "docker.run",
+                   f"compose up: three services healthy, schema built from empty, "
+                   f"health 200 on {server}")
+
+        # The console, and the one thing about it a health check cannot see:
+        # that `/api/v1` reaches the application through it. This is the check
+        # that would have caught a backend address frozen into the image at
+        # build time -- the console is up either way, and only a request
+        # through it tells the difference.
+        forwarded = ask(f"http://127.0.0.1:{console_port}/api/v1/health")
+        if forwarded is None or forwarded[0] != 200 or forwarded[2].get("ready") is not True:
+            logs = run(compose + ["logs", "--tail", "40", "frontend"], cwd=clone,
+                       env=environment, timeout=120)
+            report.add(FAIL, "docker.console",
+                       "the console did not forward /api/v1 to the application",
+                       tail(logs))
+        else:
+            report.add(PASS, "docker.console",
+                       "the console forwards /api/v1 to the application by service name")
 
         # Where the running container put its state. /data is the mount point;
         # /app is the image, and a write there would be state in a layer.
-        listing = run(["docker", "exec", name, "sh", "-c",
-                       "ls -1 /data; echo ---; ls -a /app | "
-                       "grep -E 'knowledge_bases|ingested_documents|^[.]cache' "
-                       "|| true"], timeout=120)
+        listing = run(compose + ["exec", "-T", "app", "sh", "-c",
+                                 "ls -1 /data; echo ---; ls -a /app | "
+                                 "grep -E 'knowledge_bases|ingested_documents|^[.]cache' "
+                                 "|| true"], cwd=clone, env=environment, timeout=120)
         under_data, _, in_app = listing.stdout.partition("---")
         if in_app.strip():
             report.add(FAIL, "docker.state",
@@ -558,8 +624,12 @@ def check_docker(report: Report, clone: Path | None, docker: str | None,
             report.add(PASS, "docker.state",
                        "state under /data only (" + ", ".join(under_data.split()) + "), none in /app")
     finally:
-        run(["docker", "rm", "-f", name], timeout=180)
-        run(["docker", "rmi", tag], timeout=300)
+        # -v as well: the gate's database volume is the gate's, and leaving it
+        # behind would let the next run's "built from empty" pass for the wrong
+        # reason.
+        run(compose + ["down", "-v", "--remove-orphans"], cwd=clone,
+            env=environment, timeout=300)
+        run(["docker", "rmi", tag, "chat-rag-console:repro-gate"], timeout=300)
 
 
 def main(argv: list[str] | None = None) -> int:
