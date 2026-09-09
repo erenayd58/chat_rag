@@ -70,9 +70,16 @@ describe('the console speaks /api/v1 and nothing else', () => {
     expect(offences).toEqual([]);
   });
 
-  it('calls fetch from exactly one module', () => {
+  it('calls fetch from exactly one module in the browser, and one on the server', () => {
+    // Two, and they are different jobs. `client.ts` is how a *screen* reaches
+    // the contract, and the rule that there is only one of those is what makes
+    // the refusal taxonomy a single translation. `proxy.ts` is not a screen: it
+    // is this server forwarding the console's own origin to the application, so
+    // the browser never learns the backend's address. Anything else that calls
+    // `fetch` is a component that has gone around `client.ts`.
+    const ALLOWED = [join('lib', 'api', 'client.ts'), join('lib', 'api', 'proxy.ts')];
     const callers = files.filter(
-      (file) => /(?<![.\w])fetch\(/.test(readFileSync(file, 'utf8')) && !file.endsWith('client.ts'),
+      (file) => /(?<![.\w])fetch\(/.test(readFileSync(file, 'utf8')) && !ALLOWED.includes(file),
     );
     expect(callers).toEqual([]);
   });
