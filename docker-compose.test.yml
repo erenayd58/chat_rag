@@ -17,6 +17,17 @@
 #
 # There is no volume: a test database that survived a run would let one run's
 # leftovers explain the next one's result.
+#
+# **Its own compose project.** Without the `name` below, compose derives the
+# project from the directory -- `chat_rag` for both files -- and the service
+# below is also called `db`, so `docker compose -f docker-compose.test.yml up`
+# was understood as "the chat_rag project's db service is this now" and
+# *replaced the running deployment's database* with this one. The application
+# container stayed up, still resolving the hostname `db`, now pointing at a
+# server with no `chat_rag` database in it. Two files that describe two
+# unrelated things must not share a project.
+name: chat-rag-test
+
 services:
   db:
     image: pgvector/pgvector:pg16

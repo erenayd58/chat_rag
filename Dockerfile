@@ -60,6 +60,14 @@ RUN useradd --create-home --uid 10001 app \
 
 WORKDIR /app
 COPY --chown=app:app . .
+
+# The exec bit is set here rather than trusted from the checkout: a Windows
+# working tree has no file mode to preserve, and a non-executable entrypoint
+# is a container that exits immediately with a permission error. Copied to
+# /usr/local/bin so it is on PATH and outside the directory a bind mount could
+# shadow.
+RUN cp /app/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh  && chmod 0755 /usr/local/bin/docker-entrypoint.sh
+
 USER app
 
 # Two build-time checks, so a broken image fails here rather than at the first
@@ -84,7 +92,17 @@ EXPOSE 5005
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5005/api/v1/health', timeout=4).status == 200 else 1)"
 
-# The entrypoint: uvicorn, one process, WAITRESS_THREADS request threads in the
+# Before the server, the schema. `docker-entrypoint.sh` brings the database to
+# head and then `exec`s the command below, so the server is still PID 1 and
+# still takes SIGTERM itself. Nothing in the application creates a table; the
+# script runs `tools/migrate.py`, which waits for a database that is up but
+# still recovering, holds an advisory lock so two containers cannot migrate at
+# once, and prints the revision it moved from and to.
+# CHAT_RAG_MIGRATE_ON_START=0 turns it off for a deployment that applies its
+# schema as a separate, reviewed step.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+
+# The command: uvicorn, one process, WAITRESS_THREADS request threads in the
 # pool Starlette runs the synchronous handlers in. There is no second one --
 # `python -m wsgi` and `python app.py` were the Flask console's, and the
 # console is a Next.js application over this contract now.

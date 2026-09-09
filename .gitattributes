@@ -16,3 +16,11 @@
 # the same clone on Linux passes. The same rule, and the same reason, applies
 # to the frozen corpora in the `chunk` repository.
 tests/fixtures/** -text
+
+# The container entrypoint is run by /bin/sh inside a Linux image. Git for
+# Windows checks out with `core.autocrlf=true`, which would give it CRLF line
+# endings; the kernel then reads the shebang as `/bin/sh\r` and the container
+# exits with "no such file or directory" -- naming the interpreter, not the
+# script, which is what makes it take an afternoon. It travels LF on every
+# platform.
+docker-entrypoint.sh text eol=lf

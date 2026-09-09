@@ -36,3 +36,17 @@ documents/
 # Local virtual environments must never enter an image layer.
 venv/
 .venv/
+
+# The console is its own image, built from frontend/Dockerfile. Nothing this
+# application serves comes from that directory -- it speaks /api/v1 and serves
+# no page -- and copying it in would put a host-built node_modules (the wrong
+# platform's binaries) and a .next nobody can reproduce into this layer.
+frontend/
+
+# The suite does not run in the image, and its fixtures include frozen corpora
+# that exist to be compared against, never to be served. The documentation
+# stays: start-up and refusal messages name docs/ files, and a container whose
+# error tells you to read a file it does not have is worse than one that says
+# nothing.
+tests/
+.github/

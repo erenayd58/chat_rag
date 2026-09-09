@@ -1,40 +1,54 @@
-# One application container and its database. No queue and no model server:
-# Ollama stays on the host, and everything else this application needs still
-# runs in-process.
+# The whole system, from a clean machine:
+#
+#     docker compose up --build
+#
+# Three services and nothing else. `db` is PostgreSQL with pgvector, `app` is
+# the FastAPI application, `frontend` is the Next.js console. No queue and no
+# model server: Ollama stays on the host, and everything else this application
+# needs still runs in-process.
 #
 # The database is where the knowledge bases, the ingest ledger, the content
 # identities and their analysis state, the ingest journal, the gold set and --
 # since Step 9 -- the chunks and their embeddings live. It runs the pgvector
-# image because of that last pair: `alembic upgrade head` creates the `vector`
+# image because of that last pair: the migration creates the `vector`
 # extension, and a stock postgres image cannot. The parser cache, the packaged
 # Viewer artifacts and the logs are still files under the mounted directory.
 #
-# The schema is created by a migration, not by the application: run
+# **The schema is applied at start-up, and it is still a migration.** `app`
+# runs `tools/migrate.py` before the server: it waits for a database that is
+# accepting connections but still recovering, takes an advisory lock so two
+# containers cannot migrate at once, and logs the revision it moved from and
+# to. Nothing in the application creates a table. Set
+# CHAT_RAG_MIGRATE_ON_START=0 to apply the schema as a separate reviewed step
+# instead.
 #
-#     docker compose run --rm app alembic upgrade head
-#
-# once after `up -d`, and after every upgrade that ships one. Nothing in the
-# application creates a table at start-up, which is what makes that step
-# reviewable rather than a side effect of a deploy.
+# **What is published, and what is not.** The console is on :3000 and is where
+# a browser goes; the application is on :5005 because the contract and the
+# operator's `/api/ops/metrics` are consumed from outside this stack -- by a
+# dashboard, by `curl`, by the live suite -- and hiding them would be a change
+# to that, not hardening. The database has no published port at all, which is
+# what lets its password be a local default rather than a secret.
 services:
   db:
     image: pgvector/pgvector:pg16
-    container_name: chat-rag-db
     environment:
       POSTGRES_USER: chat_rag
       POSTGRES_DB: chat_rag
-      # Replace this. It is a tracked file, so the value here is a placeholder
-      # for a local run: set POSTGRES_PASSWORD in the shell (or in a .env
-      # beside this file, which compose reads and git ignores) and set the
-      # matching DATABASE_URL in .env.docker.local.
+      # Not published, so this guards a port only the two containers above can
+      # reach. Override it -- here, or in a `.env` beside this file, which
+      # compose reads and git ignores -- for any deployment where that is not
+      # true, and set the matching DATABASE_URL in .env.docker.local.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chat_rag}
     volumes:
       - ./.docker-data/postgres:/var/lib/postgresql/data
     healthcheck:
+      # `pg_isready` answers before recovery finishes, which is why the
+      # application waits again on its own rather than trusting this alone.
       test: ["CMD-SHELL", "pg_isready -U chat_rag -d chat_rag"]
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 30s
     restart: unless-stopped
 
   app:
@@ -45,8 +59,10 @@ services:
         # Optional: unset, the manifest honestly reports it as unknown.
         CHAT_RAG_GIT_SHA: ${CHAT_RAG_GIT_SHA:-}
     image: chat-rag:local
-    container_name: chat-rag
     ports:
+      # The contract and the operator surface, for anything outside this stack.
+      # The console does not use this: it reaches the application over the
+      # compose network, by service name.
       - "5005:5005"
 
     env_file:
@@ -89,7 +105,8 @@ services:
         # Not merely started: the application refuses to serve without a
         # reachable database, so starting it against a server still replaying
         # its write-ahead log would be a container that exits and restarts
-        # until the database happens to be up.
+        # until the database happens to be up. The migration step waits again
+        # on top of this, because healthy and ready are not the same instant.
         condition: service_healthy
 
     extra_hosts:
@@ -112,10 +129,61 @@ services:
       start_period: 60s
       retries: 3
 
-    # The default SIGTERM is enough: uvicorn installs its own handler, stops
-    # accepting, runs the lifespan's shutdown -- which drains the ingest jobs
-    # already running and returns the database pool -- and exits 0 rather than
-    # being killed at the end of the grace period.
+    # The default SIGTERM is enough: the entrypoint `exec`s uvicorn, so the
+    # signal reaches the server itself, which stops accepting, runs the
+    # lifespan's shutdown -- draining the ingest jobs already running and
+    # returning the database pool -- and exits 0 rather than being killed at
+    # the end of the grace period.
     stop_grace_period: 15s
+
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    image: chat-rag-console:local
+    ports:
+      # Where a browser goes: http://localhost:3000. Every screen is here,
+      # including /viewer.
+      - "3000:3000"
+
+    environment:
+      # Where the application is, read by `lib/api/proxy.ts` on every request.
+      # `app` is the service name above, which is also its hostname on this
+      # network. Structural, like CHAT_RAG_DATA_DIR: it names a container, not
+      # a preference, so it lives here and not in .env.docker.
+      #
+      # This is a *runtime* setting, and it took a bug to make it one. It was a
+      # `rewrites()` entry in next.config.mjs, which Next.js resolves during
+      # `next build` and freezes into the build output -- so the image carried
+      # `http://127.0.0.1:5005`, which inside this container is this container,
+      # and every screen failed against an application that was healthy one hop
+      # away.
+      CHAT_RAG_API_URL: http://app:5005
+
+    depends_on:
+      app:
+        # Not `service_started`: the console's first screen lists knowledge
+        # bases, so a console that is up before the application is a console
+        # whose first paint is an error. Waiting for the application's health
+        # check also means waiting for the migration in front of it.
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          require('http').get({host:'127.0.0.1',port:3000,path:'/',timeout:4000},
+          r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+    # Next.js stops on SIGTERM; there is no in-flight work of its own to drain,
+    # only the requests it is forwarding.
+    stop_grace_period: 10s
 
     restart: unless-stopped
