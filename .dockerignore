@@ -1,4 +1,6 @@
-# Runtime state belongs in a mounted directory, never in an image layer.
+# Runtime state belongs in a volume, never in an image layer. .docker-data/ is
+# the directory the stack used before those became named volumes; a checkout
+# that still has one must not bake it in.
 .docker-data/
 chroma_db/
 .cache/

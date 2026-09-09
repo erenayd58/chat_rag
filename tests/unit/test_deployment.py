@@ -268,6 +268,93 @@ def test_the_two_stacks_cannot_contend_for_a_port():
     assert published == {"55432"}
 
 
+# ------------------------------------------------------- writable state
+
+
+def _mounts(service: dict) -> list[str]:
+    return [str(entry) for entry in service.get("volumes", [])]
+
+
+@pytest.mark.parametrize("name", ["db", "app", "frontend"])
+def test_no_service_keeps_writable_state_on_a_host_path(services, name):
+    """Every mount is a Docker-managed named volume. Not style -- ownership.
+
+    These were `./.docker-data/...` bind mounts, and on Docker Desktop that
+    works: its filesystem translation layer presents a bind mount as owned by
+    whoever asks. On Linux, Docker creates a missing bind-mount source as
+    root:root and the mount carries that ownership into the container. The
+    application image drops to uid 10001 before it runs anything, so on the
+    first clean Linux runner the first thing it did was
+
+        PermissionError: [Errno 13] Permission denied: '/data/logs'
+
+    A named volume is initialised from the image's content at the mount point,
+    ownership included, so the directory arrives owned by the user that has to
+    write it -- on every platform, and with no chmod anywhere.
+
+    A bind mount is spelled with a path separator in its source; a named volume
+    is a bare name.
+    """
+    offenders = [entry for entry in _mounts(services[name])
+                 if entry.startswith((".", "/", "~", "$")) or ":" not in entry]
+    assert offenders == [], (
+        f"{name} keeps state on a host path: {offenders}. On Linux that "
+        "directory is root-owned and the container cannot write to it."
+    )
+
+
+def test_every_volume_the_services_use_is_declared(stack, services):
+    """A named volume compose was never told about is a typo that silently
+    becomes an anonymous volume -- which is not shared, not reset by
+    `down -v` by name, and gone on the next `up --force-recreate`."""
+    declared = set(stack.get("volumes") or {})
+    used = {entry.split(":")[0]
+            for name in services for entry in _mounts(services[name])}
+    assert used <= declared, f"undeclared volumes: {sorted(used - declared)}"
+
+
+def test_the_image_creates_every_directory_a_volume_is_mounted_over():
+    """The other half of the fix, and the half that is easy to lose.
+
+    A named volume inherits the image's ownership at its mount point *only
+    where that path exists in the image*. Where it does not, Docker creates it
+    as root:root and the permission error is back, now with a named volume to
+    make it look impossible. `artifacts/runs` and `artifacts/reports` are
+    exactly that case: .dockerignore keeps generated evaluation output out of
+    the image, so nothing else would create them.
+
+    So every mount point the application container uses has to be named in the
+    Dockerfile's mkdir, and owned by `app`.
+    """
+    dockerfile = _instructions(REPO / "Dockerfile")
+    stack = yaml.safe_load(_read(COMPOSE))
+    targets = [entry.split(":")[1]
+               for entry in _mounts(stack["services"]["app"])]
+    assert targets, "the application container mounts nothing at all"
+
+    created = " ".join(line for line in dockerfile.splitlines() if "mkdir" in line)
+    missing = [target for target in targets if target not in created]
+    assert missing == [], (
+        f"the image never creates {missing}, so Docker will create the "
+        "mount point as root and uid 10001 cannot write to it"
+    )
+    assert re.search(r"chown -R app:app.*/data", dockerfile), (
+        "the created directories are not given to the user that runs"
+    )
+
+
+def test_the_database_volume_is_not_inside_the_application_one(services):
+    """They were: `./.docker-data` was mounted at /data *and* held
+    `postgres/`, so the application container could read the database's files.
+    Separate volumes are separate concerns, and neither has to know the
+    other's layout."""
+    app_targets = {entry.split(":")[1] for entry in _mounts(services["app"])}
+    db_sources = {entry.split(":")[0] for entry in _mounts(services["db"])}
+    app_sources = {entry.split(":")[0] for entry in _mounts(services["app"])}
+    assert db_sources.isdisjoint(app_sources)
+    assert "/var/lib/postgresql/data" not in app_targets
+
+
 # ------------------------------------------------------------------ secrets
 
 

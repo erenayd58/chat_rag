@@ -115,9 +115,10 @@ artifacts/reports/
 # workspace state, never a frozen benchmark artifact.
 artifacts/viewer-live/
 
-# Docker runtime data: the container's own knowledge bases, vector stores,
-# canonical-unit cache, logs and evaluation output. Never mixed with the local
-# development state above.
+# The container's state was a directory here until it became Docker-managed
+# named volumes (docker-compose.yml says why: a bind mount is root-owned on
+# Linux and the app runs as uid 10001). Nothing writes this any more; the entry
+# stays so a checkout that predates the change cannot commit what it left.
 .docker-data/
 
 # Private container configuration; .env.docker holds the tracked, secret-free

@@ -146,6 +146,16 @@ has been declared, because `.env` describes a developer's own layout and a
 deployment that has named its data directory has not asked for that layout. The
 start-up banner says which paths are in effect and names anything it refused.
 
+In the container that directory is `/data`, and it is a **Docker-managed named
+volume** rather than a directory in the checkout. That is about ownership, not
+tidiness: Docker creates a missing bind-mount source as `root:root` and the
+mount carries that ownership inside, while the image drops to uid 10001 before
+it runs anything -- so on Linux a bind-mounted `/data` gave
+`PermissionError: [Errno 13] Permission denied: '/data/logs'` at start-up. A
+named volume is initialised from the image's content at the mount point,
+ownership included. `docker-compose.yml` says the rest, and the Dockerfile
+creates every mount point for the same reason.
+
 Proving that a *clean clone* can run at all is a separate question with its
 own gate: [testing.md](testing.md).
 
@@ -623,6 +633,17 @@ same compose network.
 
 **`[migrate] DATABASE_URL is not set`** -- not retried, because waiting does
 not supply one. `.env.docker` sets it; `.env.docker.local` overrides it.
+
+**`PermissionError: [Errno 13] Permission denied: '/data/logs'`** (or any path
+under `/data`, `/app/artifacts/runs` or `/app/artifacts/reports`) -- something
+is mounted there that the container's user does not own. Every one of those is
+a named volume precisely so this cannot happen; a compose override or a `-v
+./somewhere:/data` on the command line reintroduces it, because Docker creates
+a missing bind-mount source as `root:root` and the application runs as uid
+10001. It does not reproduce on Docker Desktop, whose filesystem translation
+layer presents bind mounts as owned by whoever asks -- so a machine where "it
+works for me" is not evidence. `docker compose exec app ls -ld /data` says who
+owns it.
 
 **`exec /usr/local/bin/docker-entrypoint.sh: no such file or directory`** on a
 file that plainly exists -- the script has CRLF line endings, so the kernel is

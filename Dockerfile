@@ -51,11 +51,20 @@ ENV PATH="/opt/venv/bin:$PATH" \
 
 COPY --from=builder /opt/venv /opt/venv
 
-# Runs as a normal user. /data is created here so a named volume inherits the
-# right ownership; a bind mount takes the host's, which Docker Desktop makes
-# writable.
+# Runs as a normal user, and every directory a volume is mounted over is
+# created here, owned by that user.
+#
+# The second clause is load-bearing, and was learned from a Linux CI runner.
+# A Docker *named volume* is initialised from the image's content at its
+# mount point -- ownership included -- but only where that path exists in the
+# image. Where it does not, Docker creates it as root:root, and a process
+# that has already dropped to uid 10001 cannot write there.
+# artifacts/runs and artifacts/reports are exactly that case: .dockerignore
+# keeps generated evaluation output out of the image, so without this line
+# nothing would create them and `python -m cli report` would be denied its
+# own output directory.
 RUN useradd --create-home --uid 10001 app \
- && mkdir -p /app /data \
+ && mkdir -p /app /data /app/artifacts/runs /app/artifacts/reports \
  && chown -R app:app /app /data
 
 WORKDIR /app

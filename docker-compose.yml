@@ -40,7 +40,7 @@ services:
       # true, and set the matching DATABASE_URL in .env.docker.local.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chat_rag}
     volumes:
-      - ./.docker-data/postgres:/var/lib/postgresql/data
+      - db-data:/var/lib/postgresql/data
     healthcheck:
       # `pg_isready` answers before recovery finishes, which is why the
       # application waits again on its own rather than trusting this alone.
@@ -97,16 +97,12 @@ services:
       # uploads and the logs -- lives under one directory, so a rebuilt
       # container finds them where it left them. The records and the vectors
       # are in the database volume above.
-      #
-      # This is a fresh directory, separate from the checkout's own .cache/
-      # and artifacts/viewer-live/: running the container never touches local
-      # development state.
-      - ./.docker-data:/data
+      - app-data:/data
       # Evaluation output written by `python -m cli`. Mounted per
       # subdirectory so artifacts/gold/ keeps coming from the image, where
       # frozen gold sets are read-only inputs rather than runtime state.
-      - ./.docker-data/artifacts/runs:/app/artifacts/runs
-      - ./.docker-data/artifacts/reports:/app/artifacts/reports
+      - eval-runs:/app/artifacts/runs
+      - eval-reports:/app/artifacts/reports
 
     depends_on:
       db:
@@ -195,3 +191,38 @@ services:
     stop_grace_period: 10s
 
     restart: unless-stopped
+
+# Docker-managed volumes, not host directories, and the difference is not a
+# preference.
+#
+# These were `./.docker-data/...` bind mounts. On Docker Desktop that works,
+# because its filesystem translation layer presents a bind mount as owned by
+# whoever is asking. On Linux -- a CI runner, a server, anywhere this would
+# actually be deployed -- Docker creates a missing bind-mount source as
+# root:root and the mount carries that ownership into the container. The
+# application image drops to uid 10001 before it runs anything, so the first
+# thing it did was
+#
+#     PermissionError: [Errno 13] Permission denied: '/data/logs'
+#
+# and the container never served. The same was true, unnoticed, of the two
+# evaluation output mounts: `python -m cli report` could not write its report.
+# Only the database escaped it, because the postgres image starts as root and
+# fixes its own data directory before stepping down.
+#
+# A named volume is initialised from the image's content at the mount point,
+# ownership included, so /data arrives owned by the user that has to write it
+# -- on every platform, with nothing to remember and no chmod anywhere. The
+# Dockerfile creates all three paths for that reason.
+#
+# What this costs: the state is no longer a directory in the checkout. It is
+# read with `docker compose exec`, copied out with `docker compose cp`, and
+# reset with `docker compose down -v` -- one command for all of it, where
+# before it was `down` plus removing a directory. An existing `.docker-data/`
+# is not migrated and not read; it is the previous layout's, and can be
+# deleted.
+volumes:
+  db-data:
+  app-data:
+  eval-runs:
+  eval-reports:

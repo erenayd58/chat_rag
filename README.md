@@ -574,36 +574,64 @@ ignores it), for any deployment where the database is not private to the stack
 
 ### Where the data lives
 
-The records and the vectors are in PostgreSQL (`DATABASE_URL`); the *files* the
-application persists are under `./.docker-data`, which is a different place
-from the paths a local checkout uses. Running the containers never reads or
-writes your local `.cache/` or `artifacts/viewer-live/`.
+Everything the stack persists is in **Docker-managed named volumes**, not in a
+directory in this checkout. Running the containers never reads or writes your
+local `.cache/` or `artifacts/viewer-live/`.
+
+| volume | mounted at | holds |
+|---|---|---|
+| `db-data` | `db:/var/lib/postgresql/data` | the records, chunks and embeddings |
+| `app-data` | `app:/data` | the parser's canonical-unit cache, packaged Viewer payloads, the embedding caches, upload staging, logs |
+| `eval-runs` | `app:/app/artifacts/runs` | evaluation runs written by the CLI |
+| `eval-reports` | `app:/app/artifacts/reports` | QA report packages written by the CLI |
+
+Compose prefixes them with the project name, so they are `chat_rag_app-data`
+and so on in `docker volume ls`.
+
+They are volumes rather than `./.docker-data/...` bind mounts because of
+ownership, and the difference only shows on Linux. Docker creates a missing
+bind-mount source directory as `root:root` and the mount carries that
+ownership into the container; the application image drops to uid 10001 before
+it runs anything, so on a clean Linux host the first thing it did was
 
 ```
-.docker-data/
-  postgres/   the database volume: records, chunks and embeddings
-  cache/      the parser's canonical-unit cache and the embedding caches
-  viewer-live/ packaged Viewer payloads, one directory per content
-  uploads/    files waiting for their ingest job
-  logs/       application logs
-  artifacts/  evaluation runs and QA reports written by the CLI
+PermissionError: [Errno 13] Permission denied: '/data/logs'
 ```
+
+Docker Desktop hides this — its filesystem translation layer presents a bind
+mount as owned by whoever asks — so it only appeared on a CI runner. A named
+volume is initialised from the image's content at its mount point, ownership
+included, so the directory arrives owned by the user that has to write it, on
+every platform and with no `chmod` anywhere.
 
 Frozen gold sets under `artifacts/gold/` are inputs, not state: they travel
-inside the image and are never written to.
+inside the image, are never mounted over and are never written to.
+
+If you ran an earlier version, the leftover `./.docker-data/` is the previous
+layout's and is no longer read. Delete it.
+
+### Looking at the data, and getting it out
+
+```bash
+docker compose exec app ls -la /data /data/logs
+docker compose exec app tail -f /data/logs/rag_*.log
+
+# copy a report package to the host
+docker compose cp app:/app/artifacts/reports ./reports
+```
 
 ### Reset the stack's data
 
-Stop the containers first, then delete the one directory:
+One command, and it takes the volumes with it:
 
 ```bash
-docker compose down
-rm -rf ./.docker-data          # PowerShell: Remove-Item -Recurse -Force .docker-data
+docker compose down -v
 ```
 
 The next `up` finds an empty database and the migration builds the schema from
-nothing. This removes only the containers' knowledge bases, stores and logs;
-your local development data is untouched.
+nothing. This removes only the stack's own knowledge bases, stores and logs;
+your local development data is untouched. Without `-v` the containers go and
+the data stays, which is what an ordinary stop should do.
 
 ### The CLI, inside the container
 
@@ -617,7 +645,8 @@ docker compose exec app python -m cli report  --kb <name> --gold artifacts/gold/
 docker compose exec app python -m cli eval    --kb <name> --gold artifacts/gold/<set>.json
 ```
 
-Reports and runs land in `./.docker-data/artifacts/` on the host.
+Reports and runs land in the `eval-reports` and `eval-runs` volumes;
+`docker compose cp` above brings one out.
 
 ### Health
 
