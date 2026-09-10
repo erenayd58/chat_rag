@@ -60,7 +60,8 @@ from chat_rag.application import ingest as ingest_use_case
 from chat_rag.application import ops as ops_use_case
 from chat_rag.application import workspace as workspace_use_case
 from chat_rag.application.services import Services, build_services
-from chat_rag.config import Settings
+from chat_rag.components.ingest import sweep_staging
+from chat_rag.config import Settings, paths
 
 from .config import EngineConfig, describe
 from .resources import Document, KnowledgeBase, KnowledgeBases
@@ -212,12 +213,14 @@ class Engine:
     def recover(self) -> Mapping[str, Any]:
         """Pick up what a previous process left, the way a server start does.
 
-        Two different things, and neither is a resumption of work that was
+        Three things, and none of them is a resumption of work that was
         committed. Interrupted **ingest** jobs are *settled* against the
         ledger, so a caller holding a job id from before the restart is
-        answered truthfully rather than with "unknown"; interrupted **Viewer**
-        packaging is genuinely resumed, because everything it needs was
-        written to disk before it started.
+        answered truthfully rather than with "unknown". Interrupted **Viewer**
+        packaging is genuinely resumed, because everything it needs was written
+        to disk before it started. And **staged uploads** left behind by a
+        process that died mid-ingest are removed, when they can be -- see
+        :meth:`sweep_staged_uploads` for when that is.
 
         Not done on construction: reading somebody else's leftovers is a
         decision for the program that owns the database, not a side effect of
@@ -227,7 +230,41 @@ class Engine:
             return {
                 "settled_ingest_jobs": ingest_use_case.recover(self._services),
                 "resumed_analyses": workspace_use_case.resume_incomplete(),
+                "swept_uploads": self.sweep_staged_uploads(),
             }
+
+    def sweep_staged_uploads(self) -> Optional[list[str]]:
+        """Remove staged uploads that belong to no job. ``None`` when unsafe.
+
+        A staged file outlives the call that submitted it -- an ingest job
+        reads it on a worker -- and jobs live only in memory, so anything in
+        the staging directory at start-up belongs to nobody and is removed.
+        That is what ``runtime/bootstrap.py`` does for the server, once, before
+        a job can exist.
+
+        An engine cannot assume either of those. It is created whenever its
+        program feels like it, and its staging directory may not be its own,
+        so the sweep runs only when **both** conditions the server gets for
+        free actually hold:
+
+        * **the directory is this engine's.** With a data root, staging is
+          ``<root>/uploads`` and nothing else writes there. Without one it is
+          a shared directory under the system temp -- the product's engine and
+          every other engine in every other process stage into it -- and
+          sweeping it would delete files their jobs are about to read;
+        * **this engine has no jobs of its own in flight**, for the same
+          reason at a smaller scale.
+
+        ``None`` means it was not this engine's directory to sweep, which is a
+        different answer from "there was nothing in it".
+        """
+        with self._active():
+            if not self._settings.paths.data_root:
+                return None
+            if self._services.ingest_jobs.snapshot()["running"] or \
+                    self._services.ingest_jobs.snapshot()["queued"]:
+                return None
+            return sweep_staging(paths.upload_staging())
 
     # -------------------------------------------------------------- closing
     def close(self) -> None:

@@ -27,6 +27,7 @@ Start here, then follow the question you have:
 | doc | answers |
 |---|---|
 | **[docs/architecture.md](docs/architecture.md)** | What is the system, which repo owns what, where is the code for X |
+| **[docs/library-api.md](docs/library-api.md)** | What `pip install chat-rag` promises: the public API, the versioning and deprecation policy, the extras, and the limitations |
 | **[docs/operations.md](docs/operations.md)** | How do I run it, what are the limits, and what does *this* 503 mean |
 | **[docs/configuration.md](docs/configuration.md)** | Where does a setting come from, who owns it, what wins |
 | **[docs/database.md](docs/database.md)** | Where the records live, how to create the schema, what is still a file |
@@ -36,6 +37,7 @@ Start here, then follow the question you have:
 | **[../chunk/docs/adding-a-chunker.md](../chunk/docs/adding-a-chunker.md)** | How to add a chunking method, end to end |
 | **[../chunk/docs/viewer-architecture.md](../chunk/docs/viewer-architecture.md)** | How the Viewer works across both repos, and how to debug a package |
 | **[../chunk/docs/library-surface.md](../chunk/docs/library-surface.md)** | What is product, research and legacy in the library, and what the console may import |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in the published API, release by release |
 | [CHUNK_YONTEMLERI_VE_SORGU_EKRANI.md](CHUNK_YONTEMLERI_VE_SORGU_EKRANI.md) | The four chunking methods and the query screen, in plain Turkish, for a non-technical reader |
 
 ---
@@ -720,27 +722,27 @@ with Engine(EngineConfig(retrieval_profile="hybrid_rrf")) as engine:
 ```
 
 An `Engine` owns its own container, its own runtime — connection pool, provider
-budgets, counters, packaging queue — and its own session, so two of them in one
-process share nothing. Give it a `data_dir` and that extends to the files:
+budgets, counters, packaging queue — its own session and, given a `data_dir`,
+its own files, so two of them in one process share nothing but the database.
+It is not the process default and installs no log handler: a library speaks for
+itself, not for the program it is imported into.
 
-```python
-with Engine(EngineConfig(data_dir="./tenant-a", database_url=...)) as engine:
-    ...   # packaged analyses, staged uploads and both caches live under it
+```bash
+pip install chat-rag              # the engine; PostgreSQL is required, not optional
+pip install chat-rag[local]       # + sentence-transformers, ollama
+pip install chat-rag[pdf]         # + pymupdf, pymupdf4llm, python-docx
+pip install chat-rag[all]         # both
 ```
 
-`EngineConfig` states the settings this caller chooses; everything it leaves
-unset is read the way the server reads it
-([docs/configuration.md](docs/configuration.md)), `DATABASE_URL` included, and
-PostgreSQL is required here exactly as it is there. An engine is **not** the
-process default — it installs no log handler and does not answer for code that
-never asked for it — unless it is built with `install_process_default=True`.
+The extras degrade by refusing rather than by pretending — without `[local]`,
+asking for a local model names the extra to install. This repository's own
+install is unchanged; `requirements.txt` names everything explicitly.
 
-Refusals are the application's own six meanings — `NotFound`, `InvalidRequest`,
-`Conflict`, `Unavailable`, `NotReady`, `ProcessingFailed` — plus the bounds'
-`IngestOverloaded`, `QueryOverloaded` and `QueryTimeout`, which mean "not now"
-rather than "not like that". All of them are importable from `chat_rag`.
-[docs/architecture.md](docs/architecture.md#the-public-python-api) says what
-the facade does and, deliberately, what it does not.
+**[docs/library-api.md](docs/library-api.md) is the contract**: the
+twenty-eight published names, what a refusal means and how to catch it, what
+0.x promises, how a removal is announced, and the limitations a consumer
+should know about (starting with `amsc-poc` not being on any index).
+[CHANGELOG.md](CHANGELOG.md) records what changes.
 
 ## The console — `frontend/`
 

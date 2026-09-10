@@ -39,7 +39,10 @@ def embedding_module(monkeypatch):
 
     FakeModel.instances.clear()
     module.release_models()
-    monkeypatch.setattr(module, "SentenceTransformer", FakeModel)
+    # The class is imported when a model is wanted rather than when this
+    # module is, so that torch is the ``local`` extra rather than a
+    # requirement of importing the engine. The factory is therefore the seam.
+    monkeypatch.setattr(module, "_sentence_transformer", lambda: FakeModel)
     monkeypatch.setattr(module, "_loads", 0)
     yield module
     module.release_models()
@@ -92,7 +95,7 @@ def test_a_model_that_cannot_load_is_reported_not_cached(embedding_module, monke
         def __init__(self, *a, **k):
             raise OSError("no such model")
 
-    monkeypatch.setattr(embedding_module, "SentenceTransformer", Broken)
+    monkeypatch.setattr(embedding_module, "_sentence_transformer", lambda: Broken)
     with pytest.raises(EmbeddingException):
         embedding_module.SentenceTransformerEmbedding("missing")
     assert embedding_module.model_stats()["count"] == 0

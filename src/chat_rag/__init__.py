@@ -40,7 +40,8 @@ if TYPE_CHECKING:  # for a type checker and an IDE, never at run time
         Document, Engine, EngineConfig, Health, Hit, IngestInterrupted,
         IngestJob, IngestOverloaded, InvalidRequest, KnowledgeBase,
         KnowledgeBases, Method, NotFound, NotReady, ProcessingFailed,
-        QueryOverloaded, QueryTimeout, Source, Unavailable, open_engine,
+        QueryOverloaded, QueryTimeout, Settings, Source, Unavailable,
+        open_engine,
     )
 
 #: The public API, re-exported from :mod:`chat_rag.api`. One list rather than
@@ -49,6 +50,7 @@ if TYPE_CHECKING:  # for a type checker and an IDE, never at run time
 __all__ = [
     "Engine",
     "EngineConfig",
+    "Settings",
     "open_engine",
     "KnowledgeBase",
     "KnowledgeBases",
@@ -77,8 +79,27 @@ __all__ = [
 ]
 
 
+def _version() -> str:
+    """The installed distribution's version, or the placeholder for a checkout.
+
+    Read from the metadata rather than written here, so there is one place a
+    release number lives (``pyproject.toml``) and no second one to forget.
+    A source tree that was never installed has no metadata and says so, which
+    is more honest than reporting a version nobody published.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("chat-rag")
+    except PackageNotFoundError:  # pragma: no cover - an uninstalled checkout
+        return "0.0.0.dev0"
+
+
 def __getattr__(name: str):
     """Resolve a public name by importing the facade, once, on first use."""
+    if name == "__version__":
+        value = globals()["__version__"] = _version()
+        return value
     if name in __all__:
         import chat_rag.api as api
 
@@ -92,4 +113,4 @@ def __getattr__(name: str):
 
 def __dir__() -> list[str]:
     """``dir(chat_rag)`` should show the public API without importing it."""
-    return sorted({*globals(), *__all__})
+    return sorted({*globals(), *__all__, "__version__"})

@@ -1,14 +1,52 @@
 """
 Ollama LLM implementation for local models
 """
-from typing import List, Dict, Any
-import httpx
-import ollama
+from typing import Any, Dict, List
 from .base import BaseLLM
-from chat_rag.core.exceptions import LLMException
+from chat_rag.core.exceptions import ConfigurationException, LLMException
 from chat_rag.utils.logger import get_logger
 
 logger = get_logger("OllamaLLM")
+
+#: What to install to answer with a local model. The client is small, but it
+#: brings httpx, and a deployment answering through a gateway never calls it.
+EXTRA = "pip install 'chat-rag[local]'"
+
+
+def _client_module():
+    """The ``ollama`` package, imported when a local model is actually wanted.
+
+    Deliberately not a module-level import: ``components.llm`` imports this
+    module for its type name, and ``pipeline.rag_pipeline`` imports that -- so
+    importing it eagerly made the client (and httpx) a hard requirement of
+    importing the engine, whatever provider it was configured for.
+    """
+    try:
+        import ollama
+    except ImportError as missing:
+        raise ConfigurationException(
+            "the ollama client is not installed, so this deployment cannot "
+            f"answer with a local model. Install it ({EXTRA}), or configure a "
+            "gateway answer provider (ANSWER_PROVIDER=openrouter)."
+        ) from missing
+    return ollama
+
+
+def _timeout_error() -> type[BaseException]:
+    """``httpx.TimeoutException``, or something no exception matches.
+
+    httpx arrives with the ollama client and is not declared separately, so a
+    build without the extra has neither -- and this module still has to be
+    importable, because it is what says the extra is missing.
+    """
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - only without the extra
+        class _NeverRaised(Exception):
+            pass
+
+        return _NeverRaised
+    return httpx.TimeoutException
 
 
 class OllamaLLM(BaseLLM):
@@ -24,7 +62,7 @@ class OllamaLLM(BaseLLM):
         self.model = model
         self.base_url = base_url
         self.timeout = timeout
-        self.client = ollama.Client(host=base_url, timeout=timeout)
+        self.client = _client_module().Client(host=base_url, timeout=timeout)
         
         # Verify connection to Ollama
         self._verify_connection()
@@ -109,7 +147,7 @@ class OllamaLLM(BaseLLM):
             
             return generated_text
             
-        except httpx.TimeoutException:
+        except _timeout_error():
             error_msg = f"Request timeout after {self.timeout}s. Try increasing timeout or using a smaller model."
             logger.error(error_msg)
             RAGLogger.log_llm_response(logger, error_msg, success=False)

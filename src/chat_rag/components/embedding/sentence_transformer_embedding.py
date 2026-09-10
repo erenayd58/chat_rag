@@ -2,7 +2,7 @@
 Sentence Transformer embedding implementation
 """
 import threading
-from typing import Dict, List, Union
+from typing import Any, Dict, List, Union
 import numpy as np
 
 # The OpenMP thread-pool variables that keep several loaded models from
@@ -16,9 +16,40 @@ import numpy as np
 # ``python -m cli``, the smoke tools and the test session each call before
 # they import the application. A program embedding this package should do the
 # same before the first import of ``chat_rag.pipeline``.
-from sentence_transformers import SentenceTransformer
 from .base import BaseEmbedding
-from chat_rag.core.exceptions import EmbeddingException
+from chat_rag.core.exceptions import ConfigurationException, EmbeddingException
+
+#: What to install to get a local embedding model, said once. sentence-
+#: transformers pulls torch, which is most of a gigabyte, so it is the
+#: ``local`` extra rather than a dependency of the engine: a deployment that
+#: embeds through a gateway (``EMBEDDING_PROVIDER=openrouter``) or retrieves
+#: lexically (``RETRIEVAL_PROFILE=bm25_only``) never loads one and should not
+#: have to download one.
+EXTRA = "pip install 'chat-rag[local]'"
+
+
+def _sentence_transformer():
+    """The class, imported when a model is actually wanted.
+
+    Deliberately not a module-level import. This module is reached by
+    ``components.embedding``, which ``pipeline.rag_pipeline`` imports for its
+    type names -- so importing it eagerly made torch a hard requirement of
+    importing the engine at all, whatever profile it was configured for.
+
+    A missing package is a configuration problem rather than an embedding
+    failure: the same call succeeds with the extra installed, and saying which
+    extra is more use than an ImportError from three frames down.
+    """
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as missing:
+        raise ConfigurationException(
+            "sentence-transformers is not installed, so this deployment cannot "
+            f"run a local embedding model. Install it ({EXTRA}), or configure a "
+            "gateway embedding provider (EMBEDDING_PROVIDER=openrouter) or the "
+            "lexical profile (RETRIEVAL_PROFILE=bm25_only)."
+        ) from missing
+    return SentenceTransformer
 
 # One loaded model per name, process-wide. A pipeline is built per browser
 # session and knowledge base (components/ingest/pipelines.py), and each used
@@ -29,11 +60,11 @@ from chat_rag.core.exceptions import EmbeddingException
 # the lock taken to look it up. Bounded by the number of distinct model
 # names in configuration, which is small and does not grow with traffic.
 _models_lock = threading.Lock()
-_models: Dict[str, SentenceTransformer] = {}
+_models: Dict[str, Any] = {}
 _loads = 0
 
 
-def shared_model(model_name: str) -> SentenceTransformer:
+def shared_model(model_name: str) -> Any:
     """The one instance of ``model_name`` this process holds, loading it on
     first use. Loading happens under the lock so two pipelines built at
     once load one model rather than two."""
@@ -41,7 +72,7 @@ def shared_model(model_name: str) -> SentenceTransformer:
     with _models_lock:
         model = _models.get(model_name)
         if model is None:
-            model = SentenceTransformer(model_name, device='cpu')
+            model = _sentence_transformer()(model_name, device='cpu')
             _models[model_name] = model
             _loads += 1
         return model
@@ -74,6 +105,13 @@ class SentenceTransformerEmbedding(BaseEmbedding):
             # CPU, single-threaded (the OMP variables above), and shared:
             # every pipeline naming this model uses the one instance.
             self.model = shared_model(model_name)
+        except ConfigurationException:
+            # "this deployment cannot run a local model at all" -- a
+            # configuration to fix rather than a model that failed to load,
+            # and the one refusal that must reach the caller under its own
+            # name (application.knowledge_bases turns it into a refusal that
+            # names the extra).
+            raise
         except Exception as e:
             raise EmbeddingException(f"Failed to load model {model_name}: {e}")
     

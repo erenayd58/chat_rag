@@ -7,6 +7,10 @@
 # library cannot import a web framework by accident -- packaging enforces it
 # rather than a convention asking nicely.
 #
+# ``tests/unit/test_distribution.py`` builds a real wheel and checks that
+# claim from the outside: the library and its migrations are in it, and the
+# adapter, the entry point and the operator programs are not.
+#
 # ``requirements.txt`` stays the authoritative install for this repository: it
 # pins ``amsc-poc`` to an immutable commit, which is a statement about a
 # deployment rather than a range this library depends on. The install order is
@@ -22,13 +26,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chat-rag"
+# The public API is ``chat_rag.api`` and the policy for changing it is
+# docs/library-api.md. 0.x: the surface is published and its removals are
+# announced, and a minor bump may still change it -- see CHANGELOG.md.
 version = "0.1.0"
 description = "Retrieval-augmented generation engine: ingest, analyse, search, answer"
+readme = "README.md"
 requires-python = ">=3.11,<3.14"
+keywords = ["rag", "retrieval", "chunking", "pgvector", "postgresql"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Text Processing :: Indexing",
+  "Typing :: Typed",
+]
 
-# The engine's own dependencies. FastAPI, uvicorn and python-multipart are
-# deliberately absent: they belong to the adapter in the repository root and
-# are installed from requirements.txt with the rest of the product.
+# The engine's own dependencies: what every configuration of it needs.
+#
+# FastAPI, uvicorn and python-multipart are deliberately absent -- they belong
+# to the adapter in the repository root and are installed from
+# requirements.txt with the rest of the product.
+#
+# PostgreSQL is **not** optional. The knowledge bases, the ingest ledger, the
+# content identities and their analysis state, the ingest journal, the gold
+# set and the chunk vectors are all rows; there is no mode that runs without
+# them, so SQLAlchemy, psycopg, alembic and pgvector are here rather than in
+# an extra that could be left out.
 dependencies = [
   "amsc-poc",
   "SQLAlchemy>=2.0",
@@ -36,15 +58,41 @@ dependencies = [
   "alembic>=1.13",
   "pgvector>=0.3",
   "numpy",
+  # The Azure transport's client. Core because ``LLM_PROVIDER`` defaults to
+  # azure: an engine installed with no extras still has to be able to answer.
+  # The OpenAI-compatible gateway transport needs nothing -- it is urllib.
   "openai",
-  "ollama",
   "rank-bm25",
+  "python-dotenv",
+]
+
+[project.optional-dependencies]
+# Models that run on this machine. sentence-transformers brings torch, which
+# is most of a gigabyte, and the ollama client brings httpx -- and a
+# deployment that embeds through a gateway (EMBEDDING_PROVIDER=openrouter) or
+# retrieves lexically (RETRIEVAL_PROFILE=bm25_only) loads neither. Without
+# this extra the engine imports, serves and answers; asking it for a local
+# model is refused by name, with this install line in the message.
+local = [
   "sentence-transformers",
+  "ollama",
+]
+# Reading anything that is not text or Markdown. Every one of these is
+# imported when a file is actually parsed, never at import, and
+# ``ParserFactory`` skips a parser whose backend is missing -- so without this
+# extra a PDF is refused and a .md file is ingested exactly as before.
+pdf = [
   "pymupdf",
   "pymupdf4llm[layout]==0.3.4",
   "python-docx",
-  "python-dotenv",
 ]
+all = [
+  "chat-rag[local]",
+  "chat-rag[pdf]",
+]
+
+[project.urls]
+Documentation = "https://github.com/erenayd58/chat_rag/blob/main/docs/library-api.md"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -52,9 +100,23 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# The two frozen configurations the components read by path, and the template
-# Alembic writes a new revision from. All three are read from inside the
-# package, so all three have to travel with it.
+# Three kinds of non-Python file, and each has to travel with the package.
+#
+# The two frozen configurations the components read by path; the typing
+# marker, which is what makes the annotations on the public API visible to a
+# consumer's type checker; and the Alembic tree.
+#
+# The migrations are the reason this list is not obvious. ``migrations/`` and
+# ``migrations/versions/`` are not importable packages -- Alembic loads
+# ``env.py`` and each revision by path, and neither has an ``__init__.py`` --
+# so ``packages.find`` does not see them and a wheel built before this shipped
+# a library that could not create its own schema. They are data belonging to
+# ``chat_rag.storage``, and that is how they ship.
 [tool.setuptools.package-data]
+"chat_rag" = ["py.typed"]
 "chat_rag.config" = ["*.yaml"]
-"chat_rag.storage" = ["migrations/*.mako"]
+"chat_rag.storage" = [
+  "migrations/*.py",
+  "migrations/*.mako",
+  "migrations/versions/*.py",
+]

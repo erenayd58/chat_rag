@@ -27,6 +27,8 @@ and the embedding model, both deterministic, for the reason
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from api_v1_doubles import (
     DOCUMENT, OTHER_DOCUMENT, PATIENCE_SECONDS, CitingLLM, DeterministicEmbedding,
@@ -318,9 +320,12 @@ def test_the_engine_reports_what_it_can_do_and_what_it_is_configured_with(engine
     assert measured["database"]["configured"] is True
 
     # Settling a previous process's leftovers is a call, not a side effect of
-    # constructing an engine: this one has none, and says so.
+    # constructing an engine: this one has none, and says so. The staging
+    # sweep is None because this engine has no data root of its own, which is
+    # the one case it must refuse -- see the test that says why.
     picked_up = engine.recover()
-    assert picked_up == {"settled_ingest_jobs": [], "resumed_analyses": []}
+    assert picked_up == {"settled_ingest_jobs": [], "resumed_analyses": [],
+                         "swept_uploads": None}
 
 
 def test_an_engine_can_be_opened_from_keyword_settings():
@@ -472,6 +477,54 @@ def test_a_library_engine_does_not_take_over_the_process_default():
         assert runtime.default() is before
     finally:
         asked.close()
+
+
+def test_staged_uploads_are_swept_only_when_the_directory_is_the_engines(tmp_path):
+    """What a server gets for free and an engine has to check.
+
+    ``runtime/bootstrap.py`` sweeps the staging directory once, at start-up,
+    before any job can exist -- so anything in it belongs to nobody. An engine
+    is created whenever its program feels like it, and without a data root its
+    staging directory is a shared one under the system temp that the product
+    and every other engine also write to. Sweeping that would delete files
+    somebody else's job is about to read, so it is refused: ``None`` rather
+    than an empty list, because "not mine to sweep" is not "nothing there".
+    """
+    from chat_rag.config import paths
+
+    with Engine(EngineConfig(data_dir=str(tmp_path / "own"),
+                             retrieval_profile="bm25_only")) as engine:
+        with engine.activate():
+            staging = Path(paths.upload_staging())
+        staging.mkdir(parents=True, exist_ok=True)
+        (staging / "upload_deadbeef.pdf").write_bytes(b"%PDF-1.4 orphan")
+
+        swept = engine.sweep_staged_uploads()
+        assert swept and swept[0].endswith("upload_deadbeef.pdf")
+        assert list(staging.iterdir()) == []
+        assert staging.is_relative_to(tmp_path / "own"), "and it was its own"
+
+    with Engine(EngineConfig(retrieval_profile="bm25_only")) as shared:
+        assert shared.sweep_staged_uploads() is None
+        assert shared.recover()["swept_uploads"] is None
+
+
+def test_an_engine_will_not_sweep_staging_out_from_under_its_own_jobs(
+        engine, tmp_path):
+    """The second condition, at a smaller scale: this engine's *own* job is
+    reading a staged file, so even its own directory is not sweepable now."""
+    from chat_rag.config import paths
+
+    kb = engine.knowledge_bases.create("Islerken")
+    job = kb.ingest_async(_file(tmp_path, "rapor.md"), methods=[M.STANDARD])
+    # Whether the job is still queued or already running, the answer is the
+    # same refusal; what must never happen is a sweep while one is in flight.
+    if not job.done:
+        assert engine.sweep_staged_uploads() is None
+    job.wait(timeout=PATIENCE_SECONDS)
+    assert job.status == "succeeded", job.record()
+    with engine.activate():
+        assert paths.upload_staging()  # resolved, and nothing was deleted early
 
 
 def test_building_an_engine_installs_no_log_handler(tmp_path):

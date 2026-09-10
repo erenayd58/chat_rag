@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
+from types import SimpleNamespace
 
 from chat_rag.components.llm import ollama_llm
 from chat_rag.core.exceptions import LLMException
@@ -26,9 +27,21 @@ class FakeOllamaClient:
         return {"message": {"content": "Ollama response"}}
 
 
+def _client(monkeypatch, client_class) -> None:
+    """Stand in for the ``ollama`` package itself.
+
+    The client is imported when a local model is wanted rather than when this
+    module is, so that it -- and httpx with it -- is the ``local`` extra
+    rather than a requirement of importing the engine. The factory is the
+    seam; there is no module attribute to patch any more.
+    """
+    monkeypatch.setattr(ollama_llm, "_client_module",
+                        lambda: SimpleNamespace(Client=client_class))
+
+
 def _ollama(monkeypatch) -> ollama_llm.OllamaLLM:
     FakeOllamaClient.instances.clear()
-    monkeypatch.setattr(ollama_llm.ollama, "Client", FakeOllamaClient)
+    _client(monkeypatch, FakeOllamaClient)
     return ollama_llm.OllamaLLM(
         model="test-model",
         base_url="http://ollama.test:11434",
@@ -84,7 +97,7 @@ def test_unavailable_ollama_service_raises_connection_error(monkeypatch):
         def list(self):
             raise ConnectionError("Ollama is unavailable")
 
-    monkeypatch.setattr(ollama_llm.ollama, "Client", UnavailableOllamaClient)
+    _client(monkeypatch, UnavailableOllamaClient)
 
     with pytest.raises(LLMException, match="Failed to connect to Ollama") as exc_info:
         ollama_llm.OllamaLLM(base_url="http://ollama.test:11434")

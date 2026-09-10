@@ -42,6 +42,8 @@ from chat_rag.core.exceptions import (
     IngestInterrupted, IngestOverloaded, QueryOverloaded, QueryTimeout,
 )
 
+from chat_rag.config import Settings
+
 from .config import EngineConfig
 from .engine import Engine, open_engine
 from .resources import Analysis, Document, IngestJob, KnowledgeBase, KnowledgeBases
@@ -57,6 +59,7 @@ __all__ = [
     # the engine and how it is configured
     "Engine",
     "EngineConfig",
+    "Settings",
     "open_engine",
     # the things it holds
     "KnowledgeBase",

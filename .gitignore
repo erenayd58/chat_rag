@@ -91,6 +91,7 @@ docs/*
 !docs/configuration.md
 !docs/database.md
 !docs/legacy-removal.md
+!docs/library-api.md
 !docs/limitations.md
 !docs/operations.md
 !docs/testing.md

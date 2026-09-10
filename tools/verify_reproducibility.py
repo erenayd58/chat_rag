@@ -35,6 +35,11 @@ Tiers
 ``chunk`` and ``clone`` always run; they are quick and they cover the pinned
 dependency, the Viewer shell and the pushed-ness of this branch.
 
+``wheel`` builds the library distribution from the clone and installs it into
+an empty interpreter -- the claim a *consumer* of ``chat-rag`` depends on, as
+opposed to a deployer of this repository. ``--with-wheel-extras`` also
+installs ``chat-rag[all]``, which downloads torch.
+
 ``docker`` runs when Docker is available. It is the primary clean-environment
 proof: ``python:3.11-slim`` has no editable siblings, no developer packages and
 no caches, and the image build already runs the import and serve smokes inside
@@ -475,6 +480,50 @@ def check_smokes(report: Report, work: Path, clone: Path | None, python: Path | 
                tail(serve))
 
 
+def check_wheel(report: Report, work: Path, clone: Path | None,
+                python311: str | None, with_extras: bool) -> None:
+    """The distribution, as a consumer of the library rather than of the repo.
+
+    Everything above proves the *product* installs and serves. This proves the
+    other thing this repository ships: that ``chat_rag`` builds into a wheel,
+    installs into an interpreter with nothing else in it, and is usable there
+    -- with the adapter absent, the migrations present and no torch pulled in
+    by an import.
+
+    Run against the clone, not this checkout, for the same reason every other
+    check here is: a wheel built from the working tree could pass on files
+    nobody has pushed.
+    """
+    if clone is None or python311 is None:
+        report.add(SKIP, "wheel.smoke", "needs a clone and a Python 3.11")
+        return
+
+    # ``build`` is the one tool the smoke needs that a bare interpreter has
+    # not got. Installed into a throwaway environment so the driver's own
+    # site-packages is not changed by running the gate.
+    driver = work / "wheel-driver"
+    made = run([python311, "-m", "venv", str(driver)], timeout=900)
+    if made.returncode != 0:
+        report.add(FAIL, "wheel.smoke", "could not create the build environment",
+                   tail(made))
+        return
+    python = venv_python(driver)
+    prepared = run([str(python), "-m", "pip", "install", "--disable-pip-version-check",
+                    "build"], timeout=1800)
+    if prepared.returncode != 0:
+        report.add(FAIL, "wheel.smoke", "could not install `build`", tail(prepared))
+        return
+
+    command = [str(python), "tools/wheel_smoke.py"]
+    if with_extras:
+        command.append("--with-extras")
+    smoke = run(command, cwd=clone, env=isolated_env(work / "wheel-state"), timeout=5400)
+    report.add(PASS if smoke.returncode == 0 else FAIL, "wheel.smoke",
+               "the wheel installs into an empty environment and is usable there"
+               if smoke.returncode == 0 else "wheel_smoke.py failed",
+               tail(smoke))
+
+
 def check_docker(report: Report, clone: Path | None, docker: str | None,
                  no_cache: bool = False, asked_to_skip: bool = False) -> None:
     """Build and run the tracked repository as a container.
@@ -645,6 +694,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--with-host-install", action="store_true",
                         help="also install requirements.txt into a fresh venv on this machine")
     parser.add_argument("--no-docker", action="store_true", help="skip the container checks")
+    parser.add_argument("--with-wheel-extras", action="store_true",
+                        help="also install chat-rag[all] in the wheel smoke, to prove "
+                             "the extras arrive (downloads torch)")
     parser.add_argument("--docker-no-cache", action="store_true",
                         help="build the image without the layer cache, so the dependency "
                              "install is really re-run (slow; CI is cold anyway)")
@@ -673,6 +725,7 @@ def main(argv: list[str] | None = None) -> int:
         check_chunk(report, work, python311, pin)
         python = check_host_install(report, work, clone, python311, args.with_host_install)
         check_smokes(report, work, clone, python, args.with_host_install)
+        check_wheel(report, work, clone, python311, args.with_wheel_extras)
         check_docker(report, clone, docker, no_cache=args.docker_no_cache,
                      asked_to_skip=args.no_docker)
 

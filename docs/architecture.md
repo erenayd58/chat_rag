@@ -126,6 +126,10 @@ The repository root holds what serves; `src/chat_rag` holds what it serves.
 The engine is a distribution of its own (`pyproject.toml`), so the boundary is
 what the wheel contains rather than a rule asking to be respected: no web
 framework can reach it, because none of it ships beside one.
+`tests/unit/test_distribution.py` builds a real wheel and reads that claim off
+the artifact — the library and its Alembic migrations are in it, `interfaces/`,
+`asgi.py`, `cli/` and `tools/` are not, and `fastapi` is not a declared
+dependency.
 
 ```
 interfaces/http/          NOT IN THE PACKAGE.  The adapter, at the repository
@@ -197,6 +201,14 @@ packaged analyses, staged uploads, the parser cache and both embedding caches
 land under it. The database is not a file and is not covered by it: two
 engines under two roots still share every row unless `database_url` says
 otherwise.
+
+The surface is **enforced**, not described. `chat_rag.api.__all__` is the
+published list; `tests/unit/test_public_surface.py` checks that the exports are
+exactly it, that both import paths agree, and that no internal type appears in
+a public signature — reading resolved annotations rather than source text, and
+holding parameters to a stricter rule than returns. What that promise means
+across versions, and how a removal is announced, is
+[library-api.md](library-api.md).
 
 `tests/integration/test_public_api.py` drives the whole flow — ingest, analyse,
 compare, search, ask — over the real PostgreSQL, with only the answer model and

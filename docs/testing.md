@@ -209,28 +209,40 @@ These fail loudly and mean something specific:
 | `chunk/tests/unit/test_methods_registry.py` | the chunking-method registry is the one source of method identity, and a method registered in it reaches every consumer — including a Viewer page built before it existed |
 | `chat_rag/tests/unit/test_chunker_extension.py` | one registration in the library is a console method: catalogue, API, upload, packager, Viewer routes — with no edit in this repository |
 | `chat_rag/tests/unit/test_promote_chunk_pin.py` | the pin-promotion command moves only the sha, and refuses an unpushed, uncommitted or untracked revision |
+| `chat_rag/tests/unit/test_public_surface.py` | the published API is exactly `chat_rag.api.__all__`, both import paths agree, and no internal type reaches a public signature — no public *parameter* names one at all |
+| `chat_rag/tests/unit/test_distribution.py` | what is in the wheel: the library and its migrations ship, the FastAPI adapter, `asgi.py`, `cli/` and `tools/` do not, and no web framework is a declared dependency |
 
 ---
 
 ## The smokes
 
-Both are cheap enough to run in the image build, and both are run inside it.
+The first two are cheap enough to run in the image build, and both are run
+inside it.
 
 ```bash
 python tools/import_smoke.py   # the declared dependencies satisfy every import
 python tools/serve_smoke.py    # `python -m asgi` binds a socket, answers
                                # /api/v1/health on uvicorn, and stops on signal
+python tools/wheel_smoke.py    # the library installs into an empty venv and works
 ```
 
-A third tool sits beside them but answers a release question rather than a
+The third answers a different question from the first two. They ask whether
+this *repository* runs; `wheel_smoke` asks whether the **distribution** does —
+it builds the wheel, installs it into an interpreter with nothing else in it,
+and checks that the published surface is intact, the migrations are in the
+package, `interfaces`/`asgi`/`cli` are not, importing the surface loads no
+torch, and asking for what an extra provides is refused by name.
+`--with-extras` installs `chat-rag[all]` as well, which downloads torch.
+
+A fourth tool sits beside them but answers a release question rather than a
 build one: `python tools/promote_chunk_pin.py` moves the `amsc-poc` pin to a
 `chunk` commit and checks it holds — see
 [Changes that cross both repos](#changes-that-cross-both-repos).
 
 `import_smoke` names the `amsc` that actually answered and, when pip recorded
 one, the revision it came from — so "it works on my machine" becomes checkable.
-Neither smoke downloads a model, contacts a provider or writes application
-state: each runs against a throwaway data root.
+No smoke downloads a model, contacts a provider or writes application state:
+each runs against a throwaway data root.
 
 ## The Viewer shell build
 
@@ -263,14 +275,21 @@ python tools/verify_reproducibility.py
 
 It clones this repository from the remote, checks the clone carries no state
 from your machine, installs the pinned `amsc` revision into a fresh Python 3.11
-environment, imports it, builds the Viewer v3 product shell from it, and then
-brings up **the whole stack** from that clone with `docker compose up` --
-database, application and console -- and asks it the two questions no health
-check answers: was the schema built from an empty database by the container's
-own migration step, and does `/api/v1` reach the application *through* the
-console. Every check reports PASS, FAIL or SKIP -- SKIP means a capability is
-missing (no Docker, no Python 3.11, no network) or a tier was not asked for,
-never that something was checked and forgiven.
+environment, imports it, builds the Viewer v3 product shell from it, **builds
+the library wheel from that clone and installs it into an empty interpreter**,
+and then brings up **the whole stack** with `docker compose up` -- database,
+application and console -- and asks it the two questions no health check
+answers: was the schema built from an empty database by the container's own
+migration step, and does `/api/v1` reach the application *through* the console.
+Every check reports PASS, FAIL or SKIP -- SKIP means a capability is missing
+(no Docker, no Python 3.11, no network) or a tier was not asked for, never that
+something was checked and forgiven.
+
+The wheel check is there because this repository ships two things. The Docker
+tier proves the *deployment* works; `wheel.smoke` proves the *library* does,
+which is a different claim with a different failure mode -- a package-data
+line that stops shipping the migrations breaks nothing a container would
+notice.
 
 The gate runs *beside* your own stack, not through it: its own compose project,
 its own published ports and its own image tags, so nothing it does touches the
@@ -281,6 +300,7 @@ for the wrong reason.
 | Flag | What it adds |
 |---|---|
 | `--with-host-install` | installs `requirements.txt` and then `pip install --no-deps -e .` into a fresh venv on this machine as well (several minutes, ~1 GB of wheels) |
+| `--with-wheel-extras` | also installs `chat-rag[all]` in the wheel smoke, proving the extras really carry the local model stack (downloads torch) |
 | `--local` | clones this checkout instead of the remote, to run the gate before pushing |
 | `--no-docker` | skips the container checks |
 | `--keep` | leaves the temporary clone and environments behind for inspection |
