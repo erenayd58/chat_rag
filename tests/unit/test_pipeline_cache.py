@@ -18,7 +18,7 @@ import threading
 
 import pytest
 
-from components.ingest.pipelines import PipelineCache
+from chat_rag.components.ingest.pipelines import PipelineCache
 
 
 class Store:

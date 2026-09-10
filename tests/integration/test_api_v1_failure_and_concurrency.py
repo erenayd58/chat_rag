@@ -32,9 +32,9 @@ from api_v1_doubles import (
 )
 from fastapi.testclient import TestClient
 
-from application.services import build_services
-from components.viewer import analysis
-from components.viewer import methods as M
+from chat_rag.application.services import build_services
+from chat_rag.components.viewer import analysis
+from chat_rag.components.viewer import methods as M
 from interfaces.http.v1 import PREFIX, create_app
 
 V1 = PREFIX
@@ -48,7 +48,7 @@ def api(tmp_path, monkeypatch):
     third refused -- the smallest arrangement in which the bound is
     observable, and the same code path a busy deployment takes.
     """
-    from pipeline.rag_pipeline import RAGPipeline
+    from chat_rag.pipeline.rag_pipeline import RAGPipeline
 
     monkeypatch.setenv("RETRIEVAL_PROFILE", "hybrid_rrf")
     monkeypatch.setenv("INGEST_WORKERS", "1")

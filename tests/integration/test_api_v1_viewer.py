@@ -34,10 +34,10 @@ from api_v1_doubles import (
 )
 from fastapi.testclient import TestClient
 
-from application import analysis_query
-from application.services import build_services
-from components.viewer import analysis
-from components.viewer import methods as M
+from chat_rag.application import analysis_query
+from chat_rag.application.services import build_services
+from chat_rag.components.viewer import analysis
+from chat_rag.components.viewer import methods as M
 from interfaces.http.v1 import PREFIX, create_app
 
 V1 = PREFIX
@@ -45,7 +45,7 @@ V1 = PREFIX
 
 @pytest.fixture
 def api(tmp_path, monkeypatch):
-    from pipeline.rag_pipeline import RAGPipeline
+    from chat_rag.pipeline.rag_pipeline import RAGPipeline
 
     monkeypatch.setenv("RETRIEVAL_PROFILE", "hybrid_rrf")
     llm = CitingLLM()

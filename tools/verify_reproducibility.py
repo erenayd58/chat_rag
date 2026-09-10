@@ -429,6 +429,14 @@ def check_host_install(report: Report, work: Path, clone: Path | None,
     if installed.returncode != 0:
         report.add(FAIL, "install.host", "pip install -r requirements.txt failed", tail(installed))
         return None
+    # The engine is a distribution of its own; requirements.txt installs what it
+    # depends on, not the package itself. --no-deps so this cannot re-resolve --
+    # and quietly move -- the pin the line above just proved.
+    own = run([str(python), "-m", "pip", "install", "--disable-pip-version-check",
+               "--no-deps", "-e", "."], cwd=clone, timeout=900)
+    if own.returncode != 0:
+        report.add(FAIL, "install.host", "pip install -e . failed", tail(own))
+        return None
     minutes = (time.monotonic() - started) / 60
 
     origin = run([str(python), "-c",

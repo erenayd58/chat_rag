@@ -39,8 +39,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from components.ingest import limits as L
-from components.observability import telemetry as T
+from chat_rag.components.ingest import limits as L
+from chat_rag.components.observability import telemetry as T
 
 
 class Transport:
@@ -161,7 +161,7 @@ def test_the_deadline_also_survives_the_pool():
 
 def test_deep_analysis_binds_the_trace_when_it_builds_the_providers(monkeypatch):
     """The wiring, not just the wrapper: the real construction site binds it."""
-    from components.chunker import deep_analysis
+    from chat_rag.components.chunker import deep_analysis
 
     transport = Transport()
     monkeypatch.setattr(deep_analysis, "build_transports",

@@ -23,11 +23,11 @@ import threading
 
 import pytest
 
-from components.knowledgebase.manager import KnowledgeBaseManager
-from components.viewer import analysis
-from storage import ContentRepository, DocumentRepository, session_scope
-from storage.models import Content, ContentDocument
-from utils import DocumentTracker
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.components.viewer import analysis
+from chat_rag.storage import ContentRepository, DocumentRepository, session_scope
+from chat_rag.storage.models import Content, ContentDocument
+from chat_rag.utils import DocumentTracker
 
 #: Enough threads to lose a race reliably, few enough to stay inside the
 #: connection pool without queueing for the length of the test.

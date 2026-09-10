@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
 
 
 def test_api_create_contract_persists_every_chunker_across_reload(tmp_path):
@@ -63,7 +63,7 @@ def test_v4_runtime_params_are_rejected_at_persistence_boundary(tmp_path):
 
 
 def test_structure_first_chunker_is_selectable():
-    from components.knowledgebase.manager import normalize_chunker_config
+    from chat_rag.components.knowledgebase.manager import normalize_chunker_config
 
     for alias in ("structure_first", "structural", "StructuralChunker"):
         assert normalize_chunker_config({"type": alias}) == {
@@ -75,7 +75,7 @@ def test_structure_first_chunker_is_selectable():
 def test_structure_first_rejects_runtime_params():
     import pytest
 
-    from components.knowledgebase.manager import normalize_chunker_config
+    from chat_rag.components.knowledgebase.manager import normalize_chunker_config
 
     with pytest.raises(ValueError):
         normalize_chunker_config({"type": "structure_first", "params": {"chunk_size": 300}})
@@ -84,7 +84,7 @@ def test_structure_first_rejects_runtime_params():
 def test_unknown_chunker_still_rejected():
     import pytest
 
-    from components.knowledgebase.manager import normalize_chunker_config
+    from chat_rag.components.knowledgebase.manager import normalize_chunker_config
 
     with pytest.raises(ValueError):
         normalize_chunker_config({"type": "nope"})

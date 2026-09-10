@@ -29,10 +29,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body
 
-from application import analysis_query as analysis_use_case
-from application import chunks as search_use_case
-from application import query as use_case
-from application.errors import InvalidRequest
+from chat_rag.application import analysis_query as analysis_use_case
+from chat_rag.application import chunks as search_use_case
+from chat_rag.application import query as use_case
+from chat_rag.application.errors import InvalidRequest
 
 from ..dependencies import Container, FreshSessionId
 from ..schemas import (

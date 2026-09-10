@@ -16,10 +16,10 @@ from typing import Any, Dict, List, Optional, Sequence
 # adapter does -- one container, the same settings resolution, the same
 # pipeline cache and the same managers -- and imports no web framework to get
 # it.
-from application.services import build_settings_for_kb, default_services  # noqa: F401
-from components.provenance import git_sha  # noqa: F401  (re-exported)
-from components.retriever import retrieval_capabilities
-from utils import DocumentTracker
+from chat_rag.application.services import build_settings_for_kb, default_services  # noqa: F401
+from chat_rag.components.provenance import git_sha  # noqa: F401  (re-exported)
+from chat_rag.components.retriever import retrieval_capabilities
+from chat_rag.utils import DocumentTracker
 
 CLI_SESSION = "cli"
 
@@ -226,7 +226,7 @@ def resolve_canonical_units(
     is a warning or a failure.
     """
     try:
-        from components.parsers.canonical_units_store import default_cache_dir, load_units
+        from chat_rag.components.parsers.canonical_units_store import default_cache_dir, load_units
     except ImportError:
         return None
 

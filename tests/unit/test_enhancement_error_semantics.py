@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import pytest
 
-from components.llm.base import BaseLLM
-from core.exceptions import (
+from chat_rag.components.llm.base import BaseLLM
+from chat_rag.core.exceptions import (
     IngestInterrupted, IngestOverloaded, LLMException, QueryOverloaded, QueryTimeout,
     RESOURCE_CONTROL_EXCEPTIONS,
 )
-from core.models import DocumentChunk, RetrievalResult
-from pipeline.rag_pipeline import RAGPipeline
+from chat_rag.core.models import DocumentChunk, RetrievalResult
+from chat_rag.pipeline.rag_pipeline import RAGPipeline
 
 QUESTION = "Ornitorenk tarifesi kac kurus"
 
@@ -133,7 +133,7 @@ def test_every_handler_that_degrades_re_raises_the_named_set_first():
     """
     import inspect
 
-    from pipeline import rag_pipeline
+    from chat_rag.pipeline import rag_pipeline
 
     source = inspect.getsource(rag_pipeline)
     broad = source.count("except Exception")

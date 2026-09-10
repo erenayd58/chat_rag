@@ -21,12 +21,12 @@ import asgi as entrypoint
 import interfaces.http as http
 
 V1 = http.v1.PREFIX
-from application import workspace as app_workspace
-from components.goldset import GoldSetManager
-from components.knowledgebase.manager import KnowledgeBaseManager
-from components.retriever import BM25OnlyRetriever, NullEmbedding
-from components.vectordb import PgVectorStore
-from core.models import DocumentChunk
+from chat_rag.application import workspace as app_workspace
+from chat_rag.components.goldset import GoldSetManager
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.components.retriever import BM25OnlyRetriever, NullEmbedding
+from chat_rag.components.vectordb import PgVectorStore
+from chat_rag.core.models import DocumentChunk
 
 
 def _fill(collection, kb_id, chunk_id="c-1"):
@@ -186,7 +186,7 @@ def test_a_failed_clearance_keeps_the_record(client, monkeypatch):
     """
     from sqlalchemy.exc import OperationalError
 
-    from storage.repositories import ChunkVectorRepository
+    from chat_rag.storage.repositories import ChunkVectorRepository
 
     created = client.post(f"{V1}/knowledge-bases", json={"name": "locked"}).json()
     collection = entrypoint.services.kb_manager.collection(created["id"])
@@ -326,7 +326,7 @@ def tracked():
     test does not know the path and must not: it once took a ``tmp_path`` it
     ignored, which read as a promise that the ledger was under it.
     """
-    from utils import DocumentTracker
+    from chat_rag.utils import DocumentTracker
 
     return DocumentTracker().get_all_documents()
 

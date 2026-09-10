@@ -26,18 +26,18 @@ import pytest
 
 from amsc.deep import pipeline as deep_pipeline
 
-from components.embedding import OpenAICompatibleEmbedding
-from components.embedding.index_manifest import (
+from chat_rag.components.embedding import OpenAICompatibleEmbedding
+from chat_rag.components.embedding.index_manifest import (
     STATE_COMPATIBLE,
     STATE_REINDEX_REQUIRED,
     build_manifest,
 )
-from components.llm import FallbackLLM
-from components.llm.base import BaseLLM
-from components.vectordb import PgVectorStore
-from config import Settings
-from core.exceptions import IndexIncompatibleException, LLMException
-from pipeline.rag_pipeline import RAGPipeline
+from chat_rag.components.llm import FallbackLLM
+from chat_rag.components.llm.base import BaseLLM
+from chat_rag.components.vectordb import PgVectorStore
+from chat_rag.config import Settings
+from chat_rag.core.exceptions import IndexIncompatibleException, LLMException
+from chat_rag.pipeline.rag_pipeline import RAGPipeline
 
 SECRET = "sk-or-test-secret-value-never-persisted"
 

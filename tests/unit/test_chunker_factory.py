@@ -4,13 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from components.chunker import FrozenV4Chunker, StructuralChunker, create_chunker
-from components.chunker.frozen_v4_chunker import (
+from chat_rag.components.chunker import FrozenV4Chunker, StructuralChunker, create_chunker
+from chat_rag.components.chunker.frozen_v4_chunker import (
     FROZEN_AMSC_COMMIT,
     FROZEN_V4_CONFIG_HASH,
     load_frozen_v4_config,
 )
-from core.exceptions import ConfigurationException
+from chat_rag.core.exceptions import ConfigurationException
 
 
 def _settings(**updates):

@@ -33,10 +33,10 @@ import pytest
 
 import asgi as entrypoint
 import interfaces.http as http
-from components.ingest import limits as L
-from components.knowledgebase.manager import KnowledgeBaseManager
-from components.observability import telemetry as T
-from components.query import limits as Q
+from chat_rag.components.ingest import limits as L
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.components.observability import telemetry as T
+from chat_rag.components.query import limits as Q
 
 from query_doubles import GatedAnswerModel
 
@@ -221,7 +221,7 @@ def test_the_default_leaves_a_thread_free_for_status():
     surface; the reservation is kept, because removing it would raise the
     default number of concurrent questions -- a change to what a deployment
     does, not a cleanup (``docs/legacy-removal.md``)."""
-    from config.query import query_limits_from_env
+    from chat_rag.config.query import query_limits_from_env
 
     for threads in (2, 4, 8, 16):
         limits = query_limits_from_env({"WAITRESS_THREADS": str(threads)})

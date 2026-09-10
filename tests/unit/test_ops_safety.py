@@ -32,8 +32,8 @@ from pathlib import Path
 
 import pytest
 
-from components.observability import events
-from components.observability import telemetry as T
+from chat_rag.components.observability import events
+from chat_rag.components.observability import telemetry as T
 
 
 # --------------------------------------------------------------- messages
@@ -104,7 +104,7 @@ def test_the_examples_per_category_stay_bounded():
 # ------------------------------------------------------------------- logs
 def build_logger(tmp_path, monkeypatch, **env):
     """A fresh RAGLogger writing into ``tmp_path``, whatever ran before."""
-    import utils.logger as logger_module
+    from chat_rag.utils import logger as logger_module
 
     for name, value in env.items():
         monkeypatch.setenv(name, str(value))
@@ -162,7 +162,7 @@ def test_restarts_cannot_fill_the_directory(tmp_path, monkeypatch):
 
 def test_a_log_that_cannot_be_pruned_does_not_stop_the_service(tmp_path, monkeypatch):
     """Housekeeping must never be able to prevent a start-up."""
-    import utils.logger as logger_module
+    from chat_rag.utils import logger as logger_module
 
     victim = tmp_path / "rag_20260101_000000.log"
     victim.write_text("locked", encoding="utf-8")
@@ -179,7 +179,7 @@ def reload_logger(monkeypatch, level=None):
     """utils.logger with LOG_FILE_LEVEL read fresh from the environment."""
     import importlib
 
-    import utils.logger as logger_module
+    from chat_rag.utils import logger as logger_module
 
     if level is None:
         monkeypatch.delenv("LOG_FILE_LEVEL", raising=False)
@@ -194,7 +194,7 @@ def restore_logger_module():
     yield
     import importlib
 
-    import utils.logger as logger_module
+    from chat_rag.utils import logger as logger_module
     importlib.reload(logger_module)
 
 
@@ -276,7 +276,7 @@ def test_an_unrecognised_level_falls_back_to_info_not_debug(monkeypatch):
 
 def test_the_runtime_configuration_agrees_with_the_code():
     """env.example, the container's environment and the code say one thing."""
-    import utils.logger as logger_module
+    from chat_rag.utils import logger as logger_module
 
     root = Path(__file__).resolve().parents[2]
     assert logger_module.LOG_LEVELS[logger_module.LOG_FILE_LEVEL] == logging.INFO

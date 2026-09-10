@@ -25,14 +25,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from components.embedding import OpenAICompatibleEmbedding
-from components.embedding.index_manifest import (
+from chat_rag.components.embedding import OpenAICompatibleEmbedding
+from chat_rag.components.embedding.index_manifest import (
     STATE_COMPATIBLE, STATE_REINDEX_REQUIRED, build_manifest,
 )
-from components.llm.base import BaseLLM
-from components.vectordb import PgVectorStore
-from config import Settings
-from pipeline.rag_pipeline import RAGPipeline
+from chat_rag.components.llm.base import BaseLLM
+from chat_rag.components.vectordb import PgVectorStore
+from chat_rag.config import Settings
+from chat_rag.pipeline.rag_pipeline import RAGPipeline
 
 KEY = "REBUILD_TEST_KEY"
 UNITS = [

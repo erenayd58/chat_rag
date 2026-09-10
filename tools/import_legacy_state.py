@@ -57,14 +57,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-import config  # noqa: F401,E402  - applies .env exactly as the application does
-from config import paths  # noqa: E402
-from storage import (  # noqa: E402
+from chat_rag import config  # noqa: F401,E402  - applies .env exactly as the application does
+from chat_rag.config import paths  # noqa: E402
+from chat_rag.storage import (  # noqa: E402
     ContentRepository, DocumentRepository, GoldSetRepository,
     IngestJobRepository, KnowledgeBaseRepository, session_scope,
 )
-from storage.engine import DatabaseNotConfigured, DatabaseUnavailable  # noqa: E402
-import storage as database  # noqa: E402
+from chat_rag.storage.engine import DatabaseNotConfigured, DatabaseUnavailable  # noqa: E402
+from chat_rag import storage as database  # noqa: E402
 
 
 @dataclass

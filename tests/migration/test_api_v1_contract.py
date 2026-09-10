@@ -27,15 +27,15 @@ from fastapi.testclient import TestClient
 
 import asgi as entrypoint
 import interfaces.http as http
-from application import ingest as app_ingest
-from application import workspace as app_workspace
-from components.ingest import IngestManager
-from components.knowledgebase.manager import KnowledgeBaseManager
-from components.viewer import analysis
-from components.viewer import methods as M
-from config.ingest import IngestLimits
-from core.models import DocumentChunk, RetrievalResult
-from utils.document_tracker import DocumentTracker
+from chat_rag.application import ingest as app_ingest
+from chat_rag.application import workspace as app_workspace
+from chat_rag.components.ingest import IngestManager
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.components.viewer import analysis
+from chat_rag.components.viewer import methods as M
+from chat_rag.config.ingest import IngestLimits
+from chat_rag.core.models import DocumentChunk, RetrievalResult
+from chat_rag.utils.document_tracker import DocumentTracker
 
 V1 = "/api/v1"
 

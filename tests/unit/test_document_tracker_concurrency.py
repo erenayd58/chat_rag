@@ -38,8 +38,8 @@ import threading
 
 import pytest
 
-from storage import DocumentRepository, session_scope
-from utils import DocumentTracker
+from chat_rag.storage import DocumentRepository, session_scope
+from chat_rag.utils import DocumentTracker
 
 
 @pytest.fixture

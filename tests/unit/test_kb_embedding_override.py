@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 import asgi as entrypoint
-from application.services import build_settings_for_kb
+from chat_rag.application.services import build_settings_for_kb
 
 
 def test_a_local_model_name_is_ignored_under_the_gateway_provider(monkeypatch):

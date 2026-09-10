@@ -16,9 +16,9 @@ import time
 
 import pytest
 
-from components.ingest import jobs as J
-from components.ingest.journal import JobJournal
-from config.ingest import IngestLimits
+from chat_rag.components.ingest import jobs as J
+from chat_rag.components.ingest.journal import JobJournal
+from chat_rag.config.ingest import IngestLimits
 
 
 class Immediate:
@@ -90,7 +90,7 @@ def test_the_registry_is_capped_however_long_the_window_is(staging, monkeypatch)
 
 
 def test_the_journal_record_goes_when_the_job_does(staging, tmp_path, monkeypatch):
-    from storage import IngestJobRepository, session_scope
+    from chat_rag.storage import IngestJobRepository, session_scope
 
     monkeypatch.setattr(J, "MAX_FINISHED", 1)
     directory = tmp_path / "journal"

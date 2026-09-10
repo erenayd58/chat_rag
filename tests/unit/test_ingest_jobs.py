@@ -12,10 +12,10 @@ import threading
 
 import pytest
 
-from components.ingest import jobs as J
-from components.ingest.limits import JobGuard, current_guard
-from config.ingest import IngestLimits
-from core.exceptions import IngestOverloaded
+from chat_rag.components.ingest import jobs as J
+from chat_rag.components.ingest.limits import JobGuard, current_guard
+from chat_rag.config.ingest import IngestLimits
+from chat_rag.core.exceptions import IngestOverloaded
 
 
 class Execution:

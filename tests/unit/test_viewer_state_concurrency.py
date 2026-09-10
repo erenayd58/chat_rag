@@ -36,7 +36,7 @@ import threading
 
 import pytest
 
-from components.viewer import analysis
+from chat_rag.components.viewer import analysis
 
 #: ``payload()`` derives the directory from the content hash, so the two have
 #: to agree or the test would read a key nothing was ever written to.
@@ -202,7 +202,7 @@ def test_a_write_that_fails_leaves_the_record_whole(workspace, monkeypatch):
     workspace it belonged to. The failure is injected *after* the membership
     has been written inside the transaction, so only a rollback satisfies this.
     """
-    from storage.repositories import ContentRepository
+    from chat_rag.storage.repositories import ContentRepository
 
     _seed()
     before = analysis._read_state_file(KEY)

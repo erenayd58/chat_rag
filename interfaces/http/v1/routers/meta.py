@@ -13,7 +13,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Query
 
-from application import catalogue, ops
+from chat_rag.application import catalogue, ops
 
 from ..dependencies import Container, SessionId
 from ..schemas import (

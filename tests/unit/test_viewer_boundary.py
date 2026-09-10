@@ -36,8 +36,8 @@ from pathlib import Path
 
 import pytest
 
-from components.viewer import analysis
-from components.viewer import methods as M
+from chat_rag.components.viewer import analysis
+from chat_rag.components.viewer import methods as M
 
 
 def _unit(order, unit_id, unit_type, text, page, *, level=None, path=()):
@@ -415,7 +415,8 @@ def test_the_console_needs_no_built_viewer_page_to_run():
     console having an opinion about it.
     """
     repo = Path(__file__).resolve().parents[2]
-    for module in ("asgi.py", "components/viewer/analysis.py", "components/viewer/methods.py"):
+    for module in ("asgi.py", "src/chat_rag/components/viewer/analysis.py",
+                   "src/chat_rag/components/viewer/methods.py"):
         source = (repo / module).read_text(encoding="utf-8")
         assert "viewer-v3" not in source and "viewer-v2" not in source, module
         assert "index.html" not in source, module

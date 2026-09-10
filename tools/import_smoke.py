@@ -23,7 +23,9 @@ import sys
 import tempfile
 
 #: Run as ``python tools/import_smoke.py``, sys.path[0] is tools/, not the
-#: checkout. The application's own packages live one level up.
+#: checkout. ``chat_rag`` is an installed distribution and needs nothing here;
+#: the adapter it is imported *through* -- ``interfaces``, ``asgi`` -- is not,
+#: and still lives one level up.
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -31,20 +33,20 @@ if ROOT not in sys.path:
 #: Imported in the order a request path loads them, most-depended-on first, so
 #: a failure names the deepest module that broke rather than ``asgi``.
 PRODUCT_MODULES = (
-    "config.settings",
-    "config.paths",
-    "components.chunker.structural_chunker",
-    "components.chunker.deep_analysis",
-    "components.context.assembler",
-    "components.retriever.hybrid_rrf_retriever",
-    "components.parsers.structured_pdf_parser",
-    "components.provenance",
-    "components.viewer.methods",
-    "components.viewer.analysis",
-    "pipeline.rag_pipeline",
-    "application.services",
-    "application.ingest",
-    "application.query",
+    "chat_rag.config.settings",
+    "chat_rag.config.paths",
+    "chat_rag.components.chunker.structural_chunker",
+    "chat_rag.components.chunker.deep_analysis",
+    "chat_rag.components.context.assembler",
+    "chat_rag.components.retriever.hybrid_rrf_retriever",
+    "chat_rag.components.parsers.structured_pdf_parser",
+    "chat_rag.components.provenance",
+    "chat_rag.components.viewer.methods",
+    "chat_rag.components.viewer.analysis",
+    "chat_rag.pipeline.rag_pipeline",
+    "chat_rag.application.services",
+    "chat_rag.application.ingest",
+    "chat_rag.application.query",
     "interfaces.http.v1",
     "interfaces.http",
     "asgi",
@@ -100,7 +102,7 @@ def main() -> int:
     print(f"amsc    {_amsc_origin()}")
     print(f"state   {data_dir}  (throwaway; no real deployment is read or written)")
 
-    from config import paths  # after the environment above, never before
+    from chat_rag.config import paths  # after the environment above, never before
 
     print(f"cache   {paths.canonical_cache()}")
     for line in paths.diagnostics():

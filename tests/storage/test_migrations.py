@@ -34,10 +34,10 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 
-from storage.models import ALL_TABLES, Base
+from chat_rag.storage.models import ALL_TABLES, Base
 
 REPO = Path(__file__).resolve().parents[2]
-MIGRATIONS = REPO / "storage" / "migrations"
+MIGRATIONS = REPO / "src" / "chat_rag" / "storage" / "migrations"
 
 
 def _alembic_config(url: str | None = None) -> Config:
@@ -106,8 +106,8 @@ def fresh_database():
     migrations run against an empty PostgreSQL rather than against whatever
     the session has already built.
     """
-    import storage
-    from storage.engine import configured_settings
+    from chat_rag import storage
+    from chat_rag.storage.engine import configured_settings
 
     settings = configured_settings()
     name = "chat_rag_fresh_" + uuid.uuid4().hex[:12]
@@ -137,8 +137,8 @@ def test_an_empty_database_upgrades_to_a_working_application(fresh_database, mon
     """
     from alembic import command
 
-    import storage
-    from storage import (
+    from chat_rag import storage
+    from chat_rag.storage import (
         ContentRepository, DocumentRepository, KnowledgeBaseRepository, session_scope,
     )
 
@@ -230,7 +230,7 @@ def test_the_alembic_configuration_names_no_credential():
 
 def test_the_repository_ships_the_migrations_it_needs():
     """A migration nobody committed is a deployment that cannot be built."""
-    tracked = subprocess.run(["git", "ls-files", "storage/migrations"], cwd=REPO,
+    tracked = subprocess.run(["git", "ls-files", "src/chat_rag/storage/migrations"], cwd=REPO,
                              capture_output=True, text=True).stdout.split()
     assert any(name.endswith("env.py") for name in tracked)
     versions = [name for name in tracked if "/versions/" in name and name.endswith(".py")]

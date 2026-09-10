@@ -631,7 +631,7 @@ def _canonical_units(
     clean and mean nothing, so an unproven stream is never substituted.
     """
     if units_path:
-        from components.parsers.canonical_units_store import load_units
+        from chat_rag.components.parsers.canonical_units_store import load_units
 
         if not os.path.isfile(units_path):
             raise CliError(f"Canonical units file not found: {units_path}")

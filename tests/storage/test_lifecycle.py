@@ -23,9 +23,9 @@ import threading
 
 import pytest
 
-import storage
-from storage import session_scope
-from storage.engine import DatabaseNotConfigured, DatabaseUnavailable
+from chat_rag import storage
+from chat_rag.storage import session_scope
+from chat_rag.storage.engine import DatabaseNotConfigured, DatabaseUnavailable
 
 
 @pytest.fixture(autouse=True)
@@ -174,7 +174,7 @@ def test_no_report_of_the_database_carries_its_credential(monkeypatch):
     assert described["url"] == "postgresql+psycopg://db.example.com:5432/prod"
     assert "s3cr3t" not in repr(described) and "reporter" not in repr(described)
 
-    from config import Settings
+    from chat_rag.config import Settings
 
     effective = Settings().effective_configuration()
     assert "s3cr3t" not in repr(effective)
@@ -190,7 +190,7 @@ def test_the_configuration_report_costs_no_round_trip(monkeypatch):
 
     # ``storage.engine`` is the re-exported accessor, not the submodule of the
     # same name; the module itself is reached through sys.modules.
-    engine_module = sys.modules["storage.engine"]
+    engine_module = sys.modules["chat_rag.storage.engine"]
 
     def refuse(*args, **kwargs):
         raise AssertionError("describe() opened a connection")

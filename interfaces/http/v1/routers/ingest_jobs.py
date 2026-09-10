@@ -12,7 +12,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Query
 
-from application import ingest as use_case
+from chat_rag.application import ingest as use_case
 
 from ..dependencies import Container, Page
 from ..envelope import flag, slice_of

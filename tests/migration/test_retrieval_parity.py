@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import pytest
 
-from components.vectordb import PgVectorStore
-from core.models import DocumentChunk
+from chat_rag.components.vectordb import PgVectorStore
+from chat_rag.core.models import DocumentChunk
 
 # --------------------------------------------------------------- the corpus
 #: Written down rather than computed, so a ranking is a fact about the stores

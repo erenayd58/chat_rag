@@ -27,8 +27,8 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import text
 
-import storage
-from storage.engine import DatabaseUnavailable
+from chat_rag import storage
+from chat_rag.storage.engine import DatabaseUnavailable
 from tools import migrate
 
 
@@ -151,7 +151,7 @@ def test_a_database_that_is_merely_slow_is_waited_for(monkeypatch):
 def test_an_unset_url_is_not_something_waiting_will_fix(monkeypatch):
     """No amount of retrying supplies a DATABASE_URL nobody set, so that one
     is refused on the first attempt."""
-    from storage.engine import DatabaseNotConfigured
+    from chat_rag.storage.engine import DatabaseNotConfigured
 
     attempts = {"n": 0}
 

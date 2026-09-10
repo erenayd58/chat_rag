@@ -189,7 +189,7 @@ def _build_schema() -> None:
     from alembic.config import Config
     from sqlalchemy import text
 
-    import storage
+    from chat_rag import storage
 
     with storage.engine().connect() as connection:
         connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
@@ -197,15 +197,15 @@ def _build_schema() -> None:
         connection.commit()
 
     settings = Config(os.path.join(REPO_ROOT, "alembic.ini"))
-    settings.set_main_option("script_location", os.path.join(REPO_ROOT, "storage", "migrations"))
+    settings.set_main_option("script_location", os.path.join(REPO_ROOT, "src", "chat_rag", "storage", "migrations"))
     command.upgrade(settings, "head")
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _database():
     """One prepared database for the session. Refuses rather than guesses."""
-    import storage
-    from storage.engine import DatabaseUnavailable
+    from chat_rag import storage
+    from chat_rag.storage.engine import DatabaseUnavailable
 
     try:
         storage.require_reachable()
@@ -232,8 +232,8 @@ def _empty_tables(_database):
     """
     from sqlalchemy import text
 
-    import storage
-    from storage.models import ALL_TABLES
+    from chat_rag import storage
+    from chat_rag.storage.models import ALL_TABLES
 
     with storage.engine().begin() as connection:
         connection.execute(text(
@@ -246,7 +246,7 @@ def _empty_tables(_database):
 def db_session():
     """One session inside its own transaction, for a test that drives a
     repository directly rather than through a store."""
-    import storage
+    from chat_rag import storage
 
     with storage.session_scope() as session:
         yield session
@@ -269,7 +269,7 @@ def _isolated_environment():
     ``tmp_path``, and saw the documents the previous tests had written. It only
     showed up when the unit tests were asked to run first.
     """
-    from config import paths
+    from chat_rag.config import paths
 
     before = dict(os.environ)
     # The same argument applies to the loader's own record of what it applied,
@@ -307,15 +307,15 @@ def _isolated_process_caches():
 
     yield
 
-    analysis = sys.modules.get("components.viewer.analysis")
+    analysis = sys.modules.get("chat_rag.components.viewer.analysis")
     if analysis is not None:
         analysis.release_boundary_model()
-    for shared in ("components.embedding.sentence_transformer_embedding",
-                   "components.reranker.cross_encoder_reranker"):
+    for shared in ("chat_rag.components.embedding.sentence_transformer_embedding",
+                   "chat_rag.components.reranker.cross_encoder_reranker"):
         module = sys.modules.get(shared)
         if module is not None:
             module.release_models()
-    telemetry = sys.modules.get("components.observability.telemetry")
+    telemetry = sys.modules.get("chat_rag.components.observability.telemetry")
     if telemetry is not None and telemetry._registry is not None:
         telemetry._registry.reset()
     app_module = sys.modules.get("app")

@@ -16,8 +16,8 @@ import threading
 
 import pytest
 
-from components.observability import events
-from components.observability import telemetry as T
+from chat_rag.components.observability import events
+from chat_rag.components.observability import telemetry as T
 
 
 class Clock:
@@ -74,7 +74,7 @@ def test_a_stage_that_runs_twice_is_summed_not_overwritten(clock):
 def test_a_failed_stage_is_recorded_with_its_category_and_still_raises(clock):
     """"Parse took forty seconds and then failed" is the single most useful
     line in an incident; a plain timer would have thrown it away."""
-    from core.exceptions import ChunkerException
+    from chat_rag.core.exceptions import ChunkerException
 
     trace = T.JobTrace(job_id="j1")
     with T.use_trace(trace):
@@ -157,7 +157,7 @@ def test_errors_are_categorised_by_what_an_operator_would_do_next(error, expecte
 
 
 def test_ingest_specific_errors_keep_their_own_names():
-    from core.exceptions import ConfigurationException, IngestInterrupted, IngestOverloaded
+    from chat_rag.core.exceptions import ConfigurationException, IngestInterrupted, IngestOverloaded
 
     assert T.categorise(IngestInterrupted("timed_out")) == "timed_out"
     assert T.categorise(IngestInterrupted("cancelled")) == "cancelled"

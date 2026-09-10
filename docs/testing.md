@@ -280,7 +280,7 @@ for the wrong reason.
 
 | Flag | What it adds |
 |---|---|
-| `--with-host-install` | installs `requirements.txt` into a fresh venv on this machine as well (several minutes, ~1 GB of wheels) |
+| `--with-host-install` | installs `requirements.txt` and then `pip install --no-deps -e .` into a fresh venv on this machine as well (several minutes, ~1 GB of wheels) |
 | `--local` | clones this checkout instead of the remote, to run the gate before pushing |
 | `--no-docker` | skips the container checks |
 | `--keep` | leaves the temporary clone and environments behind for inspection |

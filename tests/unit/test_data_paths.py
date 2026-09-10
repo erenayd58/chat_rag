@@ -13,12 +13,12 @@ import os
 
 import pytest
 
-from components.goldset.manager import GoldSetManager
-from components.knowledgebase.manager import KnowledgeBaseManager
-from components.llm import UnavailableLLM
-from config import paths
-from core.exceptions import LLMException
-from utils import DocumentTracker
+from chat_rag.components.goldset.manager import GoldSetManager
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.components.llm import UnavailableLLM
+from chat_rag.config import paths
+from chat_rag.core.exceptions import LLMException
+from chat_rag.utils import DocumentTracker
 
 
 @pytest.fixture
@@ -145,8 +145,8 @@ def test_an_unreachable_model_costs_only_generation():
 
 def test_a_pipeline_is_still_built_when_the_model_cannot_be_reached(monkeypatch):
     """Ingestion and lexical retrieval must not depend on a generation backend."""
-    from config import Settings
-    from pipeline import RAGPipeline
+    from chat_rag.config import Settings
+    from chat_rag.pipeline import RAGPipeline
 
     settings = Settings()
     settings.llm_provider = "ollama"

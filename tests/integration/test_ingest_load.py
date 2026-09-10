@@ -30,11 +30,11 @@ import interfaces.http as http
 
 V1 = http.v1.PREFIX
 import tempfile
-from components.ingest import IngestManager
-from components.ingest import jobs as J
-from components.ingest import limits as L
-from components.knowledgebase.manager import KnowledgeBaseManager
-from config.ingest import IngestLimits
+from chat_rag.components.ingest import IngestManager
+from chat_rag.components.ingest import jobs as J
+from chat_rag.components.ingest import limits as L
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.config.ingest import IngestLimits
 
 from ingest_doubles import GatedProvider
 

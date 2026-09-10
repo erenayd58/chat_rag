@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from components.vectordb import PgVectorStore
+from chat_rag.components.vectordb import PgVectorStore
 from tools import migrate_chroma_to_pgvector as tool
 
 COLLECTION = "kb-migrated"
@@ -210,8 +210,8 @@ def test_the_collection_is_owned_by_the_knowledge_base_it_was_migrated_for(chrom
     carries the foreign key from the moment it is written."""
     from sqlalchemy import select
 
-    from storage import session_scope
-    from storage.models import KnowledgeBase, VectorCollection
+    from chat_rag.storage import session_scope
+    from chat_rag.storage.models import KnowledgeBase, VectorCollection
 
     with session_scope() as session:
         session.add(KnowledgeBase(id="kb-9", name="migrated", name_key="migrated",

@@ -37,9 +37,9 @@ from amsc.deep.pipeline import (
 )
 from amsc.chunking.structural import chunk_units
 from amsc.document.tokenization import TiktokenTokenCounter
-from components.chunker import deep_analysis as product
-from components.chunker.normalization_adapter import CanonicalUnitAdapter
-from components.chunker.structural_chunker import (
+from chat_rag.components.chunker import deep_analysis as product
+from chat_rag.components.chunker.normalization_adapter import CanonicalUnitAdapter
+from chat_rag.components.chunker.structural_chunker import (
     HARD_MAX_TOKENS,
     MIN_TOKENS,
     SOFT_MAX_TOKENS,
@@ -344,7 +344,7 @@ def test_the_default_endpoint_comes_from_amsc_not_from_here(monkeypatch):
 
 
 def test_settings_read_deep_analysis_and_fall_back_to_the_legacy_names(monkeypatch):
-    from config.settings import Settings
+    from chat_rag.config.settings import Settings
 
     for name in (
         "DEEP_ANALYSIS_MODEL", "DEEP_ANALYSIS_ENDPOINT", "DEEP_ANALYSIS_API_KEY_ENV",
@@ -416,7 +416,7 @@ def test_the_configuration_never_reads_the_key_value():
 
 
 def test_the_query_path_has_no_deep_analysis():
-    from pipeline.rag_pipeline import RAGPipeline
+    from chat_rag.pipeline.rag_pipeline import RAGPipeline
 
     source = "".join(
         inspect.getsource(getattr(RAGPipeline, name))
@@ -427,8 +427,8 @@ def test_the_query_path_has_no_deep_analysis():
 
 
 @pytest.mark.parametrize("module", [
-    "components.chunker.boundary_judge",
-    "components.chunker.boundary_guard",
+    "chat_rag.components.chunker.boundary_judge",
+    "chat_rag.components.chunker.boundary_guard",
 ])
 def test_the_retired_boundary_judge_modules_are_gone(module):
     with pytest.raises(ImportError):
@@ -436,8 +436,8 @@ def test_the_retired_boundary_judge_modules_are_gone(module):
 
 
 def test_nothing_in_the_product_calls_the_retired_judge_entry_point():
-    import components.chunker.structural_chunker as chunker
-    import pipeline.rag_pipeline as pipeline_module
+    from chat_rag.components.chunker import structural_chunker as chunker
+    from chat_rag.pipeline import rag_pipeline as pipeline_module
 
     for module in (chunker, pipeline_module, product):
         source = inspect.getsource(module)

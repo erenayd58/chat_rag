@@ -11,11 +11,11 @@ import logging
 import os
 import sys
 
-import storage as database
-from components.ingest import sweep_staging
-from config import paths
+from chat_rag import storage as database
+from chat_rag.components.ingest import sweep_staging
+from chat_rag.config import paths
 
-from application import ingest, workspace
+from chat_rag.application import ingest, workspace
 
 logger = logging.getLogger("RAG.bootstrap")
 

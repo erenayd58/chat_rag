@@ -14,10 +14,10 @@ import threading
 
 import pytest
 
-from components.chunker import deep_analysis
-from components.ingest import limits as L
-from config.ingest import IngestLimits, limits_from_env
-from core.exceptions import IngestInterrupted
+from chat_rag.components.chunker import deep_analysis
+from chat_rag.components.ingest import limits as L
+from chat_rag.config.ingest import IngestLimits, limits_from_env
+from chat_rag.core.exceptions import IngestInterrupted
 
 from ingest_doubles import FailingProvider, GatedProvider
 
@@ -45,7 +45,7 @@ def test_a_bad_value_is_refused_by_name(variable, value, wording):
 
 
 def test_settings_fail_at_construction_not_at_first_upload(monkeypatch):
-    from config import Settings
+    from chat_rag.config import Settings
 
     monkeypatch.setenv("INGEST_WORKERS", "0")
     with pytest.raises(ValueError):
@@ -215,7 +215,7 @@ def test_the_wrapper_keeps_the_model_id_the_report_records():
 def _configuration(monkeypatch, *, use_llm=True):
     from types import SimpleNamespace
 
-    from components.chunker.structural_chunker import (
+    from chat_rag.components.chunker.structural_chunker import (
         HARD_MAX_TOKENS, MIN_TOKENS, SOFT_MAX_TOKENS, TARGET_TOKENS,
     )
 
@@ -278,7 +278,7 @@ def budget_probe(monkeypatch):
 
 
 def test_the_standard_path_takes_no_provider_slot(budget_probe):
-    from components.chunker.structural_chunker import StructuralChunker
+    from chat_rag.components.chunker.structural_chunker import StructuralChunker
 
     from ingest_doubles import deep_corpus, deep_text
 
@@ -289,8 +289,8 @@ def test_the_standard_path_takes_no_provider_slot(budget_probe):
 
 
 def test_the_markdown_and_standard_viewer_variants_take_no_provider_slot(budget_probe):
-    from components.viewer import analysis
-    from components.viewer import methods as M
+    from chat_rag.components.viewer import analysis
+    from chat_rag.components.viewer import methods as M
 
     from ingest_doubles import deep_corpus
 

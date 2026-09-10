@@ -9,8 +9,8 @@ import numpy as np
 
 from amsc.document.models import EmbeddingBatch, SemanticEmbeddingProvenance
 
-from components.chunker import FrozenV4Chunker
-from components.chunker.frozen_v4_chunker import (
+from chat_rag.components.chunker import FrozenV4Chunker
+from chat_rag.components.chunker.frozen_v4_chunker import (
     FROZEN_AMSC_COMMIT,
     FROZEN_V4_CONFIG_HASH,
 )

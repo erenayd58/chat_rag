@@ -11,8 +11,8 @@ import json
 
 import pytest
 
-from components.provenance import snapshot as provenance
-from utils import DocumentTracker
+from chat_rag.components.provenance import snapshot as provenance
+from chat_rag.utils import DocumentTracker
 
 
 class Parser:
@@ -228,7 +228,7 @@ def test_a_record_written_before_snapshots_existed_still_reads(tracker, tmp_path
     older console looks like once it has been imported: every other column
     filled and ``pipeline_snapshot`` never set.
     """
-    from storage import DocumentRepository, session_scope
+    from chat_rag.storage import DocumentRepository, session_scope
 
     with session_scope() as session:
         DocumentRepository(session).upsert({

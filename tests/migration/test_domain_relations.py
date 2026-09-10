@@ -44,10 +44,10 @@ import asgi as entrypoint
 import interfaces.http as http
 
 V1 = http.v1.PREFIX
-from components.knowledgebase.manager import KnowledgeBaseManager
-from components.viewer import analysis
-from components.viewer import methods as M
-from utils.document_tracker import DocumentTracker
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.components.viewer import analysis
+from chat_rag.components.viewer import methods as M
+from chat_rag.utils.document_tracker import DocumentTracker
 
 SHA = "c0ffee" * 8
 

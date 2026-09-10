@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from components.knowledgebase.manager import KnowledgeBaseManager
-from components.vectordb import PgVectorStore
-from core.models import DocumentChunk
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.components.vectordb import PgVectorStore
+from chat_rag.core.models import DocumentChunk
 
 
 def manager(tmp_path):
@@ -83,7 +83,7 @@ def test_a_failed_save_leaves_no_record_behind(tmp_path, monkeypatch):
     work when the failure lands, so only a rollback can make this assertion
     true -- a repository that committed as it went would leave the row.
     """
-    from storage.repositories import KnowledgeBaseRepository
+    from chat_rag.storage.repositories import KnowledgeBaseRepository
 
     kb = manager(tmp_path)
     real = KnowledgeBaseRepository.create
@@ -182,8 +182,8 @@ def test_no_vector_row_survives_its_knowledge_base(tmp_path):
     orphaned row is one a later knowledge base could be matched against."""
     from sqlalchemy import func, select
 
-    from storage import session_scope
-    from storage.models import ChunkVector, VectorCollection
+    from chat_rag.storage import session_scope
+    from chat_rag.storage.models import ChunkVector, VectorCollection
 
     kb = manager(tmp_path)
     created = kb.create(name="kb")

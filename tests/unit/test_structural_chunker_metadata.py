@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from components.chunker.structural_chunker import StructuralChunker
+from chat_rag.components.chunker.structural_chunker import StructuralChunker
 
 
 def unit(unit_id, order, text, unit_type="paragraph", section=("BOLUM A",),

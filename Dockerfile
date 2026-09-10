@@ -77,6 +77,15 @@ COPY --chown=app:app . .
 # shadow.
 RUN cp /app/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh  && chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
+# The engine is a distribution (`src/chat_rag`, pyproject.toml), so it is
+# installed rather than found by being in the working directory. `--no-deps`
+# because requirements.txt already installed every dependency at the revision
+# this image is pinned to, amsc included, and a second resolver run here could
+# quietly move one. Installed in place, so the code the image runs is the code
+# it copied. The adapter around it -- interfaces/, asgi.py, cli/, tools/ -- is
+# deliberately not part of the package and is reached from /app as before.
+RUN pip install --no-deps --no-build-isolation -e .
+
 USER app
 
 # Two build-time checks, so a broken image fails here rather than at the first

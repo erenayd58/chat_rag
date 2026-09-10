@@ -22,8 +22,8 @@ import threading
 import numpy as np
 import pytest
 
-from components.ingest import limits as L
-from core.exceptions import IngestInterrupted
+from chat_rag.components.ingest import limits as L
+from chat_rag.core.exceptions import IngestInterrupted
 
 from ingest_doubles import GatedProvider
 
@@ -219,7 +219,7 @@ def test_the_two_budgets_are_separate_so_neither_starves_the_other():
 def test_the_remote_embedding_provider_routes_its_calls_through_the_budget():
     """The wiring, through the real ``OpenAICompatibleEmbedding``: one HTTP
     request, one slot -- which is the assumption the budget's number rests on."""
-    from components.embedding.openai_compatible_embedding import OpenAICompatibleEmbedding
+    from chat_rag.components.embedding.openai_compatible_embedding import OpenAICompatibleEmbedding
 
     budget = L.configure_embedding_budget(3)
     try:
@@ -240,6 +240,6 @@ def test_the_remote_embedding_provider_routes_its_calls_through_the_budget():
 
 def test_a_local_embedding_model_reports_no_budget():
     """It makes no request; its cost is CPU on a worker already accounted for."""
-    from components.embedding.sentence_transformer_embedding import SentenceTransformerEmbedding
+    from chat_rag.components.embedding.sentence_transformer_embedding import SentenceTransformerEmbedding
 
     assert not hasattr(SentenceTransformerEmbedding, "budgeted")

@@ -23,12 +23,12 @@ import threading
 import pytest
 from sqlalchemy import func, select
 
-from components.vectordb import PgVectorStore
-from core.exceptions import VectorDBException
-from core.models import DocumentChunk
-from storage import session_scope
-from storage.models import ChunkVector, KnowledgeBase, VectorCollection
-from storage.repositories import ChunkVectorRepository
+from chat_rag.components.vectordb import PgVectorStore
+from chat_rag.core.exceptions import VectorDBException
+from chat_rag.core.models import DocumentChunk
+from chat_rag.storage import session_scope
+from chat_rag.storage.models import ChunkVector, KnowledgeBase, VectorCollection
+from chat_rag.storage.repositories import ChunkVectorRepository
 
 
 def chunk(index, doc="doc-a", text=None):

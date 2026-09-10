@@ -22,18 +22,18 @@ import asgi as entrypoint
 import interfaces.http as http
 
 V1 = http.v1.PREFIX
-from application import documents as app_documents
-from application import ingest as app_ingest
-from application import workspace as app_workspace
-from config import paths as app_paths
+from chat_rag.application import documents as app_documents
+from chat_rag.application import ingest as app_ingest
+from chat_rag.application import workspace as app_workspace
+from chat_rag.config import paths as app_paths
 import tempfile
-from components.ingest import IngestManager
-from components.ingest import jobs as J
-from components.ingest.limits import JobGuard, checkpoint
-from components.knowledgebase.manager import KnowledgeBaseManager
-from components.viewer import methods as M
-from config import paths
-from config.ingest import IngestLimits
+from chat_rag.components.ingest import IngestManager
+from chat_rag.components.ingest import jobs as J
+from chat_rag.components.ingest.limits import JobGuard, checkpoint
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.components.viewer import methods as M
+from chat_rag.config import paths
+from chat_rag.config.ingest import IngestLimits
 
 
 class Chunker:
@@ -171,7 +171,7 @@ def ledger():
     ``paths.ingested_documents()`` named. Every assertion below is about what
     the ledger holds, not about where it holds it.
     """
-    from utils import DocumentTracker
+    from chat_rag.utils import DocumentTracker
 
     return DocumentTracker().ingested_docs
 
@@ -256,7 +256,7 @@ def test_a_failure_keeps_its_category_on_the_job(client, jobs, monkeypatch):
     """The three an operator acts on differently. They used to be three status
     codes on the synchronous upload; the submission is always 202 now, so the
     distinction lives where the outcome does -- on the job."""
-    from core.exceptions import ConfigurationException, IndexIncompatibleException
+    from chat_rag.core.exceptions import ConfigurationException, IndexIncompatibleException
 
     test_client, kb_id = client
     manager = jobs()
@@ -289,7 +289,7 @@ def test_a_job_past_its_deadline_ends_timed_out_and_commits_nothing(client, jobs
 
 
 def test_a_ledger_that_cannot_be_written_takes_the_store_rows_back(client, jobs, monkeypatch):
-    from utils import document_tracker
+    from chat_rag.utils import document_tracker
 
     test_client, kb_id = client
     manager = jobs()
@@ -399,7 +399,7 @@ def test_an_unknown_job_is_a_404_that_says_why(client, jobs):
 def test_a_job_id_still_answers_after_a_restart(client, jobs, monkeypatch, staging, tmp_path):
     """A client holding a 202 across a restart gets a truthful terminal state,
     not an unexplained 404. The ledger settles which one."""
-    from components.ingest import JobJournal
+    from chat_rag.components.ingest import JobJournal
 
     test_client, kb_id = client
     journal = JobJournal(str(tmp_path / "journal"))
@@ -432,7 +432,7 @@ def test_a_job_id_still_answers_after_a_restart(client, jobs, monkeypatch, stagi
 def test_a_job_that_finished_before_the_restart_reports_success(client, jobs, monkeypatch, tmp_path):
     """The ledger is the authority: a document carrying the job's id means the
     job completed, so the client is told so rather than told to retry."""
-    from components.ingest import JobJournal
+    from chat_rag.components.ingest import JobJournal
 
     test_client, kb_id = client
     journal = JobJournal(str(tmp_path / "journal"))

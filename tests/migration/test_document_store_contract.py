@@ -39,8 +39,8 @@ from __future__ import annotations
 
 import pytest
 
-from components.vectordb import BaseVectorDB, PgVectorStore
-from core.models import DocumentChunk
+from chat_rag.components.vectordb import BaseVectorDB, PgVectorStore
+from chat_rag.core.models import DocumentChunk
 
 #: The store the product is configured with by default. Whatever else is
 #: shipped, this one has to implement everything the routes call.

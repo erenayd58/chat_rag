@@ -40,19 +40,19 @@ import pytest
 from fastapi.testclient import TestClient
 
 import asgi as entrypoint
-from application import ingest as app_ingest
-from application.errors import Conflict, InvalidRequest, NotFound, NotReady, Unavailable
-from components.ingest import IngestManager
-from components.knowledgebase.manager import KnowledgeBaseManager
-from components.viewer import analysis
-from components.viewer import methods as M
-from config.ingest import IngestLimits
-from core.exceptions import IngestOverloaded, QueryOverloaded, QueryTimeout
-from core.models import DocumentChunk, RetrievalResult
+from chat_rag.application import ingest as app_ingest
+from chat_rag.application.errors import Conflict, InvalidRequest, NotFound, NotReady, Unavailable
+from chat_rag.components.ingest import IngestManager
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.components.viewer import analysis
+from chat_rag.components.viewer import methods as M
+from chat_rag.config.ingest import IngestLimits
+from chat_rag.core.exceptions import IngestOverloaded, QueryOverloaded, QueryTimeout
+from chat_rag.core.models import DocumentChunk, RetrievalResult
 import interfaces.http as http
 from interfaces.http import v1
 from interfaces.http.v1 import envelope
-from utils.document_tracker import DocumentTracker
+from chat_rag.utils.document_tracker import DocumentTracker
 
 V1 = v1.PREFIX
 
@@ -477,7 +477,7 @@ def test_every_refusal_is_translated_centrally(api, monkeypatch, error, status, 
     ``/api/v1/health`` is the vehicle: it takes no payload, so what comes back
     is the exception table and nothing else.
     """
-    from application import ops
+    from chat_rag.application import ops
 
     def explode(_services):
         raise error
@@ -491,7 +491,7 @@ def test_every_refusal_is_translated_centrally(api, monkeypatch, error, status, 
 def test_an_overloaded_refusal_carries_retry_after_and_which_limit_refused(api, monkeypatch):
     """'raise QUERY_MAX_ACTIVE' and 'raise ANSWER_MAX_INFLIGHT' are different
     decisions, and the caller's retry should not have to guess which."""
-    from application import ops
+    from chat_rag.application import ops
 
     def explode(_services):
         raise QueryOverloaded("no slot", reason="answer_capacity",
@@ -507,7 +507,7 @@ def test_an_overloaded_refusal_carries_retry_after_and_which_limit_refused(api, 
 
 
 def test_a_not_ready_refusal_carries_where_the_work_got_to(api, monkeypatch):
-    from application import ops
+    from chat_rag.application import ops
 
     def explode(_services):
         raise NotReady("still building", state={"status": "running", "unit_count": 4})
@@ -519,7 +519,7 @@ def test_a_not_ready_refusal_carries_where_the_work_got_to(api, monkeypatch):
 
 
 def test_a_timeout_says_how_long_it_waited(api, monkeypatch):
-    from application import ops
+    from chat_rag.application import ops
 
     monkeypatch.setattr(ops, "health", lambda _s: (_ for _ in ()).throw(QueryTimeout()))
     refused = api.client.get(f"{V1}/health")
@@ -643,7 +643,7 @@ def test_pagination_walks_a_collection_and_clamps_what_it_is_asked_for(api):
 def test_a_knowledge_base_and_a_document_live_and_die_through_this_api(api):
     """One representative lifecycle, end to end, over the real managers: the
     ledger, the analysis packager and the ingest jobs are the product's own."""
-    from application import workspace
+    from chat_rag.application import workspace
 
     kb = _kb(api, name="Lifecycle")["id"]
 

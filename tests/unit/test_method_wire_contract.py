@@ -36,11 +36,11 @@ import asgi as entrypoint
 import interfaces.http as http
 
 V1 = http.v1.PREFIX
-from application import workspace as app_workspace
-from components.chunker import create_chunker
-from components.knowledgebase.manager import KnowledgeBaseManager, normalize_chunker_config
-from components.viewer import methods as M
-from core.exceptions import ConfigurationException
+from chat_rag.application import workspace as app_workspace
+from chat_rag.components.chunker import create_chunker
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager, normalize_chunker_config
+from chat_rag.components.viewer import methods as M
+from chat_rag.core.exceptions import ConfigurationException
 
 WIRE_KEYS = ("markdown", "structure-only", "agentic", "hybrid")
 WIRE_ENGINES = {
@@ -349,7 +349,7 @@ def test_deep_analysis_is_a_method_key_and_not_a_flag_beside_the_list(upload):
 def test_the_response_and_ledger_speak_in_modes_not_method_keys(upload):
     body, _, _ = upload.post(("methods", "markdown"), ("methods", "agentic"))
     assert body["chunking_mode"] in {"standard", "deep_analysis"}
-    from utils import DocumentTracker
+    from chat_rag.utils import DocumentTracker
 
     (record,) = DocumentTracker().ingested_docs.values()
     assert record["chunking_mode"] in {"standard", "deep_analysis"}

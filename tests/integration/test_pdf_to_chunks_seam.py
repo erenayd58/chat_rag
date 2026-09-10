@@ -22,11 +22,11 @@ import pytest
 
 from amsc.document.models import EmbeddingBatch, SemanticEmbeddingProvenance
 
-from components.chunker import FrozenV4Chunker
-from components.chunker.normalization_adapter import CanonicalUnitAdapter
-from components.parsers.parser_factory import ParserFactory
-from components.parsers.pdf_parser import PDFParser
-from core.exceptions import RAGException
+from chat_rag.components.chunker import FrozenV4Chunker
+from chat_rag.components.chunker.normalization_adapter import CanonicalUnitAdapter
+from chat_rag.components.parsers.parser_factory import ParserFactory
+from chat_rag.components.parsers.pdf_parser import PDFParser
+from chat_rag.core.exceptions import RAGException
 
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "seam"
@@ -41,7 +41,7 @@ STRUCTURED_UNIT_ID = re.compile(r"^[hplt]-\d{5}(#fragment-\d+)?$")
 
 def _structured_parser():
     """Return a StructuredPDFParser, or skip when the layout backend is absent."""
-    from components.parsers.structured_pdf_parser import StructuredPDFParser
+    from chat_rag.components.parsers.structured_pdf_parser import StructuredPDFParser
 
     try:
         return StructuredPDFParser()
@@ -174,7 +174,7 @@ def test_pipeline_forwards_parsed_units_to_the_chunker():
     Regression guard for the defect where ``_from_structured_units`` existed,
     was unit-tested, and was never called by production.
     """
-    from pipeline.rag_pipeline import RAGPipeline
+    from chat_rag.pipeline.rag_pipeline import RAGPipeline
 
     recorded = {}
 

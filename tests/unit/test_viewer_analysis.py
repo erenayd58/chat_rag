@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from components.viewer import analysis
+from chat_rag.components.viewer import analysis
 
 
 # --- a small canonical corpus, built here so no fixture file can drift ------

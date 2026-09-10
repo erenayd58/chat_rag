@@ -27,8 +27,8 @@ import math
 import os
 from typing import Any, Optional, Sequence
 
-from components.vectordb import BaseVectorDB
-from core.models import DocumentChunk
+from chat_rag.components.vectordb import BaseVectorDB
+from chat_rag.core.models import DocumentChunk
 
 #: Metadata keys that carry a field of the record itself rather than extra
 #: information about it. They are written flat so a row is one dictionary, and

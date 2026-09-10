@@ -21,12 +21,12 @@ import urllib.request
 
 import pytest
 
-from components.ingest import limits as L
-from components.llm import FallbackLLM, OpenAICompatibleLLM
-from components.observability import telemetry as T
-from components.query import limits as Q
-from config.query import QueryLimits, query_limits_from_env
-from core.exceptions import LLMException, QueryOverloaded, QueryTimeout
+from chat_rag.components.ingest import limits as L
+from chat_rag.components.llm import FallbackLLM, OpenAICompatibleLLM
+from chat_rag.components.observability import telemetry as T
+from chat_rag.components.query import limits as Q
+from chat_rag.config.query import QueryLimits, query_limits_from_env
+from chat_rag.core.exceptions import LLMException, QueryOverloaded, QueryTimeout
 
 from query_doubles import FailingAnswerModel, GatedAnswerModel
 
@@ -66,7 +66,7 @@ def test_a_bad_value_is_refused_by_name(variable, value, wording):
 
 
 def test_settings_fail_at_construction(monkeypatch):
-    from config import Settings
+    from chat_rag.config import Settings
 
     monkeypatch.setenv("ANSWER_MAX_INFLIGHT", "0")
     with pytest.raises(ValueError):

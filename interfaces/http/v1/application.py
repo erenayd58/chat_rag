@@ -31,7 +31,7 @@ from typing import Any, Callable, Optional
 
 from fastapi import FastAPI
 
-from application.services import Services
+from chat_rag.application.services import Services
 
 from . import errors, openapi
 from .routers import ROUTERS

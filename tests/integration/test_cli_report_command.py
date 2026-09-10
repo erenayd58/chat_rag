@@ -17,8 +17,8 @@ import pytest
 
 import cli.runtime as runtime
 from cli.__main__ import main
-from components.provenance import build_snapshot
-from components.retriever import BM25OnlyRetriever, NullEmbedding
+from chat_rag.components.provenance import build_snapshot
+from chat_rag.components.retriever import BM25OnlyRetriever, NullEmbedding
 
 
 class FakeChunk:

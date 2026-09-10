@@ -22,9 +22,9 @@ import numpy as np
 import pytest
 
 from amsc.document.models import EmbeddingBatch, SemanticEmbeddingProvenance
-from components.viewer import analysis
-from components.viewer import methods as M
-from config import paths
+from chat_rag.components.viewer import analysis
+from chat_rag.components.viewer import methods as M
+from chat_rag.config import paths
 
 
 class HashingBoundaryEmbedder:
@@ -114,7 +114,7 @@ def workspace(tmp_path, monkeypatch):
 
 def test_hybrid_rows_come_from_the_named_model_over_the_product_budget(boundary_model, session_state_root):
     from amsc.document.models import RawDocumentUnit
-    from components.chunker.structural_chunker import HARD_MAX_TOKENS
+    from chat_rag.components.chunker.structural_chunker import HARD_MAX_TOKENS
 
     units = [RawDocumentUnit.model_validate(u) for u in _oversized_corpus()]
     rows = analysis._chunk_rows(M.HYBRID, units)

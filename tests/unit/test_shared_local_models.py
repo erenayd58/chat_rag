@@ -35,7 +35,7 @@ class FakeModel:
 
 @pytest.fixture
 def embedding_module(monkeypatch):
-    from components.embedding import sentence_transformer_embedding as module
+    from chat_rag.components.embedding import sentence_transformer_embedding as module
 
     FakeModel.instances.clear()
     module.release_models()
@@ -86,7 +86,7 @@ def test_release_drops_the_instances(embedding_module):
 
 
 def test_a_model_that_cannot_load_is_reported_not_cached(embedding_module, monkeypatch):
-    from core.exceptions import EmbeddingException
+    from chat_rag.core.exceptions import EmbeddingException
 
     class Broken:
         def __init__(self, *a, **k):

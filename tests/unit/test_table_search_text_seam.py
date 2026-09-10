@@ -10,17 +10,17 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from components.chunker import deep_analysis as product
-from components.chunker.structural_chunker import (
+from chat_rag.components.chunker import deep_analysis as product
+from chat_rag.components.chunker.structural_chunker import (
     HARD_MAX_TOKENS,
     MIN_TOKENS,
     SOFT_MAX_TOKENS,
     TARGET_TOKENS,
     StructuralChunker,
 )
-from components.context.assembler import TABLE_VIEW_HEADER, assemble_context
-from components.retriever.hybrid_rrf_retriever import _lexical_text
-from core.models import DocumentChunk, RetrievalResult
+from chat_rag.components.context.assembler import TABLE_VIEW_HEADER, assemble_context
+from chat_rag.components.retriever.hybrid_rrf_retriever import _lexical_text
+from chat_rag.core.models import DocumentChunk, RetrievalResult
 
 
 TABLE = "\n".join([

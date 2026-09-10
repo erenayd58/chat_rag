@@ -17,9 +17,9 @@ import time
 
 import pytest
 
-from components.ingest import jobs as J
-from components.ingest.journal import INTERRUPTED, RECOVERED, JobJournal
-from config.ingest import IngestLimits
+from chat_rag.components.ingest import jobs as J
+from chat_rag.components.ingest.journal import INTERRUPTED, RECOVERED, JobJournal
+from chat_rag.config.ingest import IngestLimits
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ def workspace(tmp_path):
 
 def journalled(job_id):
     """One job's journal record, read back from the table it lives in."""
-    from storage import IngestJobRepository, session_scope
+    from chat_rag.storage import IngestJobRepository, session_scope
 
     with session_scope() as session:
         found = [r for r in IngestJobRepository(session).snapshots()
@@ -43,7 +43,7 @@ def journalled(job_id):
 
 def journalled_ids():
     """Every job the journal still holds, oldest first."""
-    from storage import IngestJobRepository, session_scope
+    from chat_rag.storage import IngestJobRepository, session_scope
 
     with session_scope() as session:
         return [r.get("job_id") for r in IngestJobRepository(session).snapshots()]

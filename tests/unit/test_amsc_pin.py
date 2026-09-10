@@ -60,7 +60,7 @@ def _product_imports() -> dict[str, set[str]]:
     wanted: dict[str, set[str]] = {}
     for path in ROOT.rglob("*.py"):
         parts = set(path.relative_to(ROOT).parts)
-        if parts & {"tests", "venv", ".venv", "examples", "__pycache__"}:
+        if parts & {"tests", "venv", ".venv", "examples", "__pycache__", "build"}:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         for module, names in IMPORT.findall(text):

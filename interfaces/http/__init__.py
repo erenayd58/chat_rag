@@ -24,7 +24,7 @@ from typing import Any, Callable, Iterator, Optional
 
 from starlette.routing import Route
 
-from application.services import Services
+from chat_rag.application.services import Services
 
 from . import operator, v1
 

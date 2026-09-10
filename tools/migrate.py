@@ -87,8 +87,8 @@ def wait_for_database(timeout: float | None = None) -> None:
     ``DatabaseNotConfigured`` is not retried: no amount of waiting supplies a
     ``DATABASE_URL`` that was never set.
     """
-    import storage
-    from storage.engine import DatabaseNotConfigured, DatabaseUnavailable
+    from chat_rag import storage
+    from chat_rag.storage.engine import DatabaseNotConfigured, DatabaseUnavailable
 
     deadline = time.monotonic() + (DEFAULT_WAIT_SECONDS if timeout is None else timeout)
     attempt = 0
@@ -119,7 +119,8 @@ def _alembic_config():
 
     settings = Config(os.path.join(REPO_ROOT, "alembic.ini"))
     settings.set_main_option(
-        "script_location", os.path.join(REPO_ROOT, "storage", "migrations")
+        "script_location",
+        os.path.join(REPO_ROOT, "src", "chat_rag", "storage", "migrations")
     )
     return settings
 
@@ -146,7 +147,7 @@ def upgrade(timeout: float | None = None) -> str:
     from alembic import command
     from sqlalchemy import text
 
-    import storage
+    from chat_rag import storage
 
     wait_for_database(timeout)
 
@@ -182,7 +183,7 @@ def upgrade(timeout: float | None = None) -> str:
 
 def report(timeout: float | None = None) -> int:
     """Say where the database is and where the migrations end. Change nothing."""
-    import storage
+    from chat_rag import storage
 
     wait_for_database(timeout)
     head = head_revision()

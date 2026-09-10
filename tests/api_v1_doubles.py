@@ -19,7 +19,7 @@ import hashlib
 
 import numpy as np
 
-from components.llm import BaseLLM
+from chat_rag.components.llm import BaseLLM
 
 #: How long a job or a packaging run may take before a test calls it stuck.
 #: Generous: these run real chunkers on real worker threads.

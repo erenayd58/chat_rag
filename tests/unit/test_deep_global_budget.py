@@ -18,11 +18,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from components.chunker import deep_analysis
-from components.chunker.structural_chunker import (
+from chat_rag.components.chunker import deep_analysis
+from chat_rag.components.chunker.structural_chunker import (
     HARD_MAX_TOKENS, MIN_TOKENS, SOFT_MAX_TOKENS, TARGET_TOKENS, StructuralChunker,
 )
-from components.ingest import limits as L
+from chat_rag.components.ingest import limits as L
 
 from ingest_doubles import GatedProvider, deep_corpus, deep_text, forbidding_answer
 

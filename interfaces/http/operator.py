@@ -21,7 +21,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Query
 
-from application import ops as use_case
+from chat_rag.application import ops as use_case
 
 from .v1.dependencies import Container
 

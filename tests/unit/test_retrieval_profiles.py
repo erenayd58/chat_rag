@@ -6,15 +6,15 @@ import yaml
 
 from amsc.retrieval.pipeline import DeterministicHybridIndex, RetrievalDocument
 
-from components.retriever import (
+from chat_rag.components.retriever import (
     BenchmarkAlignedEmbedding,
     BenchmarkAlignedRetriever,
     FROZEN_RETRIEVAL_COMMIT,
     FROZEN_RETRIEVAL_CONFIG,
     load_benchmark_aligned_config,
 )
-from core.exceptions import ConfigurationException
-from core.models import DocumentChunk
+from chat_rag.core.exceptions import ConfigurationException
+from chat_rag.core.models import DocumentChunk
 
 
 class FakeFrozenEmbedder:

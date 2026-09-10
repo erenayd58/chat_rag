@@ -19,10 +19,10 @@ import threading
 
 import pytest
 
-from components.ingest import limits as L
-from components.observability import telemetry as T
-from components.query import limits as Q
-from core.exceptions import LLMException
+from chat_rag.components.ingest import limits as L
+from chat_rag.components.observability import telemetry as T
+from chat_rag.components.query import limits as Q
+from chat_rag.core.exceptions import LLMException
 
 from query_doubles import (
     SECRET_ANSWER, SECRET_CHUNK, SECRET_QUESTION, FailingAnswerModel, GatedAnswerModel,
@@ -152,7 +152,7 @@ def test_the_query_window_cannot_grow_with_uptime(registry):
 
 
 def test_query_errors_are_categorised():
-    from core.exceptions import QueryOverloaded, QueryTimeout
+    from chat_rag.core.exceptions import QueryOverloaded, QueryTimeout
 
     assert T.categorise(QueryTimeout()) == "timed_out"
     assert T.categorise(QueryOverloaded("full")) == "overloaded"

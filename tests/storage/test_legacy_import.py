@@ -29,7 +29,7 @@ import os
 
 import pytest
 
-from storage import (
+from chat_rag.storage import (
     ContentRepository, DocumentRepository, GoldSetRepository,
     IngestJobRepository, KnowledgeBaseRepository, session_scope,
 )

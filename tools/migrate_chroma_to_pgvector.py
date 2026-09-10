@@ -214,8 +214,8 @@ def _same(source: dict[str, Any], stored: dict[str, Any]) -> bool:
 def migrate_store(store_path: str, *, kb_id: Optional[str], collection: str,
                   dry_run: bool = False, overwrite: bool = False) -> Outcome:
     """Move one Chroma directory into one pgvector collection."""
-    from components.vectordb import PgVectorStore
-    from core.models import DocumentChunk
+    from chat_rag.components.vectordb import PgVectorStore
+    from chat_rag.core.models import DocumentChunk
 
     outcome = Outcome(collection=collection, kb_id=kb_id)
     rows, manifest = read_chroma(store_path)
@@ -285,7 +285,7 @@ def migrate_store(store_path: str, *, kb_id: Optional[str], collection: str,
 
 
 def _known_knowledge_bases() -> dict[str, str]:
-    from storage import KnowledgeBaseRepository, session_scope
+    from chat_rag.storage import KnowledgeBaseRepository, session_scope
 
     with session_scope() as session:
         return {kb_id: record.get("name") or kb_id

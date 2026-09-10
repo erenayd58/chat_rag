@@ -14,9 +14,9 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Body, File, Form, Query, Request, Response, UploadFile, status
 
-from application import documents as use_case
-from application import ingest, workspace
-from application.errors import InvalidRequest
+from chat_rag.application import documents as use_case
+from chat_rag.application import ingest, workspace
+from chat_rag.application.errors import InvalidRequest
 
 from ..dependencies import Container, Page, SessionId, optional_number
 from ..envelope import slice_of

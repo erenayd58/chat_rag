@@ -16,9 +16,9 @@ from datetime import datetime
 import numpy as np
 import pytest
 
-from components.context import assemble_context, estimate_tokens
-from components.embedding import OpenAICompatibleEmbedding, embedding_fingerprint
-from components.embedding.index_manifest import (
+from chat_rag.components.context import assemble_context, estimate_tokens
+from chat_rag.components.embedding import OpenAICompatibleEmbedding, embedding_fingerprint
+from chat_rag.components.embedding.index_manifest import (
     STATE_COMPATIBLE,
     STATE_EMPTY,
     STATE_NO_DENSE_INDEX,
@@ -26,11 +26,11 @@ from components.embedding.index_manifest import (
     build_manifest,
     index_status,
 )
-from components.llm import FallbackLLM, OpenAICompatibleLLM
-from components.llm.base import BaseLLM
-from components.retriever import HybridRRFRetriever
-from core.exceptions import LLMException, RetrieverException
-from core.models import DocumentChunk, RetrievalResult
+from chat_rag.components.llm import FallbackLLM, OpenAICompatibleLLM
+from chat_rag.components.llm.base import BaseLLM
+from chat_rag.components.retriever import HybridRRFRetriever
+from chat_rag.core.exceptions import LLMException, RetrieverException
+from chat_rag.core.models import DocumentChunk, RetrievalResult
 
 
 # ---------------------------------------------------------------- helpers
@@ -143,7 +143,7 @@ def test_manifest_round_trip_keeps_names_only():
     so the round trip is asserted against the real persistence rather than
     against a dictionary that never left the process.
     """
-    from components.vectordb import PgVectorStore
+    from chat_rag.components.vectordb import PgVectorStore
 
     identity = {"provider": "openai_compatible", "model": "qwen/qwen3-embedding-8b",
                 "endpoint": "https://gw/v1/embeddings", "api_key_env": "OPENROUTER_API_KEY",
@@ -199,7 +199,7 @@ class FlakyTransport:
 
 
 def test_a_rejected_batch_is_retried_then_embedded_text_by_text(tmp_path, monkeypatch):
-    import components.embedding.openai_compatible_embedding as module
+    from chat_rag.components.embedding import openai_compatible_embedding as module
 
     monkeypatch.setattr(module.ResilientBatches, "pause_seconds", 0.0)
     transport = FlakyTransport()
@@ -213,7 +213,7 @@ def test_a_rejected_batch_is_retried_then_embedded_text_by_text(tmp_path, monkey
 
 
 def test_a_genuinely_bad_text_is_named(tmp_path, monkeypatch):
-    import components.embedding.openai_compatible_embedding as module
+    from chat_rag.components.embedding import openai_compatible_embedding as module
 
     monkeypatch.setattr(module.ResilientBatches, "pause_seconds", 0.0)
     transport = FlakyTransport(bad_text="poison")
@@ -483,7 +483,7 @@ def test_fallback_llm_records_which_model_answered():
 
 # --------------------------------------------------------------- settings
 def test_settings_read_the_three_roles(monkeypatch):
-    from config.settings import Settings
+    from chat_rag.config.settings import Settings
 
     for name in ("ANSWER_PROVIDER", "ANSWER_MODEL", "ANSWER_FALLBACK_PROVIDER", "ANSWER_FALLBACK_MODEL",
                  "EMBEDDING_PROVIDER", "EMBEDDING_MODEL", "RETRIEVAL_PROFILE", "LLM_PROVIDER"):

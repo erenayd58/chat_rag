@@ -35,13 +35,13 @@ import asgi as entrypoint
 import interfaces.http as http
 
 V1 = http.v1.PREFIX
-from application import workspace as app_workspace
+from chat_rag.application import workspace as app_workspace
 from amsc.chunking import registry
 from amsc.chunking.example import FIXED_WINDOW
-from components.chunker import registry as indexing
-from components.knowledgebase.manager import KnowledgeBaseManager, normalize_chunker_config
-from components.viewer import analysis
-from components.viewer import methods as M
+from chat_rag.components.chunker import registry as indexing
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager, normalize_chunker_config
+from chat_rag.components.viewer import analysis
+from chat_rag.components.viewer import methods as M
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -271,8 +271,8 @@ def test_the_viewer_builders_and_the_console_share_one_identity():
 
 
 def test_the_indexing_chunkers_are_one_table(client):
-    from components.chunker import create_chunker
-    from core.exceptions import ConfigurationException
+    from chat_rag.components.chunker import create_chunker
+    from chat_rag.core.exceptions import ConfigurationException
 
     assert list(indexing.ids()) == ["v4", "structure_first"]
     for chunker in indexing.INDEXING_CHUNKERS:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from components.provenance import snapshot as provenance
+from chat_rag.components.provenance import snapshot as provenance
 
 from cli import manifest as mf
 from cli import runtime

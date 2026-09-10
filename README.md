@@ -55,6 +55,7 @@ cd chat_rag
 python -m venv venv                       # Python 3.11–3.13
 venv\Scripts\activate                     # macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
+pip install --no-deps -e .                # the engine package itself (src/chat_rag)
 cp env.example .env                       # PowerShell: Copy-Item env.example .env
 
 # 3. prove the declared source installs and runs (minutes; needs Docker)
@@ -108,8 +109,15 @@ Then, in the browser and the terminal:
 python -m venv venv
 venv\Scripts\activate            # macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
+pip install --no-deps -e .
 cp env.example .env
 ```
+
+Two installs, because there are two things. `requirements.txt` is the pinned
+dependency set; `pip install -e .` is this repository's own engine package,
+`chat_rag`, which lives in `src/chat_rag` and is what `interfaces/`, `asgi.py`,
+`cli/` and `tools/` import. `--no-deps` keeps the second from re-resolving what
+the first just pinned.
 
 `requirements.txt` installs `amsc-poc` from a pinned commit of the `chunk`
 repository. For library development install it editable instead, so your

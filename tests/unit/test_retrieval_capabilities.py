@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from components.retriever import (
+from chat_rag.components.retriever import (
     BM25OnlyRetriever,
     NullEmbedding,
     method_is_available,

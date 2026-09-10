@@ -83,7 +83,7 @@ def test_the_server_has_no_debug_setting_to_get_wrong(clean_server_env, monkeypa
     assert set(options) == {"host", "port"}
     assert not any("debug" in str(value).lower() for value in options.values())
 
-    for module in ("asgi.py", "runtime/bootstrap.py", "config/runtime.py"):
+    for module in ("asgi.py", "runtime/bootstrap.py", "src/chat_rag/config/runtime.py"):
         source = open(os.path.join(REPO, module), encoding="utf-8").read()
         assert "FLASK_DEBUG" not in source, f"{module} still reads FLASK_DEBUG"
 
@@ -101,7 +101,7 @@ def test_server_options_are_configurable(clean_server_env, monkeypatch):
     monkeypatch.setenv("FLASK_PORT", "9001")
     monkeypatch.setenv("WAITRESS_THREADS", "2")
 
-    from config.runtime import runtime_from_env
+    from chat_rag.config.runtime import runtime_from_env
 
     options = entrypoint.server_options()
     assert (options["host"], options["port"]) == ("127.0.0.1", 9001)
@@ -111,7 +111,7 @@ def test_server_options_are_configurable(clean_server_env, monkeypatch):
 @pytest.mark.parametrize("blank", ["", "   "])
 def test_an_empty_thread_count_means_unset(clean_server_env, monkeypatch, blank):
     """A variable set to nothing is a variable that was not set."""
-    from config.runtime import runtime_from_env
+    from chat_rag.config.runtime import runtime_from_env
 
     monkeypatch.setenv("WAITRESS_THREADS", blank)
 
@@ -128,7 +128,7 @@ def test_a_nonsense_thread_count_is_refused_by_name(clean_server_env, monkeypatc
     four. One reader owns it now (``config.runtime``) and refuses a value it
     cannot use, by name, which is what every other limit already did.
     """
-    from config.runtime import runtime_from_env
+    from chat_rag.config.runtime import runtime_from_env
 
     monkeypatch.setenv("WAITRESS_THREADS", bad)
 
@@ -198,7 +198,7 @@ def test_a_stop_drains_the_jobs_before_it_returns_the_pool(monkeypatch):
     order = []
     monkeypatch.setattr(entrypoint.services.ingest_jobs, "close",
                         lambda timeout=None: order.append("jobs"))
-    import storage as database
+    from chat_rag import storage as database
 
     monkeypatch.setattr(database, "dispose", lambda: order.append("database"))
 

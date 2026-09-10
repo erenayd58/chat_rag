@@ -25,13 +25,13 @@ from fastapi.testclient import TestClient
 
 import asgi as entrypoint
 import interfaces.http as http
-from components.viewer import methods as M
+from chat_rag.components.viewer import methods as M
 from runtime import bootstrap
 
 V1 = http.v1.PREFIX
-from application import workspace as app_workspace
+from chat_rag.application import workspace as app_workspace
 import tempfile
-from components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
 
 
 class Chunker:
@@ -201,7 +201,7 @@ def test_a_failed_ingest_leaves_no_temp_file(client, temp_dir, monkeypatch):
 
 def test_a_store_that_refuses_the_document_leaves_no_temp_file(client, temp_dir, monkeypatch):
     """An incompatible index ends the job, and the file goes with it."""
-    from core.exceptions import IndexIncompatibleException
+    from chat_rag.core.exceptions import IndexIncompatibleException
 
     test_client, kb_id = client
     monkeypatch.setattr(
@@ -224,8 +224,8 @@ def test_a_store_that_refuses_the_document_leaves_no_temp_file(client, temp_dir,
 
 def test_a_refused_upload_leaves_no_temp_file(client, temp_dir, monkeypatch):
     """A full queue refuses the upload up front; the file is gone by then."""
-    from config.ingest import IngestLimits
-    from components.ingest import IngestManager
+    from chat_rag.config.ingest import IngestLimits
+    from chat_rag.components.ingest import IngestManager
 
     test_client, kb_id = client
     monkeypatch.setattr(entrypoint.services, "get_pipeline", lambda *a, **k: StubPipeline())
@@ -253,8 +253,8 @@ def test_a_refused_upload_leaves_no_temp_file(client, temp_dir, monkeypatch):
 
 
 def test_an_attached_duplicate_leaves_no_second_temp_file(client, temp_dir, monkeypatch):
-    from config.ingest import IngestLimits
-    from components.ingest import IngestManager
+    from chat_rag.config.ingest import IngestLimits
+    from chat_rag.components.ingest import IngestManager
 
     test_client, kb_id = client
     monkeypatch.setattr(entrypoint.services, "get_pipeline", lambda *a, **k: StubPipeline())
@@ -280,7 +280,7 @@ def test_an_attached_duplicate_leaves_no_second_temp_file(client, temp_dir, monk
 
 def test_a_restart_sweeps_what_a_previous_process_left(temp_dir, monkeypatch):
     """A job lives in memory, so a staged file with no process is nobody's."""
-    from config import paths
+    from chat_rag.config import paths
 
     staging = os.path.join(str(temp_dir), "chat_rag-uploads")
     os.makedirs(staging)

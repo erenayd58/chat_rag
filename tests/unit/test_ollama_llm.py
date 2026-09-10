@@ -3,10 +3,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from components.llm import ollama_llm
-from core.exceptions import LLMException
-from core.models import DocumentChunk, RetrievalResult
-from pipeline.rag_pipeline import RAGPipeline
+from chat_rag.components.llm import ollama_llm
+from chat_rag.core.exceptions import LLMException
+from chat_rag.core.models import DocumentChunk, RetrievalResult
+from chat_rag.pipeline.rag_pipeline import RAGPipeline
 
 
 class FakeOllamaClient:

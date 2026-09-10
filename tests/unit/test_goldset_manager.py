@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from components.goldset import GoldSetManager, entry_id_for, normalize_question
+from chat_rag.components.goldset import GoldSetManager, entry_id_for, normalize_question
 
 
 def clock():
@@ -141,7 +141,7 @@ def test_a_store_that_cannot_be_read_does_not_take_the_app_down(tmp_path, monkey
     This used to be a corrupt JSON file; it is now an unreachable table, which
     is the same question about the same guarantee.
     """
-    from storage.repositories import GoldSetRepository
+    from chat_rag.storage.repositories import GoldSetRepository
 
     gold = GoldSetManager(str(tmp_path / "gold.json"))
     gold.upsert(ENTRY)

@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from components.parsers.canonical_units_store import (
+from chat_rag.components.parsers.canonical_units_store import (
     find_cache_file,
     load_units,
     select_units,

@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import pytest
 
-from components.vectordb import PgVectorStore
-from core.models import DocumentChunk
+from chat_rag.components.vectordb import PgVectorStore
+from chat_rag.core.models import DocumentChunk
 
 
 def chunk(index, text=None):
@@ -165,7 +165,7 @@ def test_a_dense_add_at_a_different_width_is_refused_by_name(store):
     rejected anything else. A column would take both and the *query* would
     fail instead, on a row nobody could point at -- so the write is refused
     while there is still something to do about it."""
-    from core.exceptions import VectorDBException
+    from chat_rag.core.exceptions import VectorDBException
 
     store.add_chunks([chunk(0)], [[0.5] * 384])
     with pytest.raises(VectorDBException) as failure:

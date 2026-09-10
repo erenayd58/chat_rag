@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from amsc.document.models import UnitType
 
-from components.chunker import CanonicalUnitAdapter
+from chat_rag.components.chunker import CanonicalUnitAdapter
 
 
 def test_plain_parser_text_becomes_ordered_paragraphs_without_invented_metadata():

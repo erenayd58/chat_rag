@@ -12,11 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from components.chunker import StructuralChunker
-from components.chunker.factory import create_chunker
-from components.retriever import BM25OnlyRetriever, NullEmbedding
-from core.exceptions import RAGException, RetrieverException
-from core.models import DocumentChunk
+from chat_rag.components.chunker import StructuralChunker
+from chat_rag.components.chunker.factory import create_chunker
+from chat_rag.components.retriever import BM25OnlyRetriever, NullEmbedding
+from chat_rag.core.exceptions import RAGException, RetrieverException
+from chat_rag.core.models import DocumentChunk
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "seam" / "mini-report.pdf"
 
@@ -30,7 +30,7 @@ class _Settings:
 
 
 def _parser():
-    from components.parsers.structured_pdf_parser import StructuredPDFParser
+    from chat_rag.components.parsers.structured_pdf_parser import StructuredPDFParser
 
     try:
         return StructuredPDFParser()
@@ -103,7 +103,7 @@ def test_chunk_metadata_is_json_serialisable():
 
 
 def test_turkish_fold_makes_ascii_and_diacritic_queries_agree():
-    from components.retriever.bm25_only_retriever import fold_turkish
+    from chat_rag.components.retriever.bm25_only_retriever import fold_turkish
 
     assert fold_turkish("Çalışan Sayısı") == "calisan sayisi"
     assert fold_turkish("YÜRÜRLÜĞE") == "yururluge"
@@ -129,14 +129,14 @@ def test_turkish_fold_makes_ascii_and_diacritic_queries_agree():
     sample = "Çalışan sayısı %12,5 arttı"
     assert fold_turkish(sample) != sample
     assert all(c.content == c.content for c in chunks)
-    from components.chunker.structural_chunker import StructuralChunker as _SC
+    from chat_rag.components.chunker.structural_chunker import StructuralChunker as _SC
 
     turkish = _SC().chunk_text(text=sample, doc_id="d", doc_title="t")[0]
     assert turkish.content == sample
 
 
 def test_extraction_cache_round_trips(tmp_path):
-    from components.parsers.structured_pdf_parser import StructuredPDFParser
+    from chat_rag.components.parsers.structured_pdf_parser import StructuredPDFParser
 
     parser = _parser()
     parser._disk_cache = tmp_path / "canonical-units"

@@ -20,12 +20,12 @@ from fastapi.testclient import TestClient
 
 import asgi as entrypoint
 import interfaces.http as http
-from components.viewer import methods as M
+from chat_rag.components.viewer import methods as M
 
 V1 = http.v1.PREFIX
-from application import workspace as app_workspace
-from components.knowledgebase.manager import KnowledgeBaseManager
-from config import paths
+from chat_rag.application import workspace as app_workspace
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.config import paths
 
 
 def deep_report(status: str) -> dict:
@@ -156,7 +156,7 @@ def records():
     where it is at all. What these tests assert is what a document record
     carries, which is the same question either way.
     """
-    from utils import DocumentTracker
+    from chat_rag.utils import DocumentTracker
 
     return DocumentTracker().ingested_docs
 

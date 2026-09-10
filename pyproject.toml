@@ -1,0 +1,60 @@
+# The engine, as a distribution.
+#
+# What is in the wheel is the boundary: ``src/chat_rag`` is the RAG engine and
+# nothing else. The FastAPI adapter (``interfaces/``), its entry point
+# (``asgi.py``), the operator programs (``cli/``, ``tools/``) and the console
+# (``frontend/``) live in the repository root, outside the package, so the
+# library cannot import a web framework by accident -- packaging enforces it
+# rather than a convention asking nicely.
+#
+# ``requirements.txt`` stays the authoritative install for this repository: it
+# pins ``amsc-poc`` to an immutable commit, which is a statement about a
+# deployment rather than a range this library depends on. The install order is
+#
+#     pip install -r requirements.txt   # the pinned dependencies, amsc included
+#     pip install --no-deps -e .        # this package, in place
+#
+# and ``tests/unit/test_amsc_pin.py`` keeps that pin honest.
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chat-rag"
+version = "0.1.0"
+description = "Retrieval-augmented generation engine: ingest, analyse, search, answer"
+requires-python = ">=3.11,<3.14"
+
+# The engine's own dependencies. FastAPI, uvicorn and python-multipart are
+# deliberately absent: they belong to the adapter in the repository root and
+# are installed from requirements.txt with the rest of the product.
+dependencies = [
+  "amsc-poc",
+  "SQLAlchemy>=2.0",
+  "psycopg[binary]>=3.1",
+  "alembic>=1.13",
+  "pgvector>=0.3",
+  "numpy",
+  "openai",
+  "ollama",
+  "rank-bm25",
+  "sentence-transformers",
+  "pymupdf",
+  "pymupdf4llm[layout]==0.3.4",
+  "python-docx",
+  "python-dotenv",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The two frozen configurations the components read by path, and the template
+# Alembic writes a new revision from. All three are read from inside the
+# package, so all three have to travel with it.
+[tool.setuptools.package-data]
+"chat_rag.config" = ["*.yaml"]
+"chat_rag.storage" = ["migrations/*.mako"]

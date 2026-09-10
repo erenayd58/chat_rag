@@ -29,8 +29,8 @@ from pathlib import Path
 
 import pytest
 
-from components import llm as llm_package
-from pipeline.rag_pipeline import RAGPipeline
+from chat_rag.components import llm as llm_package
+from chat_rag.pipeline.rag_pipeline import RAGPipeline
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -97,7 +97,7 @@ def test_every_transport_honours_the_query_deadline(name):
     source = module.read_text(encoding="utf-8")
 
     assert "current_guard" in source, f"{name} makes provider calls outside the deadline"
-    assert "from components.ingest.limits import" in source, (
+    assert "from chat_rag.components.ingest.limits import" in source, (
         f"{name} must read the deadline from the one module that owns it"
     )
 

@@ -6,8 +6,8 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Body, Query, Request, Response, status
 
-from application import chunks as chunk_use_case
-from application import knowledge_bases as use_case
+from chat_rag.application import chunks as chunk_use_case
+from chat_rag.application import knowledge_bases as use_case
 
 from ..dependencies import Container, Page, SessionId
 from ..envelope import slice_of

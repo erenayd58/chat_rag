@@ -122,9 +122,14 @@ question: chat reads the chunks that were written at upload.
 
 One direction, and it is the whole rule:
 
+The repository root holds what serves; `src/chat_rag` holds what it serves.
+The engine is a distribution of its own (`pyproject.toml`), so the boundary is
+what the wheel contains rather than a rule asking to be respected: no web
+framework can reach it, because none of it ships beside one.
+
 ```
-interfaces/http/
-  v1/                     THE CONTRACT.  The surface a client builds against.
+interfaces/http/          NOT IN THE PACKAGE.  The adapter, at the repository
+  v1/                     root with asgi.py, cli/ and tools/.
       routers/            FastAPI: one router per product concept
       schemas/            the API's own Pydantic types
       errors.py           the one refusal-to-status table
@@ -134,6 +139,8 @@ interfaces/http/
       │                   A router reads a request, calls one use case, and
       │                   turns the answer or the refusal into a wire shape.
       ▼
+─── src/chat_rag/ ──────  THE PACKAGE.  `pip install chat-rag`.
+      │
 application/              The product's behaviour.  Plain functions over a
       │                   Services container; no framework, no request,
       │                   no status codes.

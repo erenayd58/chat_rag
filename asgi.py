@@ -43,9 +43,9 @@ import logging
 import sys
 
 import interfaces.http as http
-from application.services import Services, default_services
-from config.runtime import runtime_from_env
-import storage as database
+from chat_rag.application.services import Services, default_services
+from chat_rag.config.runtime import runtime_from_env
+from chat_rag import storage as database
 from interfaces.http import v1
 from runtime import bootstrap
 

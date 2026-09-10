@@ -28,11 +28,11 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from storage import (
+from chat_rag.storage import (
     ContentRepository, DocumentRepository, GoldSetRepository,
     IngestJobRepository, KnowledgeBaseRepository, session_scope,
 )
-from storage.models import Content, ContentDocument, ContentVariant
+from chat_rag.storage.models import Content, ContentDocument, ContentVariant
 
 
 @pytest.fixture

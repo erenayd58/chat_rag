@@ -34,7 +34,7 @@ import os
 
 import pytest
 
-from config import paths
+from chat_rag.config import paths
 
 
 @pytest.fixture
@@ -193,7 +193,7 @@ def test_the_parser_cache_is_resolved_when_it_is_needed_not_at_import(
     -- a container, a test, a smoke check -- was ignored, and the cache stayed
     wherever the process started.
     """
-    from components.parsers import canonical_units_store
+    from chat_rag.components.parsers import canonical_units_store
 
     monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path / "first"))
     assert canonical_units_store.default_cache_dir() == (

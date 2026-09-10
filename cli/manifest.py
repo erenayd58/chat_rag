@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
 
-from components.provenance import snapshot as provenance
+from chat_rag.components.provenance import snapshot as provenance
 
 SCHEMA_VERSION = 1
 

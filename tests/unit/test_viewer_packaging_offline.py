@@ -25,8 +25,8 @@ import socket
 
 import pytest
 
-from components.viewer import analysis
-from components.viewer import methods as M
+from chat_rag.components.viewer import analysis
+from chat_rag.components.viewer import methods as M
 
 # The corpus builder, the Deep run factory and the analysis-root fixture that
 # file already owns. Imported rather than copied so both files package the same
@@ -142,8 +142,8 @@ def test_packaging_holds_no_provider_slot(workspace, no_network, monkeypatch):
     """The provider budget is Deep ingest's alone. Packaging a Deep upload,
     a Standard one and their variants leaves the budget's counters at zero,
     which is the number Phase 2 sized the limit against."""
-    from components.chunker import deep_analysis
-    from components.ingest import limits as L
+    from chat_rag.components.chunker import deep_analysis
+    from chat_rag.components.ingest import limits as L
 
     budget = L.configure_budget(2)
 

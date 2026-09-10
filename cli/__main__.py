@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional
 from . import evaluate as ev
 from . import report as reporting
 from . import runtime
-from components.goldset.manager import entry_id_for as gold_entry_id
+from chat_rag.components.goldset.manager import entry_id_for as gold_entry_id
 
 from .manifest import build_manifest
 from .runtime import (

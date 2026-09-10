@@ -26,7 +26,7 @@ from typing import Annotated, Optional
 
 from fastapi import Depends, Query, Request
 
-from application.services import Services
+from chat_rag.application.services import Services
 
 from .envelope import clamp, whole_number
 

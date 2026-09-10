@@ -16,10 +16,10 @@ from datetime import datetime
 import numpy as np
 import pytest
 
-from components.retriever import BM25OnlyRetriever, NullEmbedding
-from core.exceptions import RetrieverException
-from core.models import DocumentChunk
-from pipeline.rag_pipeline import RAGPipeline
+from chat_rag.components.retriever import BM25OnlyRetriever, NullEmbedding
+from chat_rag.core.exceptions import RetrieverException
+from chat_rag.core.models import DocumentChunk
+from chat_rag.pipeline.rag_pipeline import RAGPipeline
 
 
 class RecordingEmbedding:

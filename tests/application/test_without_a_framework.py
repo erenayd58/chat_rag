@@ -32,22 +32,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from application import (
+from chat_rag.application import (
     chunks, documents, ingest, knowledge_bases, ops, query, workspace,
 )
-from application.errors import InvalidRequest, NotFound, NotReady, Unavailable
-from application.services import Services
-from components.goldset import GoldSetManager
-from components.ingest import IngestManager, PipelineCache
-from components.knowledgebase.manager import KnowledgeBaseManager
-from components.query import QueryAdmission
-from components.viewer import analysis
-from components.viewer import methods as M
-from config import Settings
-from config.ingest import IngestLimits
-from core.exceptions import IngestOverloaded, LLMException, QueryOverloaded
-from core.models import DocumentChunk, RetrievalResult
-from utils.document_tracker import DocumentTracker
+from chat_rag.application.errors import InvalidRequest, NotFound, NotReady, Unavailable
+from chat_rag.application.services import Services
+from chat_rag.components.goldset import GoldSetManager
+from chat_rag.components.ingest import IngestManager, PipelineCache
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.components.query import QueryAdmission
+from chat_rag.components.viewer import analysis
+from chat_rag.components.viewer import methods as M
+from chat_rag.config import Settings
+from chat_rag.config.ingest import IngestLimits
+from chat_rag.core.exceptions import IngestOverloaded, LLMException, QueryOverloaded
+from chat_rag.core.models import DocumentChunk, RetrievalResult
+from chat_rag.utils.document_tracker import DocumentTracker
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -171,7 +171,7 @@ def test_the_boundary_holds():
     inside one function.
     """
     offenders = []
-    for path in sorted((REPO / "application").rglob("*.py")):
+    for path in sorted((REPO / "src" / "chat_rag" / "application").rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             names = []
             if isinstance(node, ast.Import):
@@ -216,12 +216,12 @@ def test_the_cli_composes_the_same_application_without_loading_a_framework(tmp_p
 
 def test_the_adapter_is_the_only_place_that_knows_a_status_code():
     """The other half: no use case names an HTTP status."""
-    import application.errors as errors
+    from chat_rag.application import errors
 
     assert not hasattr(errors.InvalidRequest, "status_code")
     source = "\n".join(
         path.read_text(encoding="utf-8")
-        for path in sorted((REPO / "application").rglob("*.py"))
+        for path in sorted((REPO / "src" / "chat_rag" / "application").rglob("*.py"))
     )
     for code in ("jsonify", "make_response", "JSONResponse", "Response("):
         assert code not in source, f"{code} reached the application layer"
@@ -357,7 +357,7 @@ def test_a_failed_job_says_which_kind_of_failure_it_was(tmp_path, monkeypatch):
     """A store that holds another embedding model's vectors is a *conflict*,
     not a fault: the outcome names it so the adapter can answer 409 and the
     console can offer a re-index."""
-    from core.exceptions import IndexIncompatibleException
+    from chat_rag.core.exceptions import IndexIncompatibleException
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
@@ -444,7 +444,7 @@ def test_a_search_runs_under_the_same_bound_a_question_does(container):
 def test_a_search_refusal_is_not_counted_as_a_failed_query(container):
     """An invalid search leaves the bound cleanly. Counting it as a failure
     would make the metrics lie in the direction that matters."""
-    from components.observability import telemetry as T
+    from chat_rag.components.observability import telemetry as T
 
     kb_id = knowledge_bases.create(container, {"name": "A"})["kb_id"]
     with pytest.raises(InvalidRequest, match="Query is required"):

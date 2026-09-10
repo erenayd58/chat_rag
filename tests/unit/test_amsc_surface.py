@@ -49,14 +49,14 @@ MODULES = frozenset(
 )
 
 #: Everything that ships and runs. Anything not here is a test or a fixture.
-PRODUCT_TREES = ("app.py", "wsgi.py", "main_new.py", "setup_nltk.py",
-                 "application", "interfaces", "runtime",
-                 "components", "config", "core", "cli", "pipeline", "utils",
+PRODUCT_TREES = ("asgi.py", "src/chat_rag", "interfaces", "runtime", "cli",
                  "evaluation", "tools", "examples")
 
 #: Directories no scan should walk into.
 SKIP = {"venv", ".venv", "__pycache__", "artifacts", "chroma_db", "faiss_db",
-        ".cache", ".demo", ".docker-data", ".git", "node_modules"}
+        ".cache", ".demo", ".docker-data", ".git", "node_modules",
+        # `pip install .` leaves a second copy of the package here.
+        "build"}
 
 
 def _python_files(*relatives: str):
@@ -203,7 +203,7 @@ def test_the_scan_actually_found_the_imports():
     assert len(PRODUCT_IMPORTS) >= 15, PRODUCT_IMPORTS
     assert "deep.pipeline" in PRODUCT_IMPORTS
     assert "viewer.corpus" in PRODUCT_IMPORTS
-    assert PRODUCT_IMPORTS["viewer.corpus"] == {"components/viewer/analysis.py"}
+    assert PRODUCT_IMPORTS["viewer.corpus"] == {"src/chat_rag/components/viewer/analysis.py"}
     assert "chunking.registry" in PRODUCT_IMPORTS, "the registry import must be seen"
     assert MODULES and "chunking.registry" in MODULES, "the module scan found nothing"
 

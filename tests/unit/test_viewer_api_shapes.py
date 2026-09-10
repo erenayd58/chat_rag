@@ -23,8 +23,8 @@ from fastapi.testclient import TestClient
 
 import asgi as entrypoint
 import interfaces.http as http
-from components.viewer import analysis
-from components.viewer import methods as M
+from chat_rag.components.viewer import analysis
+from chat_rag.components.viewer import methods as M
 
 V1 = http.v1.PREFIX
 

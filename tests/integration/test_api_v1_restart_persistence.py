@@ -39,12 +39,12 @@ from api_v1_doubles import (
 )
 from fastapi.testclient import TestClient
 
-from application import documents as document_use_case
-from application.services import build_services
-from components.ingest.journal import JobJournal
-from components.viewer import analysis
-from components.viewer import methods as M
-from config import paths
+from chat_rag.application import documents as document_use_case
+from chat_rag.application.services import build_services
+from chat_rag.components.ingest.journal import JobJournal
+from chat_rag.components.viewer import analysis
+from chat_rag.components.viewer import methods as M
+from chat_rag.config import paths
 from interfaces.http.v1 import PREFIX, create_app
 from runtime import bootstrap
 
@@ -93,7 +93,7 @@ class Deployment:
 @pytest.fixture
 def deployment(tmp_path, monkeypatch):
     """A deployment on the test database, with its two providers replaced."""
-    from pipeline.rag_pipeline import RAGPipeline
+    from chat_rag.pipeline.rag_pipeline import RAGPipeline
 
     monkeypatch.setenv("RETRIEVAL_PROFILE", "hybrid_rrf")
     monkeypatch.setattr(RAGPipeline, "_create_llm", lambda self: CitingLLM())

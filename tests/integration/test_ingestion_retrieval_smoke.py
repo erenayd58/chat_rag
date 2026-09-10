@@ -16,11 +16,11 @@ import pytest
 
 from amsc.document.models import EmbeddingBatch, SemanticEmbeddingProvenance
 
-from components.chunker import FrozenV4Chunker, StructuralChunker
-from components.llm import BaseLLM
-from components.retriever import BenchmarkAlignedEmbedding
-from components.vectordb import PgVectorStore
-from pipeline import RAGPipeline
+from chat_rag.components.chunker import FrozenV4Chunker, StructuralChunker
+from chat_rag.components.llm import BaseLLM
+from chat_rag.components.retriever import BenchmarkAlignedEmbedding
+from chat_rag.components.vectordb import PgVectorStore
+from chat_rag.pipeline import RAGPipeline
 
 
 class FakeLLM(BaseLLM):

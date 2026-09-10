@@ -30,15 +30,15 @@ import asgi as entrypoint
 import interfaces.http as http
 
 V1 = http.v1.PREFIX
-from application import ingest as app_ingest
-from application import workspace as app_workspace
+from chat_rag.application import ingest as app_ingest
+from chat_rag.application import workspace as app_workspace
 import tempfile
-from components.ingest import IngestManager, PipelineCache
-from components.ingest import jobs as J
-from components.ingest import limits as L
-from components.knowledgebase.manager import KnowledgeBaseManager
-from components.observability import telemetry as T
-from config.ingest import IngestLimits
+from chat_rag.components.ingest import IngestManager, PipelineCache
+from chat_rag.components.ingest import jobs as J
+from chat_rag.components.ingest import limits as L
+from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag.components.observability import telemetry as T
+from chat_rag.config.ingest import IngestLimits
 
 from ingest_doubles import GatedProvider
 

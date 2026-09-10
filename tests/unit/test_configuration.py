@@ -30,9 +30,9 @@ from pathlib import Path
 
 import pytest
 
-from config import database as database_config
-from config import ingest as ingest_config
-from config import paths, query as query_config, runtime as runtime_config
+from chat_rag.config import database as database_config
+from chat_rag.config import ingest as ingest_config
+from chat_rag.config import paths, query as query_config, runtime as runtime_config
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -100,12 +100,12 @@ def test_the_env_file_is_applied_by_the_package_before_anything_reads_it():
     reached ``config.paths`` or ``utils.logger`` first read an environment the
     file had not been applied to yet. Package init is the one point that
     cannot happen."""
-    import config
+    from chat_rag import config
 
-    source = (REPO / "config" / "__init__.py").read_text(encoding="utf-8")
+    source = (REPO / "src" / "chat_rag" / "config" / "__init__.py").read_text(encoding="utf-8")
     assert "load_env_file" in source
     assert config.APPLIED_ENV_FILE is not None
-    settings_source = (REPO / "config" / "settings.py").read_text(encoding="utf-8")
+    settings_source = (REPO / "src" / "chat_rag" / "config" / "settings.py").read_text(encoding="utf-8")
     assert "load_env_file" not in settings_source, "one loader, in one place"
 
 
@@ -114,12 +114,12 @@ def test_only_one_module_reads_a_dotenv_at_all():
     readers = []
     for path in sorted(REPO.glob("**/*.py")):
         parts = set(path.relative_to(REPO).parts)
-        if parts & {"venv", ".venv", "__pycache__", "tests"}:
+        if parts & {"venv", ".venv", "__pycache__", "tests", "build"}:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         if "load_dotenv" in text or "dotenv_values" in text:
             readers.append(path.relative_to(REPO).as_posix())
-    assert readers == ["config/paths.py"], readers
+    assert readers == ["src/chat_rag/config/paths.py"], readers
 
 
 # --------------------------------------------------- one default per setting
@@ -128,7 +128,7 @@ def test_only_one_module_reads_a_dotenv_at_all():
 #: The request-thread count is what every other ration is sized against, so it
 #: is the one most likely to be read in a second place.
 def test_the_thread_count_has_exactly_one_reader():
-    for module in ("asgi.py", "config/ingest.py", "config/query.py"):
+    for module in ("asgi.py", "src/chat_rag/config/ingest.py", "src/chat_rag/config/query.py"):
         source = (REPO / module).read_text(encoding="utf-8")
         assert '"WAITRESS_THREADS"' not in source, (
             f"{module} reads WAITRESS_THREADS itself; config/runtime.py owns it"
@@ -163,7 +163,8 @@ def test_the_sync_waiter_ration_is_still_half_the_request_threads(clean_env):
 def test_the_dataclass_field_is_the_only_place_a_default_is_written():
     """Reading a default off the dataclass rather than restating it as a
     string is what stops the two from drifting apart."""
-    for module in ("config/ingest.py", "config/query.py", "config/runtime.py"):
+    for module in ("src/chat_rag/config/ingest.py", "src/chat_rag/config/query.py",
+                   "src/chat_rag/config/runtime.py"):
         source = (REPO / module).read_text(encoding="utf-8")
         assert "_DEFAULTS" in source, module
     assert ingest_config._DEFAULTS.workers == ingest_config.IngestLimits().workers
@@ -235,7 +236,7 @@ def test_a_per_job_concurrency_above_the_global_cap_is_reported():
 
 
 def test_settings_refuse_to_build_on_an_impossible_combination(monkeypatch):
-    from config import Settings
+    from chat_rag.config import Settings
 
     monkeypatch.setenv("WAITRESS_CHANNEL_TIMEOUT", "60")
     with pytest.raises(ValueError, match="INGEST_SYNC_WAIT"):
@@ -246,7 +247,7 @@ def test_settings_refuse_to_build_on_an_impossible_combination(monkeypatch):
 
 
 def test_no_credential_appears_in_the_configuration_diagnostics(monkeypatch):
-    from config import Settings
+    from chat_rag.config import Settings
 
     monkeypatch.setenv("AZURE_API_KEY", "sk-do-not-log-me")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-nor-me")
@@ -263,8 +264,8 @@ def test_no_credential_appears_in_the_configuration_diagnostics(monkeypatch):
 
 
 def test_the_settings_dump_redacts_credentials(monkeypatch):
-    from config import Settings
-    from config.settings import REDACTED, SECRET_ATTRIBUTES
+    from chat_rag.config import Settings
+    from chat_rag.config.settings import REDACTED, SECRET_ATTRIBUTES
 
     monkeypatch.setenv("AZURE_API_KEY", "sk-do-not-log-me")
     dumped = Settings().to_dict()
@@ -348,7 +349,7 @@ def _code_default(name: str) -> str | None:
         prefixed = "DATABASE_" + field.upper()
         if prefixed == name or prefixed.replace("_SECONDS", "") == name:
             return "" if value is None else str(value)
-    source = (REPO / "config" / "settings.py").read_text(encoding="utf-8")
+    source = (REPO / "src" / "chat_rag" / "config" / "settings.py").read_text(encoding="utf-8")
     match = re.search(rf'getenv\(\s*"{re.escape(name)}"\s*,\s*"([^"]*)"', source)
     if match:
         return match.group(1)
@@ -401,7 +402,7 @@ def test_no_env_file_documents_a_setting_nothing_reads():
     sources = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in sorted(REPO.glob("**/*.py"))
-        if not (set(path.relative_to(REPO).parts) & {"venv", ".venv", "__pycache__"})
+        if not (set(path.relative_to(REPO).parts) & {"venv", ".venv", "__pycache__", "build"})
     )
     phantom = []
     for filename in ("env.example", ".env.docker"):
@@ -487,7 +488,7 @@ def test_every_setting_read_is_a_setting_applied():
     """
     import ast
 
-    source = (REPO / "config" / "settings.py").read_text(encoding="utf-8")
+    source = (REPO / "src" / "chat_rag" / "config" / "settings.py").read_text(encoding="utf-8")
     assigned = {
         node.attr
         for node in ast.walk(ast.parse(source))
@@ -502,9 +503,9 @@ def test_every_setting_read_is_a_setting_applied():
         for path in sorted(REPO.rglob("*.py"))
         if not (
             set(path.relative_to(REPO).parts)
-            & {"venv", ".venv", "__pycache__", "tests", "artifacts"}
+            & {"venv", ".venv", "__pycache__", "tests", "artifacts", "build"}
         )
-        and path != REPO / "config" / "settings.py"
+        and path != REPO / "src" / "chat_rag" / "config" / "settings.py"
     ]
     elsewhere = "\n".join(
         path.read_text(encoding="utf-8", errors="replace") for path in consumers
@@ -544,8 +545,8 @@ def test_the_config_package_builds_no_settings_at_import():
     """
     import types
 
-    import config
-    import config.settings as settings_module
+    from chat_rag import config
+    from chat_rag.config import settings as settings_module
 
     assert not hasattr(settings_module, "settings"), (
         "config/settings.py builds a module-level Settings() again"

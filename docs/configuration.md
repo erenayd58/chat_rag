@@ -34,13 +34,13 @@ that.
 
 | owner | what it decides | validation |
 |---|---|---|
-| [config/paths.py](../config/paths.py) | where every **file** this process writes goes, under `CHAT_RAG_DATA_DIR` | resolves; reports refusals |
-| [config/database.py](../config/database.py) | the relational store: `DATABASE_URL` and the connection pool | fail fast; unset is refused at the first use, by name |
-| [config/runtime.py](../config/runtime.py) | the server process: `FLASK_HOST`, `FLASK_PORT`, `WAITRESS_THREADS`, `WAITRESS_CHANNEL_TIMEOUT` (the names are the deployment's, kept when Flask and waitress went — see below) | fail fast |
-| [config/ingest.py](../config/ingest.py) | ingest workers, queue, deadlines, provider/embedding budgets, pipeline cache | fail fast |
-| [config/query.py](../config/query.py) | query admission, answer budget, deadlines | fail fast |
-| [config/settings.py](../config/settings.py) | everything else: models, endpoints, retrieval, chunking, parsing | fail fast on the strict ones |
-| [utils/logger.py](../utils/logger.py) | `LOG_LEVEL`, `LOG_FILE_LEVEL`, rotation | **fail safe** — see below |
+| [config/paths.py](../src/chat_rag/config/paths.py) | where every **file** this process writes goes, under `CHAT_RAG_DATA_DIR` | resolves; reports refusals |
+| [config/database.py](../src/chat_rag/config/database.py) | the relational store: `DATABASE_URL` and the connection pool | fail fast; unset is refused at the first use, by name |
+| [config/runtime.py](../src/chat_rag/config/runtime.py) | the server process: `FLASK_HOST`, `FLASK_PORT`, `WAITRESS_THREADS`, `WAITRESS_CHANNEL_TIMEOUT` (the names are the deployment's, kept when Flask and waitress went — see below) | fail fast |
+| [config/ingest.py](../src/chat_rag/config/ingest.py) | ingest workers, queue, deadlines, provider/embedding budgets, pipeline cache | fail fast |
+| [config/query.py](../src/chat_rag/config/query.py) | query admission, answer budget, deadlines | fail fast |
+| [config/settings.py](../src/chat_rag/config/settings.py) | everything else: models, endpoints, retrieval, chunking, parsing | fail fast on the strict ones |
+| [utils/logger.py](../src/chat_rag/utils/logger.py) | `LOG_LEVEL`, `LOG_FILE_LEVEL`, rotation | **fail safe** — see below |
 
 `Settings` builds the three limit objects at construction, so an invalid value
 stops the process at start-up, when somebody is looking, rather than refusing

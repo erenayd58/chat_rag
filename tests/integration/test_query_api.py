@@ -20,10 +20,10 @@ import asgi as entrypoint
 import interfaces.http as http
 
 V1 = http.v1.PREFIX
-from components.ingest import limits as L
-from components.observability import telemetry as T
-from components.query import limits as Q
-from core.exceptions import LLMException, QueryTimeout
+from chat_rag.components.ingest import limits as L
+from chat_rag.components.observability import telemetry as T
+from chat_rag.components.query import limits as Q
+from chat_rag.core.exceptions import LLMException, QueryTimeout
 
 from query_doubles import FailingAnswerModel, GatedAnswerModel
 
@@ -75,7 +75,7 @@ def admission(monkeypatch):
 
 @pytest.fixture
 def app(tmp_path, monkeypatch, registry):
-    from components.knowledgebase.manager import KnowledgeBaseManager
+    from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
 
     monkeypatch.chdir(tmp_path)
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))

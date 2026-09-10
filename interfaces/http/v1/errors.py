@@ -33,11 +33,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
-from application.errors import (
+from chat_rag.application.errors import (
     ApplicationError, Conflict, InvalidRequest, NotFound, NotReady, ProcessingFailed,
     Unavailable,
 )
-from core.exceptions import IngestOverloaded, QueryOverloaded, QueryTimeout
+from chat_rag.core.exceptions import IngestOverloaded, QueryOverloaded, QueryTimeout
 
 from .schemas import ApiError, ErrorResponse
 
