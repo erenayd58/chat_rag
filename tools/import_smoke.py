@@ -55,6 +55,10 @@ PRODUCT_MODULES = (
     "chat_rag.application.services",
     "chat_rag.application.ingest",
     "chat_rag.application.query",
+    # The published Python API. Last of the library modules on purpose: it is
+    # the one a caller installing the wheel imports by name, so if the pin is
+    # wrong for anything above, this is the import that would fail for them.
+    "chat_rag.api",
     "interfaces.http.v1",
     "interfaces.http",
     "asgi",

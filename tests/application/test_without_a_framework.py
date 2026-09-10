@@ -163,25 +163,37 @@ def container(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------- the boundary itself
-def test_the_boundary_holds():
-    """No use case may import a web framework.
+#: What neither the use cases nor the public API may import. It named Flask
+#: when Flask was the framework; the list is what this side of the boundary
+#: may not reach for, whatever is serving today.
+FRAMEWORKS = {"flask", "flask_cors", "werkzeug", "fastapi", "starlette"}
+
+#: The two packages the rule applies to. ``application`` is the behaviour and
+#: ``api`` is the facade published over it (L4) -- and the facade is the one a
+#: caller installs the wheel for, so a web framework appearing there would be
+#: a dependency somebody embedding this engine did not ask for.
+FRAMEWORK_FREE = ("application", "api")
+
+
+@pytest.mark.parametrize("package", FRAMEWORK_FREE)
+def test_the_boundary_holds(package):
+    """No use case and no public API module may import a web framework.
 
     Stated as a test because it is the whole claim: everything else here would
     still pass if ``application`` quietly grew a ``from flask import request``
     inside one function.
     """
     offenders = []
-    for path in sorted((REPO / "src" / "chat_rag" / "application").rglob("*.py")):
+    for path in sorted((REPO / "src" / "chat_rag" / package).rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             names = []
             if isinstance(node, ast.Import):
                 names = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom):
                 names = [node.module or ""]
-            if any(n.split(".")[0] in {"flask", "flask_cors", "werkzeug",
-                                       "fastapi", "starlette"} for n in names):
+            if any(n.split(".")[0] in FRAMEWORKS for n in names):
                 offenders.append(f"{path.name}:{node.lineno}")
-    assert offenders == [], f"application code imports a web framework: {offenders}"
+    assert offenders == [], f"{package} imports a web framework: {offenders}"
 
 
 def test_the_cli_composes_the_same_application_without_loading_a_framework(tmp_path):

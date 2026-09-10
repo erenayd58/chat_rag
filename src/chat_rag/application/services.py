@@ -267,7 +267,16 @@ def build_services(settings: Optional[Settings] = None) -> Services:
 
     # The packaging worker's way back to the parser cache. The only wiring
     # between the packager and this application's own pipelines.
-    workspace.install_unit_resolver(services)
+    #
+    # Inside this container's own activation, because the resolver is stored
+    # on the *packager*, and the packager is the current runtime's. Without
+    # it, a second container installs its resolver onto whichever runtime was
+    # the process default -- overwriting the first engine's, and leaving its
+    # own packager with none, so recovering an already-ingested document's
+    # canonical would fail in one engine and read the wrong pipelines in the
+    # other.
+    with services.activate():
+        workspace.install_unit_resolver(services)
     return services
 
 

@@ -702,6 +702,37 @@ curl -X POST localhost:5005/api/v1/queries -H 'content-type: application/json' \
 curl localhost:5005/api/v1/openapi.json            # the contract, machine-readable
 ```
 
+## The Python API — `chat_rag`
+
+The other way in, for a program rather than a browser. Same engine, same use
+cases, same PostgreSQL; no HTTP anywhere.
+
+```python
+from chat_rag import Engine, EngineConfig
+
+with Engine(EngineConfig(retrieval_profile="hybrid_rrf")) as engine:
+    kb = engine.knowledge_bases.create("Reports")
+    document = kb.ingest("report.pdf")          # a path, bytes or an open file
+    document.analysis().request()               # queue its chunking analysis
+    hits = kb.search("liquidity")               # retrieval, no answer model
+    answer = kb.ask("What changed?")            # an answer with its citations
+    print(answer.text, answer.grounded)
+```
+
+An `Engine` owns its own container, its own runtime — connection pool, provider
+budgets, counters, packaging queue — and its own session, so two of them in one
+process share nothing. `EngineConfig` states the settings this caller chooses;
+everything it leaves unset is read the way the server reads it
+([docs/configuration.md](docs/configuration.md)), `DATABASE_URL` included, and
+PostgreSQL is required here exactly as it is there.
+
+Refusals are the application's own six meanings — `NotFound`, `InvalidRequest`,
+`Conflict`, `Unavailable`, `NotReady`, `ProcessingFailed` — plus the bounds'
+`IngestOverloaded`, `QueryOverloaded` and `QueryTimeout`, which mean "not now"
+rather than "not like that". All of them are importable from `chat_rag`.
+[docs/architecture.md](docs/architecture.md#the-public-python-api) says what
+the facade does and, deliberately, what it does not.
+
 ## The console — `frontend/`
 
 A Next.js application over `/api/v1`, and nothing else. Knowledge bases,

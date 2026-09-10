@@ -141,6 +141,11 @@ interfaces/http/          NOT IN THE PACKAGE.  The adapter, at the repository
       ▼
 ─── src/chat_rag/ ──────  THE PACKAGE.  `pip install chat-rag`.
       │
+api/                      The published Python API: Engine, EngineConfig, and
+      │                   the values its calls answer with.  A second caller
+      │                   of the use cases, beside the adapter above — never
+      │                   between it and them.
+      │
 application/              The product's behaviour.  Plain functions over a
       │                   Services container; no framework, no request,
       │                   no status codes.
@@ -153,6 +158,45 @@ storage/                  PostgreSQL, behind repository interfaces.  Every SQL
                           statement this application runs is in one module;
                           nothing above it imports SQLAlchemy.
 ```
+
+### The public Python API
+
+Two callers of the use cases, and they are peers. `interfaces/http` serves
+`/api/v1` to a browser; [`chat_rag.api`](../src/chat_rag/api/__init__.py)
+answers a Python program:
+
+```python
+from chat_rag import Engine, EngineConfig
+
+with Engine(EngineConfig(retrieval_profile="hybrid_rrf")) as engine:
+    kb = engine.knowledge_bases.create("Reports")
+    document = kb.ingest("report.pdf")
+    document.analysis().request()
+    hits = kb.search("liquidity")
+    answer = kb.ask("What changed?")
+```
+
+Neither goes through the other, and neither owns the vocabulary: both project
+the same use-case dictionaries into their own types, so a Python rename is not
+an HTTP break and an HTTP addition is not a Python one.
+
+The facade adds three things and no behaviour. It **owns a container and a
+runtime** (`build_services`, the same composition `asgi.py` performs), it
+**owns a session id** — the pipeline cache's key, which the HTTP surface takes
+from the transport and a library caller has no way to invent — and it **runs
+every call inside its own activation**, so the store, the budgets, the counters
+and the packaging queue a call reaches for are that engine's. A rule it appears
+to enforce lives in a use case; a refusal it raises is that use case's own
+`application.errors` exception.
+
+`EngineConfig` is the stated subset of `Settings`, not a second configuration
+system: a field left unset means *this caller did not say*, and the answer is
+then whatever `Settings.from_env()` reads, under the precedence `config` has
+always had.
+
+`tests/integration/test_public_api.py` drives the whole flow — ingest, analyse,
+compare, search, ask — over the real PostgreSQL, with only the answer model and
+the embedding model replaced.
 
 ### What a running engine owns
 
@@ -229,9 +273,9 @@ FastAPI application mounted inside the WSGI process by a bridge — and
 endpoints became. What is left is what that plan said would be left: this
 package, and `asgi.py` as the entrypoint.
 
-Nothing in `application/` imports a web framework — `tests/application` fails
-if it ever does — and nothing below `interfaces/http/` builds a response.
-Three consequences worth stating:
+Nothing in `application/` or `api/` imports a web framework —
+`tests/application` fails if either ever does — and nothing below
+`interfaces/http/` builds a response. Three consequences worth stating:
 
 * **the container is the seam.** `application/services.py` composes the whole
   application (`build_services()`), and every use case takes it as its first
@@ -275,6 +319,7 @@ open it.
 | path | owns | touch it when |
 |---|---|---|
 | `application/` | **the product's behaviour, with no web framework under it**: one module per behaviour group (`knowledge_bases`, `documents`, `ingest`, `chunks`, `query`, `workspace`, `catalogue`, `analysis_query`, `ops`), plus `errors.py` (what a refusal means) and `services.py` (the container everything is handed) | changing what the product *does* |
+| `api/` | **the published Python API**: `engine.py` (`Engine` — its own `Services`, `Runtime` and session id), `config.py` (`EngineConfig`, the stated subset of `Settings`), `resources.py` (`KnowledgeBase`, `Document`, `IngestJob`, `Analysis`) and `results.py` (`Hit`, `Answer`, `Source`, `Health`, `Comparison`). Delegates only | changing what a Python caller can reach, or what it is called |
 | `interfaces/http/v1/` | **the product contract** (`/api/v1`), as a FastAPI application: `routers/` (one per concept), `schemas/` (the API's own Pydantic types), `errors.py` (the one refusal-to-status table), `openapi.py` (the refusal body, the two headers and the status the document must not advertise), `application.py` (the app and its lifespan) — see [api-v1.md](api-v1.md) | adding or changing a supported endpoint |
 | `interfaces/http/operator.py` | the one route served outside the contract: `GET /api/ops/metrics`, kept at its old path and body through the removal of the surface that used to serve it | changing what an operator can read |
 | `interfaces/http/__init__.py` | `create_app()` — the contract plus that route, over one container — and the walker that answers "what does this application serve" for the tests and the documents | adding a surface beside the contract |
