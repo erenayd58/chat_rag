@@ -184,7 +184,8 @@ def in_engine(use_case):
     return call
 
 
-def build_services(settings: Optional[Settings] = None) -> Services:
+def build_services(settings: Optional[Settings] = None, *,
+                   install_default: bool = True) -> Services:
     """Compose the application.
 
     No framework, no request, and -- since L3 -- no global state at all. The
@@ -193,91 +194,116 @@ def build_services(settings: Optional[Settings] = None) -> Services:
     container owns, sized from these settings rather than installed into the
     process.
 
-    The *first* container built in a process installs its runtime as the
-    process default, which is what keeps every caller that was never handed
-    one -- a CLI command, ``tools/migrate.py``, Alembic, a test reaching a
-    repository directly -- behaving exactly as it did. A second container
-    does not, and is therefore its own engine.
+    ``install_default`` decides whether this container may become the
+    **process default** -- the runtime every caller that was never handed one
+    resolves to: a CLI command, ``tools/migrate.py``, Alembic, a test reaching
+    a repository directly. It stays true here because the product's container
+    is one of these and those callers must keep behaving exactly as they did;
+    only the *first* container in a process is ever installed, so a second one
+    could never take it over anyway.
+
+    It is false for :class:`chat_rag.api.Engine`. A library engine is composed
+    by a program that has its own reasons for existing, and being the first
+    ``build_services`` in that process is an accident of ordering rather than a
+    statement that this engine speaks for the whole process -- so it would
+    silently hand its pool, budgets, counters and packaging queue to code that
+    never asked for it, and then dispose that pool when the ``with`` block
+    ended. The product asks for a default; a library engine is asked for one.
+
+    The composition runs inside this container's own activation. Several of
+    the pieces read a path when they are built -- the journal, the record
+    stores, the default pipeline's parser cache and embedding cache -- and
+    outside the activation they would take the process environment's
+    directories rather than this engine's.
     """
     # ``settings`` is passed through rather than resolved first: a runtime
     # told nothing reads the environment *and* keeps its database tracking it
     # across a dispose, which is what the module-level engine always did.
     engine_runtime = runtime_module.Runtime(settings)
     settings = engine_runtime.settings
-    runtime_module.install_default(engine_runtime)
+    if install_default:
+        runtime_module.install_default(engine_runtime)
     database = engine_runtime.database
 
-    if settings.query_limits.free_threads < 1:
-        logger.warning(
-            "QUERY_MAX_ACTIVE (%d) + INGEST_SYNC_WAITERS (%d) leaves no request thread "
-            "free out of WAITRESS_THREADS (%d); health and status may be starved under a "
-            "burst of both. Lower one of them or raise the thread count.",
-            settings.query_max_active, settings.query_limits.sync_waiters,
-            settings.query_limits.request_threads,
+    # The whole composition, inside this engine. What it changes is the
+    # pieces that read a path or a runtime *once*, when they are built: the
+    # ingest journal, the three record stores' legacy path fields, and the
+    # default pipeline -- whose parser and embedding cache directories are
+    # taken at construction and kept. Outside the activation each of those
+    # would take the process environment's answer, which is what made a
+    # second engine's data root a value nothing acted on.
+    with runtime_module.activate(engine_runtime):
+        if settings.query_limits.free_threads < 1:
+            logger.warning(
+                "QUERY_MAX_ACTIVE (%d) + INGEST_SYNC_WAITERS (%d) leaves no request thread "
+                "free out of WAITRESS_THREADS (%d); health and status may be starved under a "
+                "burst of both. Lower one of them or raise the thread count.",
+                settings.query_max_active, settings.query_limits.sync_waiters,
+                settings.query_limits.request_threads,
+            )
+
+        services = Services(
+            settings=settings,
+            runtime=engine_runtime,  # noqa: E501 - this engine's, not the process's
+            # Every record store is handed this engine's database rather than
+            # reaching for the process's one. Two containers, two pools.
+            kb_manager=KnowledgeBaseManager(database=database),
+            gold_manager=GoldSetManager(database=database),
+            documents=lambda: DocumentTracker(database=database),
+            pipeline_cache=None,
+            # How many request threads may be inside a query at once. A query runs
+            # on the thread that received it -- retrieval, context, the answer
+            # call -- so this, not the answer budget, is what keeps a burst of
+            # questions from taking every thread and locking out /api/health. A
+            # question that finds no slot is refused at once and never queued,
+            # because a queued query would hold the very thread this keeps free.
+            query_admission=QueryAdmission(settings.query_max_active),
+            default_pipeline=RAGPipeline(settings=settings, runtime=engine_runtime),
+            sync_waiters=threading.BoundedSemaphore(
+                max(1, settings.ingest_limits.sync_waiters)),
+        )
+        # Built pipelines, per session and knowledge base, bounded (see
+        # components/ingest/pipelines.py for why the session stays in the key and
+        # how eviction avoids closing a store somebody is using).
+        services.pipeline_cache = PipelineCache(
+            build=lambda session_id, kb_id: services.build_pipeline(kb_id),
+            max_entries=settings.pipeline_cache_max,
+            ttl_seconds=settings.pipeline_cache_ttl,
         )
 
-    services = Services(
-        settings=settings,
-        runtime=engine_runtime,  # noqa: E501 - this engine's, not the process's
-        # Every record store is handed this engine's database rather than
-        # reaching for the process's one. Two containers, two pools.
-        kb_manager=KnowledgeBaseManager(database=database),
-        gold_manager=GoldSetManager(database=database),
-        documents=lambda: DocumentTracker(database=database),
-        pipeline_cache=None,
-        # How many request threads may be inside a query at once. A query runs
-        # on the thread that received it -- retrieval, context, the answer
-        # call -- so this, not the answer budget, is what keeps a burst of
-        # questions from taking every thread and locking out /api/health. A
-        # question that finds no slot is refused at once and never queued,
-        # because a queued query would hold the very thread this keeps free.
-        query_admission=QueryAdmission(settings.query_max_active),
-        default_pipeline=RAGPipeline(settings=settings, runtime=engine_runtime),
-        sync_waiters=threading.BoundedSemaphore(max(1, settings.ingest_limits.sync_waiters)),
-    )
-    # Built pipelines, per session and knowledge base, bounded (see
-    # components/ingest/pipelines.py for why the session stays in the key and
-    # how eviction avoids closing a store somebody is using).
-    services.pipeline_cache = PipelineCache(
-        build=lambda session_id, kb_id: services.build_pipeline(kb_id),
-        max_entries=settings.pipeline_cache_max,
-        ttl_seconds=settings.pipeline_cache_ttl,
-    )
+        # Local: the job manager's worker calls back into the ingest use case,
+        # which imports this module for the container's type. One direction at
+        # import time, both at run time.
+        from chat_rag.application import ingest, workspace
 
-    # Local: the job manager's worker calls back into the ingest use case,
-    # which imports this module for the container's type. One direction at
-    # import time, both at run time.
-    from chat_rag.application import ingest, workspace
+        # Ingest runs as jobs (components/ingest): bounded workers, a bounded
+        # queue, an explicit lifecycle. The use case is looked up when the job
+        # runs, so a test that replaces a seam on this container is honoured by
+        # the worker thread too.
+        services.ingest_jobs = IngestManager(
+            settings.ingest_limits,
+            execute=lambda job: ingest.execute_job(services, job),
+            # A client holding a job_id from before a restart gets a truthful
+            # answer rather than a 404; the ledger settles what actually completed.
+            journal=JobJournal(paths.ingest_journal(), database=database),
+            # The worker outlives the call that queued the job and a ContextVar is
+            # not inherited by a thread, so it is given the runtime to activate
+            # around every job it runs.
+            runtime=engine_runtime,
+        )
 
-    # Ingest runs as jobs (components/ingest): bounded workers, a bounded
-    # queue, an explicit lifecycle. The use case is looked up when the job
-    # runs, so a test that replaces a seam on this container is honoured by
-    # the worker thread too.
-    services.ingest_jobs = IngestManager(
-        settings.ingest_limits,
-        execute=lambda job: ingest.execute_job(services, job),
-        # A client holding a job_id from before a restart gets a truthful
-        # answer rather than a 404; the ledger settles what actually completed.
-        journal=JobJournal(paths.ingest_journal(), database=database),
-        # The worker outlives the call that queued the job and a ContextVar is
-        # not inherited by a thread, so it is given the runtime to activate
-        # around every job it runs.
-        runtime=engine_runtime,
-    )
-
-    # The packaging worker's way back to the parser cache. The only wiring
-    # between the packager and this application's own pipelines.
-    #
-    # Inside this container's own activation, because the resolver is stored
-    # on the *packager*, and the packager is the current runtime's. Without
-    # it, a second container installs its resolver onto whichever runtime was
-    # the process default -- overwriting the first engine's, and leaving its
-    # own packager with none, so recovering an already-ingested document's
-    # canonical would fail in one engine and read the wrong pipelines in the
-    # other.
-    with services.activate():
+        # The packaging worker's way back to the parser cache. The only wiring
+        # between the packager and this application's own pipelines.
+        #
+        # The resolver is stored on the *packager*, and the packager is the
+        # current runtime's -- so this line is the reason the composition above
+        # is activated at all. Installed outside it, a second container put its
+        # resolver on whichever runtime was the process default: it overwrote
+        # the first engine's and left its own packager with none, so recovering
+        # an already-ingested document's canonical read the wrong engine's
+        # pipelines in one and failed outright in the other.
         workspace.install_unit_resolver(services)
-    return services
+        return services
 
 
 _default: Optional[Services] = None

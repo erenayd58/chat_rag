@@ -117,6 +117,20 @@ class RAGPipeline:
                 + ", ".join(sorted(RETRIEVAL_PROFILES))
             )
 
+        # Construction is one of the points at which the outside world enters
+        # a pipeline, so it activates like every operation below does. Two of
+        # the pieces built here read a path *once*, at construction, and keep
+        # it: the OpenAI-compatible embedder takes its vector cache directory,
+        # and ``ParserFactory`` builds a ``StructuredPDFParser`` that takes the
+        # canonical-unit cache. Built outside the activation they would take
+        # the process environment's directories, which is how a second engine
+        # given its own data root came to write its parser cache into the
+        # first one's.
+        with self._active():
+            self._build(llm_model, embedding_model, vector_db, chunker)
+
+    def _build(self, llm_model, embedding_model, vector_db, chunker) -> None:
+        """Everything a pipeline is made of, inside its own engine."""
         self.llm_model = llm_model or self._create_llm()
         self.embedding_model = embedding_model or self._create_embedding()
         self.vector_db = vector_db or self._create_vectordb()

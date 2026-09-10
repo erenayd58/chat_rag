@@ -13,7 +13,16 @@ Three things it owns, and each is the point of one of the steps before it:
 the same container ``asgi.py`` composes: the record stores, the pipeline cache,
 the ingest workers, the admission counter, and a runtime holding the connection
 pool, the three provider budgets, the metrics registry, the packaging queue and
-the analysis engine. Two engines in one process share none of it.
+the analysis engine. Two engines in one process share none of it -- and, given
+``EngineConfig(data_dir=...)``, none of the files either: ``config.paths``
+resolves through the activated engine, so the packaged analyses, the staged
+uploads and the caches land under this engine's root.
+
+It is also **not the process default**. The default is the runtime that
+callers who were never handed one resolve to -- Alembic, ``tools/migrate.py``,
+a CLI command -- and the product's container installs itself as it on purpose.
+A library engine does not: being the first container in somebody else's
+process is an accident of ordering, not a mandate to speak for it.
 
 **Its own session id.** The session is the pipeline cache's key and nothing
 else -- not identity, not authorisation. ``/api/v1`` takes it from the
@@ -76,10 +85,19 @@ class Engine:
     """
 
     def __init__(self, config: Optional[EngineConfig] = None, *,
-                 session_id: Optional[str] = None):
+                 session_id: Optional[str] = None,
+                 install_process_default: bool = False):
         self._config = config if config is not None else EngineConfig()
         self._settings = self._config.build()
-        self._services = build_services(self._settings)
+        # Not the process default, unless asked. Being the first
+        # ``build_services`` in a process is an accident of ordering, and
+        # taking the default on it would hand this engine's pool, budgets,
+        # counters and packaging queue to code that never asked for one --
+        # and then dispose that pool when this engine closed. Say so
+        # explicitly when a program also runs something that never sees an
+        # engine: ``tools/migrate.py``, Alembic, a CLI command.
+        self._services = build_services(
+            self._settings, install_default=install_process_default)
         # The pipeline cache's key, and nothing else. Its own, so two engines
         # in one process cache their pipelines apart; overridable, because a
         # program embedding this may already have a session of its own and

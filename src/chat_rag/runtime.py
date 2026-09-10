@@ -83,9 +83,29 @@ class Runtime:
     # ------------------------------------------------------------- config
     @property
     def paths(self) -> PathSettings:
-        """Where this engine's files go. The configuration's answer, not the
-        environment's, so a second engine can be given a second data root."""
-        return self.settings.paths
+        """Where this engine's files go, and who decides.
+
+        A **configured** engine is exactly what it was configured with, so a
+        second engine can be given a second data root and its packaged
+        analyses, staged uploads and parser cache land there rather than in
+        the first one's directories.
+
+        An **environment-derived** engine reads the environment now, which is
+        what the module-level readers in ``config.paths`` have always answered
+        and what a test that sets ``CHAT_RAG_DATA_DIR`` after building a
+        container still relies on. The product's engine is one of these, so
+        making ``config.paths.current()`` resolve through the runtime moved no
+        product path at all.
+
+        The same rule the database follows, for the same reason, and the two
+        are stated together on purpose: a configured engine is a value, and an
+        environment-derived one tracks the environment.
+        """
+        if self._configured:
+            return self.settings.paths
+        from chat_rag.config.paths import paths_from_env
+
+        return paths_from_env()
 
     # ----------------------------------------------------------- database
     @property

@@ -24,6 +24,7 @@ migration, a test that reaches a repository directly -- still resolves to it.
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -321,3 +322,186 @@ def test_the_paths_come_from_the_configuration_not_the_environment(tmp_path, mon
     assert engine.paths.data_root == str(tmp_path)
     assert engine.paths.canonical_cache().startswith(str(tmp_path))
     engine.close()
+
+
+# ------------------------------------------------------------------ the files
+#
+# ``Runtime.paths`` was a value the runtime reported and *nothing read*: every
+# module that actually writes -- the packager, upload staging, the parser
+# cache, the two embedding caches -- resolved through ``config.paths``'
+# module-level readers, which read the process environment. So a second engine
+# given its own data root still wrote into the first one's directories.
+#
+# ``config.paths.current()`` resolves through the activated engine now, the way
+# ``session_scope()``, ``provider_budget()`` and ``metrics()`` already did.
+# These are that claim, path by path.
+
+#: Every module-level reader that names a directory an engine writes into.
+#:
+#: ``logs`` is in the list because the reader behaves like the others, and it
+#: is the one no engine actually moves: its only caller is
+#: ``utils.logger.configure_logging``, which an entry point calls before it
+#: composes anything, outside every activation. A data root therefore does not
+#: relocate a running process's log file, and an ``Engine`` installs no log
+#: handler at all -- ``tests/integration/test_public_api.py`` says that as
+#: behaviour.
+PATH_READERS = (
+    "viewer_live_analysis", "upload_staging", "canonical_cache",
+    "embedding_cache", "boundary_embedding_cache", "ingest_journal",
+    "knowledge_bases", "ingested_documents", "gold_set", "logs",
+)
+
+
+def engine_at(root) -> runtime.Runtime:
+    """A configured engine whose files live under ``root``."""
+    from chat_rag.config.paths import PathSettings
+
+    return runtime.Runtime(Settings(paths=PathSettings(data_root=str(root))))
+
+
+@pytest.fixture
+def two_roots(tmp_path):
+    first, second = engine_at(tmp_path / "one"), engine_at(tmp_path / "two")
+    yield (first, tmp_path / "one"), (second, tmp_path / "two")
+    first.close()
+    second.close()
+
+
+@pytest.mark.parametrize("reader", PATH_READERS)
+def test_every_path_reader_answers_with_the_activated_engines_root(two_roots, reader):
+    """One parameter per directory an engine writes into.
+
+    Stated as "under its own root" rather than as an exact string, because
+    what has to hold is that no two engines can collide -- the layout under a
+    root is ``config.paths``' business and is checked in ``test_data_paths``.
+    """
+    from chat_rag.config import paths
+
+    for engine, root in two_roots:
+        with runtime.activate(engine):
+            resolved = Path(getattr(paths, reader)()).resolve()
+        assert resolved.is_relative_to(root.resolve()), f"{reader} -> {resolved}"
+
+
+def test_two_engines_never_resolve_one_path_to_the_same_place(two_roots):
+    """The claim the parametrised test makes, said once as a whole: nothing an
+    engine writes is a directory the other engine also writes."""
+    from chat_rag.config import paths
+
+    resolved = []
+    for engine, _root in two_roots:
+        with runtime.activate(engine):
+            resolved.append({name: Path(getattr(paths, name)()).resolve()
+                             for name in PATH_READERS})
+    shared = {name for name in PATH_READERS if resolved[0][name] == resolved[1][name]}
+    assert shared == set(), f"both engines write to {sorted(shared)}"
+
+
+def test_outside_an_activation_nothing_moved(two_roots, monkeypatch, tmp_path):
+    """The other half, and the reason the product did not change.
+
+    Every caller that is not inside an engine -- a CLI command, a tool, a
+    test, the entry point resolving where to put its log file -- still reads
+    the environment at the moment it asks, exactly as before.
+    """
+    from chat_rag.config import paths
+
+    monkeypatch.delenv("CHAT_RAG_DATA_DIR", raising=False)
+    assert paths.data_root() is None
+    assert paths.canonical_cache() == ".cache/canonical-units"
+
+    monkeypatch.setenv("CHAT_RAG_DATA_DIR", str(tmp_path / "declared"))
+    assert paths.data_root() == str(tmp_path / "declared")
+
+
+def test_an_environment_derived_engine_still_follows_the_environment(monkeypatch, tmp_path):
+    """The product's own engine is one of these, which is why no product path
+    moved. ``build_services()`` with no settings reads the environment, and a
+    data root declared afterwards -- by a container, a smoke tool, a test --
+    still takes effect inside it, the same rule the database follows."""
+    from chat_rag.config import paths
+
+    engine = runtime.Runtime()  # told nothing: environment-derived
+    try:
+        monkeypatch.setenv("CHAT_RAG_DATA_DIR", str(tmp_path / "later"))
+        with runtime.activate(engine):
+            assert paths.data_root() == str(tmp_path / "later")
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("declared", [False, True])
+def test_the_products_own_paths_did_not_move(tmp_path, monkeypatch, declared):
+    """The claim this whole change has to make, stated directly.
+
+    The product composes ``build_services()`` with no settings, so its engine
+    is environment-derived -- and for one of those, being inside the
+    activation and being outside it must resolve to the *same string*, with a
+    data root and without one. Anything else would mean a request path and a
+    CLI command disagreed about where the packaged analyses live.
+
+    Checked with the data root declared **after** the container was built,
+    because that is the case a captured value would silently get wrong, and
+    the one a container, a smoke tool and half this suite rely on.
+    """
+    from chat_rag.config import paths
+
+    monkeypatch.delenv("CHAT_RAG_DATA_DIR", raising=False)
+    services = build_services()  # exactly what the product composes
+    try:
+        if declared:
+            monkeypatch.setenv("CHAT_RAG_DATA_DIR", str(tmp_path / "declared"))
+        outside = {name: getattr(paths, name)() for name in PATH_READERS}
+        with services.activate():
+            inside = {name: getattr(paths, name)() for name in PATH_READERS}
+        assert inside == outside
+        if declared:
+            assert outside["viewer_live_analysis"].startswith(str(tmp_path))
+        else:
+            assert outside["viewer_live_analysis"] == "./artifacts/viewer-live"
+    finally:
+        services.close()
+
+
+def test_a_pipeline_takes_its_construction_time_paths_from_its_own_engine(two_roots):
+    """The two directories that are read *once*, when a pipeline is built, and
+    then kept: the parser's canonical-unit cache and the gateway embedder's
+    vector cache. Built outside the engine they would take the process
+    environment's, which no ``data_root`` could then correct."""
+    from chat_rag.components.parsers.structured_pdf_parser import StructuredPDFParser
+    from chat_rag.pipeline import RAGPipeline
+
+    for engine, root in two_roots:
+        settings = engine.settings
+        settings.retrieval_profile = "bm25_only"  # build no model to make the point
+        pipeline = RAGPipeline(settings=settings, runtime=engine)
+        parsers = [p for p in pipeline.parser_factory._parsers
+                   if isinstance(p, StructuredPDFParser)]
+        if not parsers:  # the layout backend is not installed on this machine
+            pytest.skip("StructuredPDFParser is not registered here")
+        assert parsers[0]._disk_cache.resolve().is_relative_to(root.resolve())
+
+
+# ------------------------------------------------------ who speaks for the process
+
+
+def test_a_container_can_refuse_to_become_the_process_default():
+    """What a library engine composes itself with.
+
+    The process default is the runtime every caller that was never handed one
+    resolves to -- Alembic, ``tools/migrate.py``, a CLI command. The product's
+    container installs itself as it on purpose. A container built for a
+    program that has its own reasons for existing must not, because being the
+    first ``build_services`` in that process is an accident of ordering.
+    """
+    before = runtime.default()
+    services = build_services(settings_for(provider=1, embedding=1, answer=1),
+                              install_default=False)
+    try:
+        assert runtime.default() is before
+        assert services.runtime is not runtime.default()
+        # And it is still a whole engine: activation is how it is reached.
+        with services.activate():
+            assert runtime.current() is services.runtime
+    finally:
+        services.close()

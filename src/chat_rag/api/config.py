@@ -32,26 +32,38 @@ convenience over the fields of that object, and a caller who needs one this
 does not name should not have to wait for a release to reach it -- so the full
 object is accepted and the named fields are applied on top of it.
 
-What is deliberately *not* here
--------------------------------
+Where the files go
+------------------
 
-**A data root.** ``Settings`` carries a :class:`PathSettings` and a
-``Runtime`` will report it, but every module that actually writes a file --
-the packager, the parser cache, the embedding caches, upload staging --
-resolves through ``config.paths``' module-level readers, which read the
-process environment. Naming a per-engine data root here would be a setting
-that quietly does nothing to the files, so the environment (``CHAT_RAG_DATA_DIR``)
-stays the only honest way to move them until that is fixed.
+``data_dir`` is real, and it is the setting that makes two engines in one
+process genuinely separate. It gathers everything this engine writes -- the
+packaged Viewer analyses, the staged uploads, the parser's canonical-unit
+cache, both embedding caches and the legacy state paths -- under one
+directory, and ``config.paths`` resolves through the activated engine, so a
+second engine's writes land under *its* root rather than in the first one's
+directories.
+
+Left unset it means what it has always meant: the process environment's answer
+(``CHAT_RAG_DATA_DIR``, else the historical working-directory-relative
+layout), read at the moment a path is needed rather than frozen here.
+
+Two things it does not cover, both on purpose. **The database** is not a file:
+it is ``database_url``, and two engines under different data roots still share
+a database unless they are told otherwise. **The log file** belongs to the
+process rather than to an engine -- ``chat_rag.utils.logger`` is called by an
+entry point, not by a container -- so it keeps reading the environment.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Optional
 
 from chat_rag.config import Settings
 from chat_rag.config.database import DatabaseSettings, normalize_url
 from chat_rag.config.ingest import IngestLimits
+from chat_rag.config.paths import PathSettings
 from chat_rag.config.query import QueryLimits
 
 
@@ -70,6 +82,18 @@ class EngineConfig:
     #: unset in the environment, the engine refuses at the first call that
     #: needs a row, naming ``DATABASE_URL``.
     database_url: Optional[str] = None
+
+    # --------------------------------------------------------------- files
+    #: Where everything this engine writes goes: packaged Viewer analyses,
+    #: staged uploads, the parser's canonical-unit cache, both embedding
+    #: caches. Unset means the process environment's answer, read when a path
+    #: is needed. Two engines given two roots share no file.
+    data_dir: Optional[str] = None
+    #: The parser's canonical-unit cache, when it belongs somewhere other than
+    #: under :attr:`data_dir`. The one path that may sit outside the root --
+    #: it is worth sharing between engines, because a cache entry is keyed by
+    #: the document's content and re-parsing a PDF costs minutes.
+    parser_cache: Optional[str] = None
 
     # ------------------------------------------------------------- retrieval
     #: ``bm25_only`` (no provider at all), ``hybrid_rrf`` (the final chain) or
@@ -132,6 +156,9 @@ class EngineConfig:
         database = _database(base.database, self.database_url)
         if database is not None:
             changes["database"] = database
+        layout = _paths(base.paths, self.data_dir, self.parser_cache)
+        if layout is not None:
+            changes["paths"] = layout
         ingest = _ingest(base.ingest_limits, self.ingest_workers,
                          self.ingest_queue_capacity)
         if ingest is not None:
@@ -160,6 +187,24 @@ def _database(base: DatabaseSettings, url: Optional[str]) -> Optional[DatabaseSe
     if url is None:
         return None
     return replace(base, url=normalize_url(url)).validate()
+
+
+def _paths(base: PathSettings, data_dir: Optional[str],
+           parser_cache: Optional[str]) -> Optional[PathSettings]:
+    """The layout, with a stated root applied.
+
+    Absolute, because a data root is where files *are* and a relative one
+    would mean "wherever this process happens to be standing" -- which is the
+    working-directory-relative layout this setting exists to replace, spelled
+    less clearly. The unset case still gets that layout, from the environment,
+    which is where it belongs.
+    """
+    changes: dict[str, Any] = {}
+    if data_dir is not None:
+        changes["data_root"] = os.path.abspath(data_dir)
+    if parser_cache is not None:
+        changes["parser_cache"] = os.path.abspath(parser_cache)
+    return replace(base, **changes) if changes else None
 
 
 def _ingest(base: IngestLimits, workers: Optional[int],

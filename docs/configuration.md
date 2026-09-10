@@ -78,6 +78,33 @@ Importing `chat_rag` attaches a `logging.NullHandler` and does nothing else —
 no directory, no file, no environment write. `tests/unit/test_import_side_effects.py`
 imports the package in a fresh interpreter and checks exactly that.
 
+### Whose configuration is *current*
+
+`config/paths.py` publishes a module-level reader per directory —
+`paths.viewer_live_analysis()`, `paths.upload_staging()`,
+`paths.canonical_cache()` — and every writer in the application calls one.
+What they answer with depends on whether a call is inside an engine:
+
+```
+inside an activation   →  that engine's PathSettings   (runtime.active().paths)
+outside one            →  the process environment      (paths_from_env())
+```
+
+the same rule `storage.session_scope()`, `limits.provider_budget()` and
+`telemetry.metrics()` already follow. A **configured** engine — one given a
+`Settings`, which is what `chat_rag.api.Engine` always does — is exactly what
+it was configured with, so `EngineConfig(data_dir=…)` really separates two
+engines' files. An **environment-derived** engine — `build_services()` with no
+settings, which is what the product composes — reads the environment when
+asked, so no product path moved and a `CHAT_RAG_DATA_DIR` declared after
+start-up still takes effect.
+
+Two things stay outside that rule on purpose. Applying `.env` reads the
+environment's data root directly, because it happens while `config` is still
+being imported and before any engine exists. And `configure_logging()` is an
+entry point's call, so a data root does not relocate a running process's log
+file.
+
 ### The groups, and what each is for
 
 | group | variables | what changing them does |

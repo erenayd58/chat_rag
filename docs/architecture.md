@@ -192,7 +192,11 @@ to enforce lives in a use case; a refusal it raises is that use case's own
 `EngineConfig` is the stated subset of `Settings`, not a second configuration
 system: a field left unset means *this caller did not say*, and the answer is
 then whatever `Settings.from_env()` reads, under the precedence `config` has
-always had.
+always had. `data_dir` is the one that makes two engines genuinely separate —
+packaged analyses, staged uploads, the parser cache and both embedding caches
+land under it. The database is not a file and is not covered by it: two
+engines under two roots still share every row unless `database_url` says
+otherwise.
 
 `tests/integration/test_public_api.py` drives the whole flow — ingest, analyse,
 compare, search, ask — over the real PostgreSQL, with only the answer model and
@@ -215,28 +219,47 @@ Services ── runtime ──┬── database        one pool, from settings.
                       ├── provider_budget | embedding_budget | answer_budget
                       ├── metrics         this engine's counters
                       ├── packager        the Viewer queue, worker and locks
-                      └── analysis        the analysis-query engine and indexes
+                      ├── analysis        the analysis-query engine and indexes
+                      └── paths           where this engine's files go
 ```
 
-Deep code is not handed one. `storage.session_scope()`, `limits.provider_budget()`
-and `telemetry.metrics()` kept their names and resolve through
-`chat_rag.runtime.current()`, which answers with the activated runtime if there
-is one and the **process default** otherwise. The first `build_services()` in a
-process installs itself as that default, so every caller that never sees a
-`Services` — Alembic, `tools/migrate.py`, a CLI command, a test reaching a
-repository — behaves exactly as it did.
+Deep code is not handed one. `storage.session_scope()`, `limits.provider_budget()`,
+`telemetry.metrics()` and every reader in `config.paths` kept their names and
+resolve through `chat_rag.runtime`, which answers with the activated runtime if
+there is one and the environment or the **process default** otherwise.
 
 A second engine is reached by activation. `Services.activate()` sets it for a
-block; a pipeline carries the engine that built it and activates it around
-every operation; the two worker threads (ingest jobs, the packager) are handed
-their runtime, because a `ContextVar` is not inherited by a thread. The record
-stores skip all of that — they are handed their `Database` when the container
-is composed.
+block; a pipeline carries the engine that built it and activates it around its
+construction and every operation; the two worker threads (ingest jobs, the
+packager) are handed their runtime, because a `ContextVar` is not inherited by
+a thread. The record stores skip all of that — they are handed their `Database`
+when the container is composed.
+
+**Files.** `runtime.paths` used to be a value the runtime reported and nothing
+read: every writer — the packager, upload staging, the parser cache, both
+embedding caches — resolved through the process environment, so a second engine
+given its own data root still wrote into the first one's directories.
+`config.paths.current()` resolves through the activated engine now, which is
+what makes `EngineConfig(data_dir=…)` real. A *configured* engine is exactly
+what it was configured with; an *environment-derived* one — which is what
+`build_services()` with no settings composes, and therefore what the product
+runs — reads the environment when asked, so no product path moved.
+
+**Who speaks for the process.** The default is the runtime a caller that was
+never handed one resolves to: Alembic, `tools/migrate.py`, a CLI command, a
+test reaching a repository. `build_services(install_default=True)` is the
+product's, and only the first container in a process is ever installed.
+`chat_rag.api.Engine` passes `False`: being the first container in somebody
+else's process is an accident of ordering, and taking the default on it would
+hand this engine's pool, budgets, counters and packaging queue to code that
+never asked — and then dispose that pool when the `with` block ended.
 
 `tests/unit/test_engine_isolation.py` states the whole claim as behaviour: a
 slot taken in one engine is not missing from the other, a trace recorded in one
-is invisible in the other, and a build queued in one is not in the other's
-queue.
+is invisible in the other, a build queued in one is not in the other's queue,
+and no two engines resolve any path to the same directory.
+`tests/integration/test_public_api.py` runs two engines against two data roots
+and looks at what is on disk afterwards.
 
 ### One store, and what is in it
 

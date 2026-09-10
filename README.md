@@ -721,10 +721,19 @@ with Engine(EngineConfig(retrieval_profile="hybrid_rrf")) as engine:
 
 An `Engine` owns its own container, its own runtime — connection pool, provider
 budgets, counters, packaging queue — and its own session, so two of them in one
-process share nothing. `EngineConfig` states the settings this caller chooses;
-everything it leaves unset is read the way the server reads it
+process share nothing. Give it a `data_dir` and that extends to the files:
+
+```python
+with Engine(EngineConfig(data_dir="./tenant-a", database_url=...)) as engine:
+    ...   # packaged analyses, staged uploads and both caches live under it
+```
+
+`EngineConfig` states the settings this caller chooses; everything it leaves
+unset is read the way the server reads it
 ([docs/configuration.md](docs/configuration.md)), `DATABASE_URL` included, and
-PostgreSQL is required here exactly as it is there.
+PostgreSQL is required here exactly as it is there. An engine is **not** the
+process default — it installs no log handler and does not answer for code that
+never asked for it — unless it is built with `install_process_default=True`.
 
 Refusals are the application's own six meanings — `NotFound`, `InvalidRequest`,
 `Conflict`, `Unavailable`, `NotReady`, `ProcessingFailed` — plus the bounds'

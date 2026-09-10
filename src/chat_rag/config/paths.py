@@ -27,9 +27,10 @@ The one thing this module does beyond resolving names is decide which
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 #: Set this to gather all runtime state under one directory. Unset means the
 #: historical, working-directory-relative layout.
@@ -179,23 +180,53 @@ def paths_from_env(env: Optional[Mapping[str, str]] = None) -> PathSettings:
     )
 
 
-# ------------------------------------------------- the process's own layout
+# --------------------------------------------------- whose layout is current
 #
 # The module-level functions below are what the application calls, and each
-# one resolves the *current* environment through :func:`paths_from_env` at the
-# moment it is called. That is deliberate and unchanged: a data root declared
-# after import -- by a test, by a smoke tool, by the ``.env`` file being
-# applied -- has always taken effect, and a value cached at import would
-# silently ignore it.
+# one resolves at the moment it is called rather than at import. That is
+# deliberate and unchanged: a data root declared after import -- by a test, by
+# a smoke tool, by the ``.env`` file being applied -- has always taken effect,
+# and a value cached at import would silently ignore it.
 #
-# What changed is where the reading happens. There is one reader now, and what
-# it produces is a value a caller can equally well build itself and hand to
-# :class:`~chat_rag.config.Settings`.
+# What :func:`current` answers *with* changed twice. L2 made it one reader
+# producing a value (:func:`paths_from_env`), so a caller could build the same
+# value itself and hand it to :class:`~chat_rag.config.Settings`. This step
+# makes it resolve through the engine when there is one, the way
+# ``storage.session_scope()``, ``limits.provider_budget()`` and
+# ``telemetry.metrics()`` already do: inside an activation the answer is that
+# engine's, and outside one it is the environment's, exactly as before.
+#
+# Without this, ``Settings.paths`` was a value the runtime reported and nothing
+# read -- so a second engine given its own data root still wrote its packaged
+# analyses, its staged uploads and its parser cache into the first one's
+# directories, because every writer resolved through the process environment.
+
+
+def _activated_runtime() -> Optional[Any]:
+    """The activated engine's runtime, if there is one.
+
+    Read out of ``sys.modules`` rather than imported, for two reasons and both
+    matter. **Cycles:** ``chat_rag.runtime`` imports ``chat_rag.config``, and
+    this module is reached *while* that package is still initialising --
+    ``config/__init__.py`` applies the ``.env`` file on the way past -- so an
+    import here would be a partially initialised module. **Cost:** this is
+    asked once per parse, per state read and per staged upload, and a module
+    that has never been imported cannot have an activated runtime, so the
+    lookup is also the answer.
+    """
+    runtime = sys.modules.get("chat_rag.runtime")
+    return None if runtime is None else runtime.active()
 
 
 def current() -> PathSettings:
-    """This process's path layout, as the environment describes it now."""
-    return paths_from_env()
+    """The path layout this call belongs to.
+
+    The activated engine's if there is one, and the process environment's
+    otherwise. Both answers are read now rather than remembered, so nothing
+    here freezes a layout at import.
+    """
+    engine = _activated_runtime()
+    return engine.paths if engine is not None else paths_from_env()
 
 
 def data_root() -> Optional[str]:
@@ -292,7 +323,12 @@ def load_env_file(path: str) -> Dict[str, str]:
     for key in ordered:
         if key in os.environ:
             continue  # rule 1
-        if key in STATE_PATH_ENV and data_root() is not None:
+        # The *environment's* data root, never an engine's. Applying a file to
+        # the process environment is something that happens before any engine
+        # exists -- ``config/__init__.py`` does it on the way past -- so asking
+        # :func:`current` here would be asking a module that is still being
+        # imported which engine is active.
+        if key in STATE_PATH_ENV and paths_from_env().data_root is not None:
             _ignored_from_env_file[key] = values[key]  # rule 3
             continue
         os.environ[key] = values[key]

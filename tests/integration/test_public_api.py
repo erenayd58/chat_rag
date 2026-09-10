@@ -33,8 +33,8 @@ from api_v1_doubles import (
 )
 
 from chat_rag import Engine, EngineConfig
-from chat_rag.api import Answer, Comparison, Document, Health, Hit, KnowledgeBase
-from chat_rag.application.errors import NotFound
+from chat_rag.api import Analysis, Answer, Comparison, Document, Health, Hit, KnowledgeBase
+from chat_rag.application.errors import NotFound, NotReady
 from chat_rag.components.viewer import analysis
 from chat_rag.components.viewer import methods as M
 
@@ -362,6 +362,135 @@ def test_an_engine_owns_its_own_container_runtime_and_session():
     finally:
         first.close()
         second.close()
+
+
+def test_two_engines_with_their_own_data_roots_share_no_files(tmp_path, monkeypatch):
+    """The claim ``EngineConfig(data_dir=...)`` makes, over two real ingests.
+
+    Not a path assertion -- ``tests/unit/test_engine_isolation.py`` makes those,
+    reader by reader. This runs two whole engines against two roots and looks
+    at what is actually on disk afterwards: each engine's packaged analysis and
+    staging directory are under its own root, and neither root contains a trace
+    of the other's document.
+
+    Note what is deliberately *still* shared: the database. Two engines given
+    two data roots and one ``DATABASE_URL`` share every row -- the ledger, the
+    knowledge bases, the analysis *records*. Files and records are separate
+    settings because they are separate decisions, and the last assertion here
+    is the interesting consequence: engine two can read the shared record that
+    says engine one's document is analysed, and still cannot serve the payload,
+    because the payload is a file and the file is not under its root.
+    """
+    from chat_rag.pipeline.rag_pipeline import RAGPipeline
+
+    llm = CitingLLM()
+    monkeypatch.setattr(RAGPipeline, "_create_llm", lambda self: llm)
+    monkeypatch.setattr(RAGPipeline, "_create_embedding",
+                        lambda self: DeterministicEmbedding())
+    # Deliberately *not* patching ``analysis.root``: where the packager writes
+    # is the thing under test, and patching it would answer the question the
+    # test is asking.
+
+    roots = {"one": tmp_path / "one", "two": tmp_path / "two"}
+    engines = {name: Engine(EngineConfig(data_dir=str(root),
+                                         retrieval_profile="hybrid_rrf"))
+               for name, root in roots.items()}
+    try:
+        documents = {}
+        for name, engine in engines.items():
+            text = DOCUMENT if name == "one" else OTHER_DOCUMENT
+            kb = engine.knowledge_bases.create(f"KB {name}")
+            document = kb.ingest(_file(tmp_path, f"{name}.md", text),
+                                 methods=[M.STANDARD])
+            assert document.analysis().wait(
+                timeout=PATIENCE_SECONDS).status == "ready"
+            documents[name] = document
+
+        for name, root in roots.items():
+            # Everything this engine wrote is under its own root.
+            assert (root / "viewer-live").is_dir(), f"{name} packaged nothing here"
+            assert (root / "uploads").is_dir(), f"{name} staged its upload elsewhere"
+
+            # And its analysis is readable from it.
+            with engines[name].activate():
+                content_id = documents[name].analysis().content_id
+            assert (root / "viewer-live" / content_id).is_dir()
+
+            # ...and only from it. The other engine packaged a different
+            # document, and nothing of it reached this root.
+            other = "two" if name == "one" else "one"
+            with engines[other].activate():
+                foreign = documents[other].analysis().content_id
+            assert foreign != content_id
+            assert not (root / "viewer-live" / foreign).exists(), (
+                f"{other}'s analysis was written into {name}'s data root")
+
+        # The shared record is not the shared analysis. Engine two reads the
+        # row engine one wrote and reports it as unbuilt, because the payload
+        # it would serve is a file under a root it does not own.
+        one = documents["one"]
+        assert one.analysis().ready, "its own engine has it"
+        with engines["two"].activate():
+            elsewhere = Analysis(engines["two"], one.id)
+        assert not elsewhere.ready, elsewhere.state
+        with pytest.raises(NotReady):
+            elsewhere.payload()
+    finally:
+        for engine in engines.values():
+            with engine.activate():
+                analysis.state().queue.join()
+            engine.services.pipeline_cache.clear()
+            engine.close()
+
+
+def test_a_library_engine_does_not_take_over_the_process_default():
+    """Being the first container in somebody else's process is an accident of
+    ordering, not a mandate to speak for it.
+
+    It matters beyond tidiness: an engine that took the default would hand its
+    connection pool, budgets, counters and packaging queue to code that never
+    asked for one -- Alembic, a migration tool, a CLI command -- and then
+    dispose that pool the moment its ``with`` block ended.
+    """
+    from chat_rag import runtime
+
+    before = runtime.default()
+    with Engine(EngineConfig(retrieval_profile="bm25_only")) as engine:
+        assert runtime.default() is before
+        assert engine.services.runtime is not runtime.default()
+        # It is still reachable the way a second engine always was.
+        with engine.activate():
+            assert runtime.current() is engine.services.runtime
+
+    # And a program that really does want one says so.
+    asked = Engine(EngineConfig(retrieval_profile="bm25_only"),
+                   install_process_default=True)
+    try:
+        # Only the first container in a process is ever installed, so what is
+        # asserted is the request, not that it won: this session has had a
+        # default since its first container.
+        assert runtime.default() is before
+    finally:
+        asked.close()
+
+
+def test_building_an_engine_installs_no_log_handler(tmp_path):
+    """A data root moves an engine's files; it does not move the process's log.
+
+    ``configure_logging`` is an entry point's decision -- ``asgi.py`` and
+    ``python -m cli`` call it, and a library must not -- so an engine given
+    its own data root writes no log file there and adds no handler to a
+    program that has its own logging.
+    """
+    import logging
+
+    logger = logging.getLogger("RAG")
+    before = list(logger.handlers)
+    with Engine(EngineConfig(data_dir=str(tmp_path / "root"),
+                             retrieval_profile="bm25_only")) as engine:
+        assert logger.handlers == before
+        assert engine.settings.paths.logs().startswith(str(tmp_path / "root"))
+    assert not (tmp_path / "root" / "logs").exists(), "nothing wrote a log file"
 
 
 def test_an_engine_is_a_context_manager_and_closes_what_it_holds():
