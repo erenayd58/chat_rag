@@ -498,9 +498,16 @@ def check_wheel(report: Report, work: Path, clone: Path | None,
         report.add(SKIP, "wheel.smoke", "needs a clone and a Python 3.11")
         return
 
-    # ``build`` is the one tool the smoke needs that a bare interpreter has
-    # not got. Installed into a throwaway environment so the driver's own
-    # site-packages is not changed by running the gate.
+    # The environment that *builds* the wheel, thrown away afterwards so the
+    # gate does not change the driver's own site-packages.
+    #
+    # It gets the build backend explicitly, not just ``build``. The smoke
+    # builds with ``--no-isolation`` -- deliberately, so that what is built is
+    # built by a known backend rather than by whatever pip downloads at the
+    # time -- and that makes satisfying ``build-system.requires`` this
+    # environment's job. Python 3.11 ships setuptools 65, the project asks for
+    # 68, and the gate is the only place that difference shows: a developer's
+    # venv has a recent one and never notices.
     driver = work / "wheel-driver"
     made = run([python311, "-m", "venv", str(driver)], timeout=900)
     if made.returncode != 0:
@@ -509,9 +516,10 @@ def check_wheel(report: Report, work: Path, clone: Path | None,
         return
     python = venv_python(driver)
     prepared = run([str(python), "-m", "pip", "install", "--disable-pip-version-check",
-                    "build"], timeout=1800)
+                    "build", "setuptools>=68", "wheel"], timeout=1800)
     if prepared.returncode != 0:
-        report.add(FAIL, "wheel.smoke", "could not install `build`", tail(prepared))
+        report.add(FAIL, "wheel.smoke", "could not install the build backend",
+                   tail(prepared))
         return
 
     command = [str(python), "tools/wheel_smoke.py"]
