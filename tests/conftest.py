@@ -67,6 +67,20 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# A test session is a process, and this is the one thing a process has to do
+# before it imports the application: the thread-pool defaults configure
+# numeric libraries that read their environment when they are imported, and
+# the first test to touch ``chat_rag.pipeline`` pulls in torch. It used to
+# happen on the way through ``chat_rag/application/__init__.py``; the entry
+# points own it now, and a test session is one of them.
+#
+# Log handlers are deliberately *not* installed. ``chat_rag`` attaches a
+# NullHandler and nothing else, which is what a library should do, and a suite
+# that wants records has ``caplog``. The session no longer writes a log file.
+from chat_rag.process import apply_thread_defaults  # noqa: E402
+
+apply_thread_defaults()
+
 #: Files a test run must leave exactly as it found them.
 _DEVELOPER_STATE = (
     ".ingested_documents.json",

@@ -176,7 +176,7 @@ def test_no_report_of_the_database_carries_its_credential(monkeypatch):
 
     from chat_rag.config import Settings
 
-    effective = Settings().effective_configuration()
+    effective = Settings.from_env().effective_configuration()
     assert "s3cr3t" not in repr(effective)
     assert effective["database"]["url"].endswith("/prod")
 

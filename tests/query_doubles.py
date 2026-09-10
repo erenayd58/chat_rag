@@ -154,7 +154,7 @@ def corpus():
 
 
 def make_settings(tmp_path, **overrides) -> Settings:
-    settings = Settings()
+    settings = Settings.from_env()
     settings.retrieval_profile = "hybrid_rrf"
     settings.chunker_type = "structure_first"
     settings.vector_db_provider = "pgvector"

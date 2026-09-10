@@ -49,7 +49,7 @@ def test_settings_fail_at_construction_not_at_first_upload(monkeypatch):
 
     monkeypatch.setenv("INGEST_WORKERS", "0")
     with pytest.raises(ValueError):
-        Settings()
+        Settings.from_env()
 
 
 def test_admission_capacity_is_workers_plus_queue():

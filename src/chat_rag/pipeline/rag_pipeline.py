@@ -81,7 +81,7 @@ class RAGPipeline:
         chunker: Optional[BaseChunker] = None,
         settings: Optional[Settings] = None
     ):
-        self.settings = settings or Settings()
+        self.settings = settings if settings is not None else Settings.from_env()
         self.retrieval_profile = getattr(
             self.settings, 'retrieval_profile', DEFAULT_RETRIEVAL_PROFILE
         )

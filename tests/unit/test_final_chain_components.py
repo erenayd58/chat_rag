@@ -489,7 +489,7 @@ def test_settings_read_the_three_roles(monkeypatch):
                  "EMBEDDING_PROVIDER", "EMBEDDING_MODEL", "RETRIEVAL_PROFILE", "LLM_PROVIDER"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
-    legacy = Settings()
+    legacy = Settings.from_env()
     assert legacy.answer_provider == "ollama" and legacy.answer_fallback_provider == "none"
     assert legacy.embedding_provider == "sentence_transformers"
 
@@ -500,7 +500,7 @@ def test_settings_read_the_three_roles(monkeypatch):
     monkeypatch.setenv("ANSWER_MODEL", "minimax/minimax-m2.7")
     monkeypatch.setenv("ANSWER_FALLBACK_PROVIDER", "ollama")
     monkeypatch.setenv("ANSWER_FALLBACK_MODEL", "qwen2.5:3b")
-    final = Settings()
+    final = Settings.from_env()
     assert final.retrieval_profile == "hybrid_rrf"
     assert final.embedding_provider == "openrouter" and final.embedding_model_name == "qwen/qwen3-embedding-8b"
     assert final.answer_provider == "openrouter" and final.answer_model == "minimax/minimax-m2.7"

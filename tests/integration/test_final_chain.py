@@ -154,7 +154,7 @@ def report_document():
 
 
 def make_settings(tmp_path, **overrides):
-    settings = Settings()
+    settings = Settings.from_env()
     settings.retrieval_profile = "hybrid_rrf"
     settings.chunker_type = "structure_first"
     settings.vector_db_provider = "pgvector"

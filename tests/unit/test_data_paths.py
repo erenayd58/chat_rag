@@ -148,7 +148,7 @@ def test_a_pipeline_is_still_built_when_the_model_cannot_be_reached(monkeypatch)
     from chat_rag.config import Settings
     from chat_rag.pipeline import RAGPipeline
 
-    settings = Settings()
+    settings = Settings.from_env()
     settings.llm_provider = "ollama"
     settings.answer_provider = "ollama"
     settings.answer_model = ""

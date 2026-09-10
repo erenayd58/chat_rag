@@ -131,7 +131,7 @@ class Pipeline:
 def build(tmp_path, *, pipeline=None, workers=1, queue=4) -> Services:
     """A container composed the way ``build_services`` composes one, with this
     test's own stores. No Flask, no environment, no network."""
-    settings = Settings()
+    settings = Settings.from_env()
     settings.query_timeout = 5.0
     made = pipeline or Pipeline()
 

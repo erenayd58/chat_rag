@@ -1,18 +1,21 @@
 """
 Sentence Transformer embedding implementation
 """
-import os
 import threading
 from typing import Dict, List, Union
 import numpy as np
 
-# Set OpenMP environment variables BEFORE importing SentenceTransformer
-# This prevents OMP errors when multiple instances are created
-os.environ.setdefault('OMP_NUM_THREADS', '1')
-os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
-os.environ.setdefault('MKL_NUM_THREADS', '1')
-os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
-
+# The OpenMP thread-pool variables that keep several loaded models from
+# aborting the process used to be set here, four ``os.environ.setdefault``
+# calls above the import below -- the last moment at which they still take
+# effect, because SentenceTransformer reads them as it loads torch.
+#
+# Setting them was still a library changing a process it was only imported
+# into, so the decision moved to the process:
+# ``chat_rag.process.apply_thread_defaults()``, which ``asgi.py``,
+# ``python -m cli``, the smoke tools and the test session each call before
+# they import the application. A program embedding this package should do the
+# same before the first import of ``chat_rag.pipeline``.
 from sentence_transformers import SentenceTransformer
 from .base import BaseEmbedding
 from chat_rag.core.exceptions import EmbeddingException

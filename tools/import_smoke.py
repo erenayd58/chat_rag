@@ -30,6 +30,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+# This tool is a process too, and the thing it proves is that the *product*
+# imports -- so it starts the way the product starts. The thread defaults have
+# to be applied before the first product module is imported, which is the only
+# time they can still take effect.
+from chat_rag.process import apply_thread_defaults  # noqa: E402
+
+apply_thread_defaults()
+
 #: Imported in the order a request path loads them, most-depended-on first, so
 #: a failure names the deepest module that broke rather than ``asgi``.
 PRODUCT_MODULES = (

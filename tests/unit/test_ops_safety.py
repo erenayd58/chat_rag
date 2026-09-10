@@ -27,6 +27,7 @@ anyone choosing that, with DEBUG available to a developer who asks for it.
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import os
 from pathlib import Path
 
@@ -102,62 +103,88 @@ def test_the_examples_per_category_stay_bounded():
 
 
 # ------------------------------------------------------------------- logs
-def build_logger(tmp_path, monkeypatch, **env):
-    """A fresh RAGLogger writing into ``tmp_path``, whatever ran before."""
+#
+# Since L2 the handlers are installed by a call rather than by an import, so
+# these drive the same two handlers through ``configure_logging`` instead of
+# through a singleton's constructor. What is asserted is unchanged: one run is
+# bounded, a restart loop is bounded, a failed prune does not stop the service,
+# and the file level defaults to INFO.
+
+
+@pytest.fixture(autouse=True)
+def _no_handlers_left_behind():
+    """A test that installs handlers takes them off again.
+
+    The suite runs with the library default -- a NullHandler and nothing else
+    -- and a test that opened a rotating file must not leave the next one
+    writing into its ``tmp_path``.
+    """
     from chat_rag.utils import logger as logger_module
 
-    for name, value in env.items():
-        monkeypatch.setenv(name, str(value))
-    monkeypatch.setattr(logger_module.paths, "logs", lambda: str(tmp_path))
-    for name, value in (("LOG_MAX_BYTES", logger_module._positive("LOG_MAX_BYTES", 10 * 1024 * 1024)),
-                        ("LOG_BACKUPS", logger_module._positive("LOG_BACKUPS", 3)),
-                        ("LOG_RUNS_KEPT", logger_module._positive("LOG_RUNS_KEPT", 10))):
-        monkeypatch.setattr(logger_module, name, value)
-    monkeypatch.setattr(logger_module.RAGLogger, "_instance", None)
-    monkeypatch.setattr(logger_module.RAGLogger, "_initialized", False)
-    instance = logger_module.RAGLogger()
-    return logger_module, instance
+    yield
+    logger_module.reset_logging()
 
 
-def test_one_run_cannot_fill_the_disk(tmp_path, monkeypatch):
+def configure(tmp_path, **env):
+    """The real entry-point call, into ``tmp_path`` and from a given env."""
+    from chat_rag.utils import logger as logger_module
+
+    settings = logger_module.logging_from_env({k: str(v) for k, v in env.items()})
+    logger_module.configure_logging(settings, directory=str(tmp_path), force=True)
+    return logger_module, settings
+
+
+def written(tmp_path):
+    return "\n".join(path.read_text(encoding="utf-8", errors="replace")
+                     for path in sorted(tmp_path.glob("rag_*.log*")))
+
+
+def content_dump(module):
+    """The pre-existing DEBUG dumps, called exactly as the pipeline calls them.
+
+    These are not this layer's lines -- they belong to the retrieval and answer
+    code and are what its developers read. The point is what reaches the file
+    when nobody has asked for them.
+    """
+    logger = module.get_logger("pipeline")
+    module.RAGLogger.log_llm_request(
+        logger, [{"role": "user", "content": "gizli sirket belgesinin tam metni"}], 0.2, 512)
+    module.RAGLogger.log_chunks_passed_to_llm(
+        logger, [object()], "gizli sirket belgesinin tam metni")
+    logger.info("event=ingest.job.succeeded job_id=job-1 kb_id=kb-1 chunks=12")
+
+
+def test_one_run_cannot_fill_the_disk(tmp_path):
     """The file rotates, so a long-lived process has a bounded log."""
-    module, instance = build_logger(tmp_path, monkeypatch, LOG_MAX_BYTES=2048, LOG_BACKUPS=2)
-    logger = instance.get_logger("ops")
-    try:
-        for index in range(400):
-            logger.info("event=ingest.job.finished job_id=%s %s", index, "x" * 200)
-    finally:
-        for handler in list(instance.logger.handlers):
-            handler.close()
-            instance.logger.removeHandler(handler)
+    module, settings = configure(tmp_path, LOG_MAX_BYTES=2048, LOG_BACKUPS=2)
+    logger = module.get_logger("ops")
+    for index in range(400):
+        logger.info("event=ingest.job.finished job_id=%s %s", index, "x" * 200)
+    module.reset_logging()
 
     files = sorted(tmp_path.glob("rag_*.log*"))
     assert files, "the run should have written something"
-    # One live file plus at most LOG_BACKUPS rotations, each within the cap
+    # One live file plus at most ``backups`` rotations, each within the cap
     # (a single record may overshoot it, never a multiple of it).
-    assert len(files) <= module.LOG_BACKUPS + 1
-    assert max(path.stat().st_size for path in files) < module.LOG_MAX_BYTES * 2
+    assert len(files) <= settings.backups + 1
+    assert max(path.stat().st_size for path in files) < settings.max_bytes * 2
     total = sum(path.stat().st_size for path in files)
-    assert total < module.LOG_MAX_BYTES * (module.LOG_BACKUPS + 2)
+    assert total < settings.max_bytes * (settings.backups + 2)
 
 
-def test_restarts_cannot_fill_the_directory(tmp_path, monkeypatch):
+def test_restarts_cannot_fill_the_directory(tmp_path):
     """A restart loop used to leave one more file behind every time."""
     for index in range(25):
         (tmp_path / f"rag_2026010{index // 10}_{index:06d}.log").write_text("old", encoding="utf-8")
-    module, instance = build_logger(tmp_path, monkeypatch, LOG_RUNS_KEPT=5)
-    try:
-        remaining = sorted(tmp_path.glob("rag_*.log*"))
-        # The five newest that were there, plus this run's own file.
-        assert len(remaining) == 6
-        # Newest kept, oldest gone -- pruning by name is pruning by time,
-        # because the name is a timestamp.
-        assert any("000024" in path.name for path in remaining)
-        assert not any("000000" in path.name for path in remaining)
-    finally:
-        for handler in list(instance.logger.handlers):
-            handler.close()
-            instance.logger.removeHandler(handler)
+    configure(tmp_path, LOG_RUNS_KEPT=5)
+
+    remaining = sorted(tmp_path.glob("rag_*.log*"))
+    # The five newest that were there, plus this run's own file.
+    assert len(remaining) == 6
+    # Newest kept, oldest gone -- pruning by name is pruning by time, because
+    # the name is a timestamp.
+    assert any("000024" in path.name for path in remaining)
+    assert not any("000000" in path.name for path in remaining)
 
 
 def test_a_log_that_cannot_be_pruned_does_not_stop_the_service(tmp_path, monkeypatch):
@@ -175,56 +202,7 @@ def test_a_log_that_cannot_be_pruned_does_not_stop_the_service(tmp_path, monkeyp
     assert victim.exists()
 
 
-def reload_logger(monkeypatch, level=None):
-    """utils.logger with LOG_FILE_LEVEL read fresh from the environment."""
-    import importlib
-
-    from chat_rag.utils import logger as logger_module
-
-    if level is None:
-        monkeypatch.delenv("LOG_FILE_LEVEL", raising=False)
-    else:
-        monkeypatch.setenv("LOG_FILE_LEVEL", level)
-    return importlib.reload(logger_module)
-
-
-@pytest.fixture(autouse=True)
-def restore_logger_module():
-    """Leave utils.logger as the rest of the suite expects to find it."""
-    yield
-    import importlib
-
-    from chat_rag.utils import logger as logger_module
-    importlib.reload(logger_module)
-
-
-def content_dump(instance):
-    """The pre-existing DEBUG dumps, called exactly as the pipeline calls them.
-
-    These are not this layer's lines -- they belong to the retrieval and answer
-    code and are what its developers read. The point is what reaches the file
-    when nobody has asked for them.
-    """
-    module = type(instance)
-    logger = instance.get_logger("pipeline")
-    module.log_llm_request(
-        logger, [{"role": "user", "content": "gizli sirket belgesinin tam metni"}], 0.2, 512)
-    module.log_chunks_passed_to_llm(logger, [object()], "gizli sirket belgesinin tam metni")
-    logger.info("event=ingest.job.succeeded job_id=job-1 kb_id=kb-1 chunks=12")
-
-
-def close(instance):
-    for handler in list(instance.logger.handlers):
-        handler.close()
-        instance.logger.removeHandler(handler)
-
-
-def written(tmp_path):
-    return "\n".join(path.read_text(encoding="utf-8", errors="replace")
-                        for path in sorted(tmp_path.glob("rag_*.log*")))
-
-
-def test_the_default_file_level_writes_no_document_content(tmp_path, monkeypatch):
+def test_the_default_file_level_writes_no_document_content(tmp_path):
     """INFO by default: a deployment does not keep a copy of its corpus.
 
     The dumps below write prompts, retrieved chunks and the whole answer
@@ -232,14 +210,11 @@ def test_the_default_file_level_writes_no_document_content(tmp_path, monkeypatch
     a default that puts document text there is a decision nobody makes on
     purpose. What must survive the default is the operational half.
     """
-    module = reload_logger(monkeypatch)
-    assert module.LOG_FILE_LEVEL == "INFO"
+    module, settings = configure(tmp_path)
+    assert settings.file_level == "INFO"
 
-    _, instance = build_logger(tmp_path, monkeypatch)
-    try:
-        content_dump(instance)
-    finally:
-        close(instance)
+    content_dump(module)
+    module.reset_logging()
 
     contents = written(tmp_path)
     assert "gizli sirket belgesinin tam metni" not in contents
@@ -250,28 +225,39 @@ def test_the_default_file_level_writes_no_document_content(tmp_path, monkeypatch
     assert "event=ingest.job.succeeded" in contents
 
 
-def test_a_developer_can_still_opt_in(tmp_path, monkeypatch):
+def test_a_developer_can_still_opt_in(tmp_path):
     """DEBUG is available, explicit, and says so at start-up."""
-    module = reload_logger(monkeypatch, "DEBUG")
-    assert module.LOG_FILE_LEVEL == "DEBUG"
+    module, settings = configure(tmp_path, LOG_FILE_LEVEL="DEBUG")
+    assert settings.file_level == "DEBUG"
 
-    _, instance = build_logger(tmp_path, monkeypatch)
-    try:
-        content_dump(instance)
-    finally:
-        close(instance)
+    content_dump(module)
+    module.reset_logging()
 
     contents = written(tmp_path)
     assert "gizli sirket belgesinin tam metni" in contents, "opting in must work"
     assert "LOG_FILE_LEVEL=DEBUG" in contents, "and must be announced"
 
 
-def test_an_unrecognised_level_falls_back_to_info_not_debug(monkeypatch):
+def test_an_unrecognised_level_falls_back_to_info_not_debug():
     """A typo must not be the thing that starts writing document text."""
+    from chat_rag.utils import logger as logger_module
+
     for value in ("TRACE", "verbose", "", "root", "handlers"):
-        module = reload_logger(monkeypatch, value)
-        assert module.LOG_FILE_LEVEL == "INFO", value
-        assert module.LOG_LEVELS[module.LOG_FILE_LEVEL] == logging.INFO
+        settings = logger_module.logging_from_env({"LOG_FILE_LEVEL": value})
+        assert settings.file_level == "INFO", value
+        assert logger_module.LOG_LEVELS[settings.file_level] == logging.INFO
+
+
+def test_a_fallback_is_reported_rather_than_silent():
+    """The fail-safe half only works if somebody can see it happened."""
+    from chat_rag.utils import logger as logger_module
+
+    settings = logger_module.logging_from_env(
+        {"LOG_FILE_LEVEL": "TRACE", "LOG_BACKUPS": "-2"})
+    joined = " ".join(settings.fallbacks)
+    assert "LOG_FILE_LEVEL" in joined and "LOG_BACKUPS" in joined
+    # And a clean environment reports nothing, so the list means what it says.
+    assert logger_module.logging_from_env({}).fallbacks == ()
 
 
 def test_the_runtime_configuration_agrees_with_the_code():
@@ -279,6 +265,38 @@ def test_the_runtime_configuration_agrees_with_the_code():
     from chat_rag.utils import logger as logger_module
 
     root = Path(__file__).resolve().parents[2]
-    assert logger_module.LOG_LEVELS[logger_module.LOG_FILE_LEVEL] == logging.INFO
+    default = logger_module.LoggingSettings()
+    assert logger_module.LOG_LEVELS[default.file_level] == logging.INFO
     assert "# LOG_FILE_LEVEL=INFO" in (root / "env.example").read_text(encoding="utf-8")
     assert "LOG_FILE_LEVEL=INFO" in (root / ".env.docker").read_text(encoding="utf-8")
+
+
+def test_configuring_twice_does_not_open_a_second_file(tmp_path):
+    """Two entry points in one process must not produce two log files.
+
+    ``python -m cli`` importing a tool that also configures, a test importing
+    both: the second call is a no-op, so the handlers stay one file handler and
+    one console handler.
+    """
+    module, _ = configure(tmp_path)
+    module.configure_logging()  # no force: the second caller
+    module.configure_logging()
+
+    handlers = logging.getLogger(module.ROOT_LOGGER).handlers
+    files = [h for h in handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
+    assert len(files) == 1
+    assert len(sorted(tmp_path.glob("rag_*.log"))) == 1
+
+
+def test_the_diagnostics_report_the_handlers_that_exist(tmp_path):
+    """``logging_configuration`` answers for the process, not for the
+    environment, once a process has said what it wants."""
+    from chat_rag.utils import logger as logger_module
+
+    module, _ = configure(tmp_path, LOG_FILE_LEVEL="DEBUG")
+    assert logger_module.logging_configuration()["file_level"] == "DEBUG"
+
+    module.reset_logging()
+    # With no handlers the honest answer is what the environment would give,
+    # which is the default here.
+    assert logger_module.logging_configuration()["file_level"] == "INFO"

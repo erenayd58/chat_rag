@@ -39,7 +39,7 @@ logger = logging.getLogger("RAG.services")
 
 def build_settings_for_kb(kb_cfg: dict, kb_id: Optional[str] = None) -> Settings:
     """The process settings, narrowed to one knowledge base's own choices."""
-    s = Settings()
+    s = Settings.from_env()
     # A knowledge base may name its own embedding model only for the provider
     # it was created for: the older records carry local sentence-transformers
     # names, which must not be sent to an OpenAI-compatible gateway (the
@@ -135,7 +135,7 @@ def build_services(settings: Optional[Settings] = None) -> Services:
     are constructed much later, inside pipelines this container has not built
     yet.
     """
-    settings = settings or Settings()
+    settings = settings if settings is not None else Settings.from_env()
 
     # The caps on outbound calls, from the validated settings, before any
     # pipeline can make one. Three, because Deep Analysis, the embedding

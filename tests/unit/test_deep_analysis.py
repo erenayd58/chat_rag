@@ -355,7 +355,7 @@ def test_settings_read_deep_analysis_and_fall_back_to_the_legacy_names(monkeypat
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("BOUNDARY_JUDGE_MODEL", "legacy/model")
     monkeypatch.setenv("BOUNDARY_JUDGE_TIMEOUT", "77")
-    legacy = Settings()
+    legacy = Settings.from_env()
     assert legacy.deep_analysis_model == "legacy/model"
     assert legacy.deep_analysis_timeout == 77.0
     assert legacy.deep_analysis_api_key_env == "OPENROUTER_API_KEY"
@@ -364,7 +364,7 @@ def test_settings_read_deep_analysis_and_fall_back_to_the_legacy_names(monkeypat
     monkeypatch.setenv("DEEP_ANALYSIS_MODEL", "new/model")
     monkeypatch.setenv("DEEP_ANALYSIS_API_KEY_ENV", "GATEWAY_KEY")
     monkeypatch.setenv("DEEP_ANALYSIS_VERIFY", "false")
-    current = Settings()
+    current = Settings.from_env()
     assert current.deep_analysis_model == "new/model"
     assert current.deep_analysis_api_key_env == "GATEWAY_KEY"
     assert current.deep_analysis_verify is False

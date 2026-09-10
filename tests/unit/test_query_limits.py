@@ -70,7 +70,7 @@ def test_settings_fail_at_construction(monkeypatch):
 
     monkeypatch.setenv("ANSWER_MAX_INFLIGHT", "0")
     with pytest.raises(ValueError):
-        Settings()
+        Settings.from_env()
 
 
 def test_the_limits_describe_themselves():

@@ -240,7 +240,7 @@ def test_settings_refuse_to_build_on_an_impossible_combination(monkeypatch):
 
     monkeypatch.setenv("WAITRESS_CHANNEL_TIMEOUT", "60")
     with pytest.raises(ValueError, match="INGEST_SYNC_WAIT"):
-        Settings()
+        Settings.from_env()
 
 
 # ------------------------------------------------------------------ secrets
@@ -251,7 +251,7 @@ def test_no_credential_appears_in_the_configuration_diagnostics(monkeypatch):
 
     monkeypatch.setenv("AZURE_API_KEY", "sk-do-not-log-me")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-nor-me")
-    effective = Settings().effective_configuration()
+    effective = Settings.from_env().effective_configuration()
 
     rendered = repr(effective)
     assert "sk-do-not-log-me" not in rendered
@@ -268,7 +268,7 @@ def test_the_settings_dump_redacts_credentials(monkeypatch):
     from chat_rag.config.settings import REDACTED, SECRET_ATTRIBUTES
 
     monkeypatch.setenv("AZURE_API_KEY", "sk-do-not-log-me")
-    dumped = Settings().to_dict()
+    dumped = Settings.from_env().to_dict()
 
     assert dumped["azure_api_key"] == REDACTED
     assert "sk-do-not-log-me" not in repr(dumped)
@@ -349,11 +349,19 @@ def _code_default(name: str) -> str | None:
         prefixed = "DATABASE_" + field.upper()
         if prefixed == name or prefixed.replace("_SECONDS", "") == name:
             return "" if value is None else str(value)
+    # The rest live on ``Settings``, whose reader falls back to a string
+    # literal beside the variable's name -- ``_get(env, "ANSWER_TIMEOUT",
+    # "120")``. That literal is what ``env.example`` has to agree with, and it
+    # is checked against the typed default on the field by
+    # ``test_from_env_with_an_empty_environment_matches_the_dataclass_defaults``,
+    # so reading it here is reading one end of a pair that cannot drift.
     source = (REPO / "src" / "chat_rag" / "config" / "settings.py").read_text(encoding="utf-8")
-    match = re.search(rf'getenv\(\s*"{re.escape(name)}"\s*,\s*"([^"]*)"', source)
+    match = re.search(
+        rf'_(?:get|legacy|flag)\(\s*env,\s*"{re.escape(name)}"\s*,\s*"([^"]*)"', source
+    )
     if match:
         return match.group(1)
-    if re.search(rf'getenv\(\s*"{re.escape(name)}"\s*\)', source):
+    if re.search(rf'_legacy\(\s*env,\s*"{re.escape(name)}"\s*\)', source):
         return ""
     return None
 
@@ -467,7 +475,18 @@ def test_a_test_leaves_no_environment_behind(clean_env, monkeypatch):
 #:                     else needs is lifted out as ``request_threads``.
 #: ``configuration_warnings``  what ``cross_check`` said, for the start-up
 #:                     banner and ``/api/ops/metrics`` to print.
-READ_BY_SETTINGS_ITSELF = frozenset({"runtime_limits", "configuration_warnings"})
+#: ``answer_key_configured`` / ``embedding_key_configured`` /
+#: ``deep_analysis_key_configured``  whether each provider key was set when the
+#:                     settings were read. Reported as booleans by
+#:                     ``effective_configuration``; they exist so that method
+#:                     never has to look at the environment, which is the
+#:                     property ``test_the_settings_read_the_environment_once``
+#:                     holds.
+READ_BY_SETTINGS_ITSELF = frozenset({
+    "runtime_limits", "configuration_warnings",
+    "answer_key_configured", "embedding_key_configured",
+    "deep_analysis_key_configured",
+})
 
 
 def test_every_setting_read_is_a_setting_applied():
@@ -487,9 +506,16 @@ def test_every_setting_read_is_a_setting_applied():
     production ignores.
     """
     import ast
+    import dataclasses
+
+    from chat_rag.config import Settings
 
     source = (REPO / "src" / "chat_rag" / "config" / "settings.py").read_text(encoding="utf-8")
-    assigned = {
+    # Two kinds of name, since ``Settings`` became a dataclass: the declared
+    # fields, and whatever ``__post_init__`` derives on top of them. Reading
+    # the fields off the class rather than off the source is what keeps this
+    # guard from going blind the next time the file is reorganised.
+    assigned = {f.name for f in dataclasses.fields(Settings)} | {
         node.attr
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.Attribute)
@@ -554,3 +580,293 @@ def test_the_config_package_builds_no_settings_at_import():
     assert "settings" not in config.__all__
     # ``config.settings`` is the submodule, and only ever that.
     assert isinstance(config.settings, types.ModuleType)
+
+
+# ------------------------------------------- configuration by construction
+#
+# ``Settings`` is a dataclass and ``Settings.from_env`` is the only thing that
+# reads an environment. These are the four properties that split relies on:
+# the two halves agree, every declared variable really reaches its field, a
+# caller can build one without an environment at all, and what is reported
+# afterwards does not go back to the environment for more.
+
+
+def test_from_env_with_an_empty_environment_matches_the_dataclass_defaults():
+    """The defaults are written twice -- typed on the field, and as the string
+    literal the reader falls back to -- and this is what stops them drifting.
+
+    The nested limit objects are deliberately not compared: ``config.ingest``
+    and ``config.query`` derive two of their defaults from the request-thread
+    count, so ``IngestLimits()`` and ``limits_from_env({})`` differ by design
+    and each module tests its own.
+    """
+    from chat_rag.config import Settings
+    from chat_rag.config.settings import OWN_FIELDS
+
+    declared, read = Settings(), Settings.from_env({})
+    drifted = [
+        f"{name}: field says {getattr(declared, name)!r}, "
+        f"from_env says {getattr(read, name)!r}"
+        for name in OWN_FIELDS
+        if getattr(declared, name) != getattr(read, name)
+    ]
+    assert drifted == [], "\n".join(drifted)
+
+
+#: Values that must be used for a particular variable rather than the generic
+#: probe: a profile has to be a real profile, a number has to parse.
+_PROBES = {
+    "RETRIEVAL_PROFILE": "hybrid_rrf",
+    "EMBEDDING_DIMENSIONS": "1536",
+    "DEEP_ANALYSIS_USE_LLM": "false",
+    "DEEP_ANALYSIS_VERIFY": "false",
+    "CONTEXT_EXPAND_NEIGHBORS": "false",
+}
+
+
+def test_every_declared_variable_really_sets_its_field():
+    """``ENV_FIELDS`` is documentation until something drives it.
+
+    Setting one variable must change one field, and the right one. This is
+    what catches a reader that was renamed on one side only -- the failure the
+    old ``os.getenv`` calls could hide, because a misspelled name simply
+    returned the default forever.
+    """
+    from chat_rag.config import Settings
+    from chat_rag.config.settings import ENV_FIELDS
+
+    baseline = Settings.from_env({})
+    unmoved = []
+    for variable, attribute in sorted(ENV_FIELDS.items()):
+        current = getattr(baseline, attribute)
+        probe = _PROBES.get(variable)
+        if probe is None:
+            probe = "7" if isinstance(current, (int, float)) and not isinstance(
+                current, bool) else "probe-value"
+        changed = getattr(Settings.from_env({variable: probe}), attribute)
+        if changed == current:
+            unmoved.append(f"{variable} -> {attribute} (still {current!r})")
+    assert unmoved == [], (
+        "these variables are declared but set nothing:\n  " + "\n  ".join(unmoved)
+    )
+
+
+def test_the_legacy_deep_analysis_names_are_still_read_and_still_lose():
+    """``DEEP_ANALYSIS_*`` wins; ``BOUNDARY_JUDGE_*`` is the fallback."""
+    from chat_rag.config import Settings
+
+    both = Settings.from_env(
+        {"DEEP_ANALYSIS_MODEL": "new", "BOUNDARY_JUDGE_MODEL": "old"})
+    assert both.deep_analysis_model == "new"
+
+    legacy_only = Settings.from_env({"BOUNDARY_JUDGE_MODEL": "old"})
+    assert legacy_only.deep_analysis_model == "old"
+
+    # Blank counts as unset, so a cleared new name falls through rather than
+    # producing a silently empty model.
+    cleared = Settings.from_env(
+        {"DEEP_ANALYSIS_MODEL": "  ", "BOUNDARY_JUDGE_MODEL": "old"})
+    assert cleared.deep_analysis_model == "old"
+
+
+def test_settings_can_be_built_with_no_environment_at_all(monkeypatch):
+    """The point of the split: a caller configures by construction.
+
+    The environment says one thing and the constructed settings say another,
+    because nothing in ``Settings`` consults it.
+    """
+    from chat_rag.config import Settings
+
+    monkeypatch.setenv("ANSWER_MODEL", "from-the-environment")
+    monkeypatch.setenv("RETRIEVAL_PROFILE", "benchmark_aligned")
+
+    built = Settings(answer_model="chosen-by-the-caller", retrieval_profile="hybrid_rrf")
+
+    assert built.answer_model == "chosen-by-the-caller"
+    assert built.retrieval_profile == "hybrid_rrf"
+    # And the one that does read it still reads it, so this is a choice rather
+    # than a break.
+    assert Settings.from_env().answer_model == "from-the-environment"
+
+
+def test_an_unset_answer_provider_still_means_the_historical_one():
+    """Both construction paths resolve it, so they cannot disagree."""
+    from chat_rag.config import Settings
+
+    assert Settings(llm_provider="ollama").answer_provider == "ollama"
+    assert Settings.from_env({"LLM_PROVIDER": "ollama"}).answer_provider == "ollama"
+    assert Settings.from_env(
+        {"LLM_PROVIDER": "ollama", "ANSWER_PROVIDER": "OpenRouter"}
+    ).answer_provider == "openrouter"
+
+
+def test_a_bad_retrieval_profile_is_refused_however_it_arrives():
+    from chat_rag.config import Settings
+
+    with pytest.raises(ValueError, match="RETRIEVAL_PROFILE"):
+        Settings(retrieval_profile="made-up")
+    with pytest.raises(ValueError, match="RETRIEVAL_PROFILE"):
+        Settings.from_env({"RETRIEVAL_PROFILE": "made-up"})
+
+
+def test_the_diagnostics_do_not_go_back_to_the_environment():
+    """Whether a provider key is configured is read when the settings are.
+
+    ``effective_configuration`` used to call ``os.getenv`` at render time,
+    which made the report depend on when it was asked rather than on what the
+    process was configured with. The variable below is not in ``os.environ``
+    at all, so a True here can only have come from the mapping.
+    """
+    from chat_rag.config import Settings
+
+    settings = Settings.from_env(
+        {"ANSWER_API_KEY_ENV": "A_KEY_NOT_IN_THIS_PROCESS", "A_KEY_NOT_IN_THIS_PROCESS": "x"}
+    )
+    assert settings.answer_key_configured is True
+    assert settings.effective_configuration()["models"]["answer_key_configured"] is True
+    assert Settings.from_env({}).effective_configuration(
+    )["models"]["answer_key_configured"] is False
+
+
+# --------------------------------------------------------- the data root
+
+
+def test_the_data_root_is_a_setting_on_the_configuration(tmp_path):
+    """Explicit, so a caller sets a layout rather than arranging an
+    environment for a module to discover later."""
+    from chat_rag.config import Settings
+    from chat_rag.config.paths import PathSettings
+
+    layout = PathSettings(data_root=str(tmp_path))
+    settings = Settings(paths=layout)
+
+    effective = settings.effective_configuration()
+    assert effective["data_root"] == str(tmp_path)
+    assert effective["parser_cache"].startswith(str(tmp_path))
+    assert effective["viewer_analyses"].startswith(str(tmp_path))
+    # Nothing was read to get there.
+    assert Settings().effective_configuration()["data_root"] is None
+
+
+def test_the_path_settings_reproduce_every_historical_default():
+    """With no data root, each path is exactly the one it always was."""
+    from chat_rag.config.paths import PathSettings
+
+    layout = PathSettings()
+    assert layout.knowledge_bases() == "./.knowledge_bases.json"
+    assert layout.ingested_documents() == ".ingested_documents.json"
+    assert layout.gold_set() == "./.gold_set.json"
+    assert layout.ingest_journal() == ".ingest-jobs"
+    assert layout.logs() == "logs"
+    assert layout.canonical_cache() == ".cache/canonical-units"
+    assert layout.viewer_live_analysis() == "./artifacts/viewer-live"
+    assert layout.boundary_embedding_cache() == ".cache/boundary-embeddings"
+    assert layout.embedding_cache() == ".cache/embeddings"
+
+
+def test_a_data_root_gathers_the_same_set_under_itself(tmp_path):
+    from chat_rag.config.paths import PathSettings
+
+    layout = PathSettings(data_root=str(tmp_path))
+    for path in (layout.knowledge_bases(), layout.ingested_documents(),
+                 layout.gold_set(), layout.ingest_journal(), layout.logs(),
+                 layout.canonical_cache(), layout.viewer_live_analysis(),
+                 layout.boundary_embedding_cache(), layout.embedding_cache(),
+                 layout.upload_staging()):
+        assert path.startswith(str(tmp_path)), path
+
+
+def test_an_explicit_parser_cache_still_wins_over_the_data_root(tmp_path):
+    from chat_rag.config.paths import PathSettings
+
+    layout = PathSettings(data_root=str(tmp_path), parser_cache="/elsewhere/units")
+    assert layout.canonical_cache() == "/elsewhere/units"
+
+
+def test_the_module_functions_still_answer_for_the_live_environment(tmp_path, monkeypatch):
+    """Unchanged behaviour, and it has to stay unchanged: a data root declared
+    after import -- by a test, by a smoke tool, by the ``.env`` file being
+    applied -- has always taken effect."""
+    monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path))
+    assert paths.data_root() == str(tmp_path)
+    assert paths.canonical_cache().startswith(str(tmp_path))
+    assert paths.current() == paths.paths_from_env()
+
+    monkeypatch.delenv(paths.DATA_DIR_ENV)
+    assert paths.data_root() is None
+    assert paths.canonical_cache() == ".cache/canonical-units"
+
+
+# ------------------------------------------- where the environment is read
+
+#: Every read of the process environment in ``chat_rag`` that is *not* a
+#: ``*_from_env`` reader, with the reason it is allowed. None of them is a
+#: setting's default; each is either a secret looked up by the name a setting
+#: gave, or a variable that belongs to something else.
+RUNTIME_ENVIRONMENT_READS = {
+    "components/chunker/deep_analysis.py":
+        "the Deep Analysis provider key, by the name DEEP_ANALYSIS_API_KEY_ENV "
+        "gave, read at request time and never stored",
+    "components/llm/openai_compatible_llm.py":
+        "the answer provider's key, the same way",
+    "components/provenance/snapshot.py":
+        "CHAT_RAG_GIT_SHA, the commit the image was built from -- a build "
+        "stamp, not a setting",
+    "components/viewer/methods.py":
+        "HF_HOME, which belongs to huggingface, to report whether a model is "
+        "already cached",
+}
+
+
+def test_only_the_readers_and_the_named_exceptions_touch_the_environment():
+    """One place per setting, and a short list of things that are not settings.
+
+    The whole point of L2 is that a caller can hand this library a
+    configuration. That only holds if nothing underneath quietly asks the
+    process instead, so the exceptions are enumerated rather than assumed.
+    """
+    import ast
+
+    package = REPO / "src" / "chat_rag"
+    offenders = []
+    for path in sorted(package.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        relative = path.relative_to(package).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        readers = {
+            node.name for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and (node.name.endswith("_from_env") or node.name == "from_env"
+                 or node.name == "apply_thread_defaults" or node.name == "load_env_file")
+        }
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute) or node.attr not in {"getenv", "environ"}:
+                continue
+            if not (isinstance(node.value, ast.Name) and node.value.id in {"os", "_os"}):
+                continue
+            inside = any(
+                isinstance(parent, ast.FunctionDef) and parent.name in readers
+                and parent.lineno <= node.lineno <= (parent.end_lineno or node.lineno)
+                for parent in ast.walk(tree)
+            )
+            if inside or relative in RUNTIME_ENVIRONMENT_READS:
+                continue
+            offenders.append(f"{relative}:{node.lineno}")
+    assert offenders == [], (
+        "these read the process environment outside a *_from_env reader; move "
+        "the read into one, or add the file to RUNTIME_ENVIRONMENT_READS with "
+        "its reason:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_every_named_exception_is_still_a_real_one():
+    """A reason left behind after the read is gone is noise."""
+    package = REPO / "src" / "chat_rag"
+    stale = [
+        name for name in RUNTIME_ENVIRONMENT_READS
+        if "os.environ" not in (package / name).read_text(encoding="utf-8")
+        and "os.getenv" not in (package / name).read_text(encoding="utf-8")
+        and "_os.environ" not in (package / name).read_text(encoding="utf-8")
+    ]
+    assert stale == [], f"no longer read the environment: {stale}"

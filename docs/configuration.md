@@ -42,9 +42,41 @@ that.
 | [config/settings.py](../src/chat_rag/config/settings.py) | everything else: models, endpoints, retrieval, chunking, parsing | fail fast on the strict ones |
 | [utils/logger.py](../src/chat_rag/utils/logger.py) | `LOG_LEVEL`, `LOG_FILE_LEVEL`, rotation | **fail safe** — see below |
 
-`Settings` builds the three limit objects at construction, so an invalid value
-stops the process at start-up, when somebody is looking, rather than refusing
-the first upload.
+`Settings` holds the three limit objects and the path layout, and validates the
+combination when it is constructed, so an invalid value stops the process at
+start-up — when somebody is looking — rather than refusing the first upload.
+
+### Reading the environment is one step, not a habit
+
+Every owner above is the same shape: a frozen dataclass carrying the defaults,
+and one `*_from_env()` function that turns an environment into one.
+
+```python
+Settings.from_env()                      # what the product calls
+Settings(answer_provider="ollama", …)    # what a library caller can do instead
+```
+
+Constructing `Settings` reads nothing. That is what makes the engine usable
+without arranging a process environment first, and it is checked rather than
+claimed: `test_from_env_with_an_empty_environment_matches_the_dataclass_defaults`
+compares the two halves field by field, and
+`test_only_the_readers_and_the_named_exceptions_touch_the_environment` fails if
+anything in `src/chat_rag` reads `os.environ` outside a reader. Four reads are
+allowed and named there, and none of them is a setting's default: two provider
+**keys**, looked up at request time by the name a setting gave and never
+stored; `CHAT_RAG_GIT_SHA`, a build stamp; and `HF_HOME`, which belongs to
+huggingface.
+
+Two things the *process* decides, and neither happens on import any more:
+
+| call | what it does | who calls it |
+|---|---|---|
+| `chat_rag.process.apply_thread_defaults()` | `OMP_NUM_THREADS` and friends, before the numeric libraries are imported | `asgi.py`, `cli/__init__.py`, `tools/import_smoke.py`, the test session |
+| `chat_rag.utils.logger.configure_logging()` | installs the file and console handlers | `asgi.py`, `cli/__init__.py` |
+
+Importing `chat_rag` attaches a `logging.NullHandler` and does nothing else —
+no directory, no file, no environment write. `tests/unit/test_import_side_effects.py`
+imports the package in a fresh interpreter and checks exactly that.
 
 ### The groups, and what each is for
 

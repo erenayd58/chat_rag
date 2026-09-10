@@ -19,19 +19,12 @@ The modules are the product's behaviour groups, not layers:
     catalogue         what this deployment can offer: methods, models, profiles
     goldsets          the confirmed answers a knowledge base is evaluated on
     ops               what this process can do right now
+
+Importing this package does nothing but define those modules. It used to set
+four OpenMP thread-pool variables first, on the way past, because everything
+reaching a use case came through here -- which made importing a use case a
+change to the process's environment. That decision belongs to whoever started
+the process, so it moved to :func:`chat_rag.process.apply_thread_defaults`,
+which the entry points call before they import this package
+(``asgi.py``, ``python -m cli``, the smoke tools, the test session).
 """
-
-import os
-
-# Before anything imports an ML library, which happens the moment
-# ``application.services`` pulls in the pipeline. Several embedding models can
-# be instantiated in one process -- one per knowledge base in the cache -- and
-# without these OpenMP aborts the process rather than sharing its thread pool.
-# Here rather than in an entrypoint because every way into the application --
-# the Flask app, the CLI, a test, a future adapter -- imports this package
-# first, and each of them owning its own copy is how one of them ends up
-# without it.
-os.environ.setdefault('OMP_NUM_THREADS', '1')
-os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
-os.environ.setdefault('MKL_NUM_THREADS', '1')
-os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')

@@ -42,12 +42,35 @@ from __future__ import annotations
 import logging
 import sys
 
-import interfaces.http as http
-from chat_rag.application.services import Services, default_services
-from chat_rag.config.runtime import runtime_from_env
-from chat_rag import storage as database
-from interfaces.http import v1
-from runtime import bootstrap
+# Two process-wide decisions, made here because they are the process's to make
+# and because both have to happen before the application is imported.
+#
+# The thread defaults configure numeric libraries that read their environment
+# when *they* are imported, and importing the application pulls in
+# sentence-transformers and torch at module scope; setting them afterwards
+# would change nothing. The log handlers are installed rather than inherited:
+# ``chat_rag`` attaches a NullHandler and no more, so without this call a
+# running server would write no log file at all.
+#
+# The order matters in the same way it always did. The thread defaults are
+# ``setdefault``, and applying them before ``chat_rag.config`` applies the
+# ``.env`` file is what keeps a leftover ``OMP_NUM_THREADS`` in a developer's
+# file from reaching them -- exactly as when these four lines sat at the top
+# of ``chat_rag/application/__init__.py``.
+from chat_rag.process import apply_thread_defaults
+
+apply_thread_defaults()
+
+from chat_rag.utils.logger import configure_logging  # noqa: E402
+
+configure_logging()
+
+import interfaces.http as http  # noqa: E402
+from chat_rag.application.services import Services, default_services  # noqa: E402
+from chat_rag.config.runtime import runtime_from_env  # noqa: E402
+from chat_rag import storage as database  # noqa: E402
+from interfaces.http import v1  # noqa: E402
+from runtime import bootstrap  # noqa: E402
 
 logger = logging.getLogger("RAG.asgi")
 

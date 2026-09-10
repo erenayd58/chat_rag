@@ -99,7 +99,7 @@ def kb(tmp_path, monkeypatch, client_app):
         "test/embedding", api_key_env=KEY, cache_dir=str(tmp_path / "cache"),
         provider=transport,
     )
-    settings = Settings()
+    settings = Settings.from_env()
     settings.retrieval_profile = "hybrid_rrf"
     settings.chunker_type = "structure_first"
     settings.embedding_provider = "openai_compatible"
