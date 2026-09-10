@@ -231,54 +231,53 @@ def deadline_timeout(configured: Optional[float]) -> Optional[float]:
 # Two, because they bound two different external services and one must not be
 # able to starve the other: a re-index saturating the embedding endpoint must
 # still leave Deep Analysis able to call the chat endpoint, and the reverse.
-_budget_lock = threading.Lock()
-_budget: Optional[ProviderBudget] = None
-_embedding_budget: Optional[ProviderBudget] = None
+#
+# They were module globals until L3, which meant one pair per *process*
+# whatever else was running in it. They belong to a
+# :class:`~chat_rag.runtime.Runtime` now, sized from that runtime's settings.
+# These functions kept their names and resolve through the current runtime, so
+# every caller -- the transports, the status endpoint, a test -- is unchanged.
+
+
+def _runtime():
+    from chat_rag import runtime
+
+    return runtime.current()
 
 
 def configure_budget(limit: int) -> ProviderBudget:
-    """Install the process-wide Deep Analysis budget. The entrypoints call
-    this once from settings; a test calls it with a small number of its own."""
-    global _budget
-    with _budget_lock:
-        _budget = ProviderBudget(limit)
-        return _budget
+    """Install a Deep Analysis budget on the current runtime.
+
+    ``build_services`` no longer needs this -- a runtime sizes its own budgets
+    from its settings -- and it is kept because a test installs a small one of
+    its own, and because an embedder that wants to bound a one-off run has
+    always been able to say so.
+    """
+    budget = ProviderBudget(limit)
+    _runtime().provider_budget = budget
+    return budget
 
 
 def provider_budget() -> ProviderBudget:
-    """The process-wide Deep Analysis budget, built from the configured limit
-    on first use if nothing installed one explicitly."""
-    global _budget
-    with _budget_lock:
-        if _budget is None:
-            from chat_rag.config.ingest import limits_from_env
-
-            _budget = ProviderBudget(limits_from_env().provider_max_inflight)
-        return _budget
+    """The current runtime's Deep Analysis budget."""
+    return _runtime().provider_budget
 
 
 def configure_embedding_budget(limit: int) -> ProviderBudget:
-    global _embedding_budget
-    with _budget_lock:
-        _embedding_budget = ProviderBudget(limit)
-        return _embedding_budget
+    budget = ProviderBudget(limit)
+    _runtime().embedding_budget = budget
+    return budget
 
 
 def embedding_budget() -> ProviderBudget:
-    """The process-wide embedding budget.
+    """The current runtime's embedding budget.
 
     Separate from the Deep budget on purpose. Embedding requests multiply for
     reasons Deep Analysis does not: every ingest embeds its chunks, a
     re-index embeds a whole knowledge base from a request thread, and a query
     embeds itself on the way in.
     """
-    global _embedding_budget
-    with _budget_lock:
-        if _embedding_budget is None:
-            from chat_rag.config.ingest import limits_from_env
-
-            _embedding_budget = ProviderBudget(limits_from_env().embedding_max_inflight)
-        return _embedding_budget
+    return _runtime().embedding_budget
 
 
 def budgets() -> dict:

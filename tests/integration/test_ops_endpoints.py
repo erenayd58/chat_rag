@@ -32,6 +32,7 @@ from chat_rag.components.ingest import IngestManager
 from chat_rag.components.ingest import jobs as J
 from chat_rag.components.ingest import limits as L
 from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag import runtime
 from chat_rag.components.observability import telemetry as T
 from chat_rag.config.ingest import IngestLimits
 
@@ -101,7 +102,7 @@ def clock(monkeypatch):
 @pytest.fixture
 def registry(monkeypatch):
     fresh = T.MetricsRegistry(window=50)
-    monkeypatch.setattr(T, "_registry", fresh)
+    monkeypatch.setattr(runtime.current(), "metrics", fresh)
     return fresh
 
 

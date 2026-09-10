@@ -32,13 +32,14 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from chat_rag.config import paths
-from chat_rag.storage import DocumentRepository, session_scope
+from chat_rag.storage import DocumentRepository
+from chat_rag.storage.engine import DatabaseBound
 
 
-class DocumentTracker:
+class DocumentTracker(DatabaseBound):
     """Tracks ingested documents to avoid re-processing"""
 
-    def __init__(self, tracking_file: Optional[str] = None):
+    def __init__(self, tracking_file: Optional[str] = None, *, database=None):
         """``tracking_file`` is accepted and unused.
 
         It named the JSON ledger until Step 8. The upload route and the
@@ -47,6 +48,7 @@ class DocumentTracker:
         still point one at their own ``tmp_path``. Both keep working; the
         records come from PostgreSQL either way.
         """
+        self._database = database
         self.tracking_file = tracking_file or paths.ingested_documents()
 
     # ------------------------------------------------------------- reading
@@ -81,7 +83,7 @@ class DocumentTracker:
     def is_document_ingested(self, file_path: str) -> bool:
         """Has this exact file, at this path, already been ingested unchanged?"""
         abs_path = os.path.abspath(file_path)
-        with session_scope() as session:
+        with self._session() as session:
             record = DocumentRepository(session).get_by_source_path(abs_path)
         if record is None or not os.path.exists(file_path):
             return False
@@ -89,17 +91,17 @@ class DocumentTracker:
 
     def get_statistics(self, kb_id: Optional[str] = None) -> Dict:
         """Get statistics about ingested documents"""
-        with session_scope() as session:
+        with self._session() as session:
             return DocumentRepository(session).statistics(kb_id)
 
     def get_all_documents(self, kb_id: Optional[str] = None) -> List[Dict]:
         """Get list of all ingested documents with their metadata"""
-        with session_scope() as session:
+        with self._session() as session:
             return DocumentRepository(session).list(kb_id)
 
     def get_document_by_doc_id(self, doc_id: str) -> Optional[Dict]:
         """Get document information by doc_id"""
-        with session_scope() as session:
+        with self._session() as session:
             return DocumentRepository(session).get_by_doc_id(doc_id)
 
     def get_document_by_ingest_job(self, job_id: str) -> Optional[Dict]:
@@ -109,7 +111,7 @@ class DocumentTracker:
         It used to be a scan of every document ever ingested, run once per
         in-flight job at every start-up.
         """
-        with session_scope() as session:
+        with self._session() as session:
             return DocumentRepository(session).get_by_ingest_job(job_id)
 
     # ------------------------------------------------------------- writing
@@ -160,7 +162,7 @@ class DocumentTracker:
             'pipeline_snapshot': pipeline_snapshot,
         }
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 DocumentRepository(session).upsert(record)
         except Exception as e:  # noqa: BLE001 - the caller rolls back on False
             print(f"Warning: Could not record the ingested document: {e}")
@@ -174,12 +176,12 @@ class DocumentTracker:
         ``file_path`` back. :meth:`remove_by_doc_id` is the one to use: the
         path is a leftover of the file ledger and names nothing that exists.
         """
-        with session_scope() as session:
+        with self._session() as session:
             return DocumentRepository(session).delete_by_source_path(
                 os.path.abspath(file_path)
             )
 
     def remove_by_doc_id(self, doc_id: str) -> bool:
         """Remove a document from tracking by its own identity."""
-        with session_scope() as session:
+        with self._session() as session:
             return DocumentRepository(session).delete_by_doc_id(doc_id)

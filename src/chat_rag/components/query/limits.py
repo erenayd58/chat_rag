@@ -105,29 +105,31 @@ class QueryGuard(JobGuard):
 
 
 # ----------------------------------------------------------- the budget
-_budget_lock = threading.Lock()
-_answer_budget: Optional[ProviderBudget] = None
+#
+# The third one, and the reason there are three: Deep Analysis, the embedding
+# endpoint and the answer model are different services and none may starve the
+# others. Owned by a :class:`~chat_rag.runtime.Runtime` since L3, sized from
+# that runtime's query limits.
 
 
 def configure_answer_budget(limit: int) -> ProviderBudget:
-    """Install the process-wide answer-model budget. The entrypoint calls
-    this once from settings; a test calls it with a small number of its own."""
-    global _answer_budget
-    with _budget_lock:
-        _answer_budget = ProviderBudget(limit)
-        return _answer_budget
+    """Install an answer-model budget on the current runtime.
+
+    Kept for the test that installs a small one of its own; a runtime sizes
+    its own from ``ANSWER_MAX_INFLIGHT`` without being told.
+    """
+    from chat_rag import runtime
+
+    budget = ProviderBudget(limit)
+    runtime.current().answer_budget = budget
+    return budget
 
 
 def answer_budget() -> ProviderBudget:
-    """The process-wide answer-model budget, built from the configured limit
-    on first use if nothing installed one explicitly."""
-    global _answer_budget
-    with _budget_lock:
-        if _answer_budget is None:
-            from chat_rag.config.query import query_limits_from_env
+    """The current runtime's answer-model budget."""
+    from chat_rag import runtime
 
-            _answer_budget = ProviderBudget(query_limits_from_env().answer_max_inflight)
-        return _answer_budget
+    return runtime.current().answer_budget
 
 
 # --------------------------------------------------------- the wrapper

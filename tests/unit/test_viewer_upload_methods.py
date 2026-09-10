@@ -95,18 +95,18 @@ def workspace(tmp_path, monkeypatch):
     Hybrid answered without a model."""
     from amsc.embedding import boundary as embeddings
 
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
     monkeypatch.setattr(embeddings.SentenceTransformerBoundaryEmbedder, "from_pretrained",
                         classmethod(lambda cls, name, **kwargs: HashingBoundaryEmbedder()))
     monkeypatch.setattr(M, "embedder_available", lambda: (True, ""))
     analysis.release_boundary_model()
     yield tmp_path / "viewer-live"
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
     analysis.release_boundary_model()
 
 
@@ -124,7 +124,7 @@ def _upload(doc_id, methods, label="Ortak belge.pdf"):
     """One console upload of the same bytes, packaged."""
     analysis.stage(doc_id=doc_id, label=label, units=_corpus(), methods=methods,
                    kb_id="kb1", kb_name="ortak-kb", content_sha=SHA)
-    analysis._queue.join()
+    analysis.state().queue.join()
     return analysis.read_state(doc_id, SHA)
 
 
@@ -291,7 +291,7 @@ def test_a_record_with_no_recorded_selection_answers_at_the_content_level():
     two levels are one for them, which is the behaviour they have always had."""
     analysis.stage(doc_id="legacy", label="Eski.pdf", units=_corpus(),
                    methods=["markdown", "structure-only"], content_sha="legacy-bytes")
-    analysis._queue.join()
+    analysis.state().queue.join()
     key = analysis.key_for("legacy", "legacy-bytes")
 
     # Strip the upload-level record, exactly as an older one has none.
@@ -311,9 +311,9 @@ def test_a_catch_up_build_records_no_selection_and_stays_content_level():
     packaging existed: nobody picked anything, so nothing is recorded."""
     analysis.stage(doc_id="old", label="Eski.pdf", units=_corpus(),
                    methods=["markdown", "structure-only"], content_sha="old-bytes")
-    analysis._queue.join()
+    analysis.state().queue.join()
     analysis.request_build(doc_id="catchup", label="Eski.pdf", content_sha="old-bytes")
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     key = analysis.key_for("catchup", "old-bytes")
     assert (analysis._read_state_file(key)["selections"] or {}).get("catchup") is None
@@ -328,7 +328,7 @@ def test_a_catch_up_build_records_no_selection_and_stays_content_level():
 def test_adding_a_method_later_widens_only_the_upload_that_asked(shared):
     """The variant is shared; the asking is not."""
     analysis.add_methods("beta", ["markdown"], SHA)
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     assert analysis.read_state("beta", SHA)["available_methods"] == [
         "markdown", "structure-only", "hybrid"

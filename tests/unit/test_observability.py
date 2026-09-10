@@ -17,6 +17,7 @@ import threading
 import pytest
 
 from chat_rag.components.observability import events
+from chat_rag import runtime
 from chat_rag.components.observability import telemetry as T
 
 
@@ -43,7 +44,7 @@ def clock(monkeypatch):
 @pytest.fixture
 def registry(monkeypatch):
     fresh = T.MetricsRegistry(window=5)
-    monkeypatch.setattr(T, "_registry", fresh)
+    monkeypatch.setattr(runtime.current(), "metrics", fresh)
     return fresh
 
 

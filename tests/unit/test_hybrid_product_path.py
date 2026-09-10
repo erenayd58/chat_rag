@@ -99,14 +99,14 @@ def boundary_model(monkeypatch):
 
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
     yield tmp_path / "viewer-live"
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
 
 
 # ------------------------------------------------------------- _chunk_rows
@@ -155,7 +155,7 @@ def test_hybrid_is_deterministic_for_one_canonical(boundary_model):
 def test_a_hybrid_variant_is_packaged_and_served_like_any_other(boundary_model, workspace):
     analysis.stage(doc_id="hybrid-doc", label="Hibrit.pdf", units=_oversized_corpus(),
                    methods=["hybrid", "structure-only"], content_sha="hybrid-sha")
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     state = analysis.read_state("hybrid-doc", "hybrid-sha")
     assert state["status"] == analysis.STATUS_READY, state.get("error")
@@ -185,7 +185,7 @@ def test_a_model_that_cannot_be_loaded_is_a_failed_variant_not_a_missing_one(wor
 
     analysis.stage(doc_id="hybrid-doc", label="Hibrit.pdf", units=_oversized_corpus(),
                    methods=["hybrid", "markdown"], content_sha="no-model")
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     state = analysis.read_state("hybrid-doc", "no-model")
     assert state["status"] == analysis.STATUS_READY, "one arm failing is not a failed document"

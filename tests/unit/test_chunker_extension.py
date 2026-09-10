@@ -81,14 +81,14 @@ def _corpus(sections=2, paragraphs=5):
 
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
     yield tmp_path / "viewer-live"
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
 
 
 @pytest.fixture
@@ -180,7 +180,7 @@ def test_the_packager_runs_it_and_the_viewer_routes_serve_it(client, fifth, tmp_
     analysis.stage(doc_id="fifth-doc", label="Besinci.pdf", units=_corpus(),
                    methods=["structure-only", "fixed-window"], kb_id="kb1", kb_name="fifth-kb",
                    chunking_mode="standard", content_sha="fifth-sha")
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     state = analysis.read_state("fifth-doc", "fifth-sha")
     assert state["status"] == analysis.STATUS_READY, state
@@ -203,11 +203,11 @@ def test_the_packager_runs_it_and_the_viewer_routes_serve_it(client, fifth, tmp_
 def test_a_method_can_be_added_to_an_existing_document_later(client, fifth):
     analysis.stage(doc_id="fifth-doc", label="Besinci.pdf", units=_corpus(),
                    methods=["structure-only"], content_sha="fifth-sha")
-    analysis._queue.join()
+    analysis.state().queue.join()
     response = client.post(f"{V1}/documents/fifth-doc/analysis/methods",
                            json={"methods": ["fixed-window"]})
     assert response.status_code == 202, response.text
-    analysis._queue.join()
+    analysis.state().queue.join()
     assert analysis.read_state("fifth-doc", "fifth-sha")["ready_methods"] == ["structure-only", "fixed-window"]
 
 
@@ -246,7 +246,7 @@ def test_once_unregistered_the_console_forgets_it(client):
     assert [row["key"] for row in M.catalogue()] == list(M.ORDER)
     analysis.stage(doc_id="fifth-doc", label="Besinci.pdf", units=_corpus(),
                    methods=["structure-only"], content_sha="fifth-sha")
-    analysis._queue.join()
+    analysis.state().queue.join()
     refused = client.get(f"{V1}/documents/fifth-doc/analysis/methods/fixed-window/chunks")
     assert refused.status_code == 400
     assert "unknown chunking method" in refused.json()["error"]["message"]

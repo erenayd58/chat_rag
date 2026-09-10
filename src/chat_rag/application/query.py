@@ -29,10 +29,12 @@ from chat_rag.components.query import query_scope
 from chat_rag.core.exceptions import LLMException
 
 from .errors import ApplicationError, InvalidRequest, ProcessingFailed, Unavailable
+from .services import in_engine
 
 logger = logging.getLogger("RAG.query")
 
 
+@in_engine
 def answer(services, *, question: str, session_id: str, kb_id: Optional[str] = None,
            top_k: int = 5, temperature: float = 0.3, max_tokens: int = 500) -> dict:
     """Answer one question over one knowledge base.
@@ -102,7 +104,7 @@ def bounded(services, *, mode: str, session_id: str,
     first, for the same reason in the other direction.
     """
     refusal: list[BaseException] = []
-    with query_scope(
+    with services.activate(), query_scope(
         services.query_admission, timeout_seconds=services.settings.query_timeout,
         kb_id=kb_id, mode=mode, session_id=session_id,
     ) as scope:

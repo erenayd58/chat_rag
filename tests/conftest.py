@@ -329,9 +329,14 @@ def _isolated_process_caches():
         module = sys.modules.get(shared)
         if module is not None:
             module.release_models()
-    telemetry = sys.modules.get("chat_rag.components.observability.telemetry")
-    if telemetry is not None and telemetry._registry is not None:
-        telemetry._registry.reset()
+    # The registry is the current runtime's since L3, not a module global.
+    # Only reset one that has actually been built, so a test that never
+    # measured anything still pays nothing.
+    runtime_module = sys.modules.get("chat_rag.runtime")
+    if runtime_module is not None:
+        current = runtime_module.current()
+        if current._metrics is not None:
+            current._metrics.reset()
     app_module = sys.modules.get("app")
     if app_module is not None and hasattr(app_module, "pipeline_cache"):
         app_module.pipeline_cache.clear()

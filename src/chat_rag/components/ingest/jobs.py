@@ -51,6 +51,7 @@ from __future__ import annotations
 import logging
 import os
 import statistics
+import contextlib
 import threading
 import time
 import uuid
@@ -216,11 +217,17 @@ class IngestManager:
         *,
         name: str = "ingest",
         journal: Optional[JobJournal] = None,
+        runtime=None,
     ):
         self.limits = limits.validate()
         self._execute = execute
         self._name = name
         self._journal = journal
+        #: The engine these jobs belong to. A worker thread does not inherit a
+        #: ContextVar from whoever started it, so it is given the runtime and
+        #: activates it around each job -- otherwise a job would spend the
+        #: process default's provider slots and record into its counters.
+        self._runtime = runtime
         #: Records settled by a restart: terminal, read-only, pruned with the
         #: same window as the live registry so this cannot grow either.
         self._recovered: "OrderedDict[str, dict]" = OrderedDict()
@@ -472,6 +479,15 @@ class IngestManager:
         return job
 
     # ------------------------------------------------------------- workers
+    def _engine_runtime(self):
+        """This manager's runtime, for the length of a job. A no-op without
+        one, which is what a manager built directly by a test gets."""
+        if self._runtime is None:
+            return contextlib.nullcontext()
+        from chat_rag import runtime as runtime_module
+
+        return runtime_module.activate(self._runtime)
+
     def _ensure_workers_locked(self) -> None:
         alive = [worker for worker in self._workers if worker.is_alive()]
         self._workers = alive
@@ -527,7 +543,7 @@ class IngestManager:
     def _run(self, job: IngestJob) -> None:
         started = time.monotonic()
         try:
-            with use_guard(job.guard), T.use_trace(job.trace):
+            with self._engine_runtime(), use_guard(job.guard), T.use_trace(job.trace):
                 result = self._execute(job)
             job.result = result
             job.doc_id = (result or {}).get("doc_id")

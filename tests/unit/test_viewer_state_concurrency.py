@@ -47,14 +47,14 @@ KEY = "doc-concurrency-probe"
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     """An analysis root of this test's own, with the worker left idle."""
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
     yield tmp_path / "viewer-live"
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
 
 
 def _seed(**fields):

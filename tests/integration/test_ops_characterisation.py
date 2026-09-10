@@ -37,6 +37,7 @@ from chat_rag.components.ingest import IngestManager, PipelineCache
 from chat_rag.components.ingest import jobs as J
 from chat_rag.components.ingest import limits as L
 from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag import runtime
 from chat_rag.components.observability import telemetry as T
 from chat_rag.config.ingest import IngestLimits
 
@@ -169,7 +170,7 @@ def test_load_characterisation(workspace, monkeypatch):
     clock = Clock()
     monkeypatch.setattr(T.time, "perf_counter", clock)
     registry = T.MetricsRegistry(window=200)
-    monkeypatch.setattr(T, "_registry", registry)
+    monkeypatch.setattr(runtime.current(), "metrics", registry)
 
     deep_gate = GatedProvider(expect=DEEP_BUDGET)
     embed_gate = GatedProvider(expect=EMBEDDING_BUDGET)

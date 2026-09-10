@@ -45,10 +45,11 @@ provider -- so Starlette runs it in that pool, which is why the pool is the
 request concurrency every ingest and query ration is sized against.
 
 One process is a deliberate choice, not a limitation of the server: the
-packaging queue lives in memory, the per-knowledge-base pipeline cache is a
-module global, and the provider budgets are semaphores that only mean what they
-say inside one address space, so a second worker process would duplicate all
-three. `asgi.py` says so in more detail.
+packaging queue lives in memory, the per-knowledge-base pipeline cache lives
+beside it, and the provider budgets are semaphores that only mean what they say
+inside one address space, so a second worker process would duplicate all three.
+They belong to the engine this process composed (`Services.runtime`) rather than
+to a module, which changes nothing for a deployment that runs one. `asgi.py` says so in more detail.
 
 It stops on SIGTERM (what `docker stop` and service managers send) as well as on
 Ctrl+C: uvicorn stops accepting, then the lifespan drains the ingest jobs

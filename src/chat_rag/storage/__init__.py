@@ -33,8 +33,8 @@ submodule of the same name. Reach the module itself with
 """
 
 from .engine import (
-    DatabaseNotConfigured, DatabaseUnavailable, describe, dispose, engine,
-    health, pool_status, require_reachable, session_scope,
+    Database, DatabaseNotConfigured, DatabaseUnavailable, describe, dispose,
+    engine, health, pool_status, require_reachable, session_scope,
 )
 from .repositories import (
     ChunkVectorRepository, ContentRepository, DocumentRepository,
@@ -44,6 +44,7 @@ from .repositories import (
 __all__ = [
     "ChunkVectorRepository",
     "ContentRepository",
+    "Database",
     "DatabaseNotConfigured",
     "DatabaseUnavailable",
     "DocumentRepository",

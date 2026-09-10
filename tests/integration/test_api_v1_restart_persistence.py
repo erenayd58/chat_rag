@@ -100,9 +100,9 @@ def deployment(tmp_path, monkeypatch):
     monkeypatch.setattr(RAGPipeline, "_create_embedding",
                         lambda self: DeterministicEmbedding())
 
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
     # The packager's directory outlives the "process" the way a real one does.
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
 
@@ -110,9 +110,9 @@ def deployment(tmp_path, monkeypatch):
     running.start(resume=False)
     yield running
     running.stop()
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
 
 
 def _ok(response):

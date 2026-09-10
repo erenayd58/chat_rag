@@ -30,7 +30,8 @@ import hashlib
 from typing import Any, Callable, Dict, List, Optional
 
 from chat_rag.config import paths
-from chat_rag.storage import GoldSetRepository, session_scope
+from chat_rag.storage import GoldSetRepository
+from chat_rag.storage.engine import DatabaseBound
 
 #: How much of the confirmed chunk to keep as re-matchable evidence.
 EVIDENCE_LIMIT = 600
@@ -65,7 +66,7 @@ def entry_id_for(
     return digest.hexdigest()[:16]
 
 
-class GoldSetManager:
+class GoldSetManager(DatabaseBound):
     """Upsert store for confirmed answers, on PostgreSQL."""
 
     def __init__(
@@ -73,9 +74,11 @@ class GoldSetManager:
         store_path: Optional[str] = None,
         *,
         now: Optional[Callable[[], str]] = None,
+        database=None,
     ) -> None:
         """``store_path`` is accepted and unused; it named the JSON file these
         entries lived in until Step 8."""
+        self._database = database
         self.store_path = store_path or paths.gold_set()
         self._now = now or (lambda: datetime.now().isoformat())
 
@@ -83,7 +86,7 @@ class GoldSetManager:
     @property
     def entries(self) -> Dict[str, Dict[str, Any]]:
         """Every entry, keyed by id, read from the database on each access."""
-        with session_scope() as session:
+        with self._session() as session:
             return GoldSetRepository(session).all()
 
     def list(self, kb_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -93,7 +96,7 @@ class GoldSetManager:
         return items
 
     def get(self, kb_id: str, question: str) -> Optional[Dict[str, Any]]:
-        with session_scope() as session:
+        with self._session() as session:
             return GoldSetRepository(session).get(entry_id_for(kb_id, question))
 
     # ------------------------------------------------------------ mutation
@@ -127,7 +130,7 @@ class GoldSetManager:
         entry_id = entry_id_for(kb_id, question)
         stamp = self._now()
 
-        with session_scope() as session:
+        with self._session() as session:
             repository = GoldSetRepository(session)
             existing = repository.get(entry_id)
             entry = {
@@ -151,7 +154,7 @@ class GoldSetManager:
             return repository.upsert(entry)
 
     def delete(self, entry_id: str) -> bool:
-        with session_scope() as session:
+        with self._session() as session:
             return GoldSetRepository(session).delete(entry_id)
 
     def delete_for_question(self, kb_id: str, question: str) -> bool:

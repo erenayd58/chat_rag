@@ -34,7 +34,8 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from chat_rag.config import paths
-from chat_rag.storage import ChunkVectorRepository, KnowledgeBaseRepository, session_scope
+from chat_rag.storage import ChunkVectorRepository, KnowledgeBaseRepository
+from chat_rag.storage.engine import DatabaseBound
 
 from chat_rag.components.chunker import registry as chunker_registry
 
@@ -75,8 +76,8 @@ def _is_duplicate_name(error: Exception) -> bool:
     return "uq_knowledge_bases_name_key" in str(getattr(error, "orig", error))
 
 
-class KnowledgeBaseManager:
-    def __init__(self, store_path: Optional[str] = None):
+class KnowledgeBaseManager(DatabaseBound):
+    def __init__(self, store_path: Optional[str] = None, *, database=None):
         """``store_path`` is accepted and unused.
 
         It named the JSON file these records lived in until Step 8. Callers
@@ -85,6 +86,7 @@ class KnowledgeBaseManager:
         either way, and the value is kept only so a diagnostic can say what a
         caller thought it was opening.
         """
+        self._database = database
         self.store_path = store_path or paths.knowledge_bases()
 
     # ------------------------------------------------------------- reading
@@ -94,20 +96,20 @@ class KnowledgeBaseManager:
         another process may have created one since the last look, and the
         file-era habit of caching this in the instance is exactly how two
         requests came to write over each other."""
-        with session_scope() as session:
+        with self._session() as session:
             return KnowledgeBaseRepository(session).all()
 
     def list(self) -> List[Dict[str, Any]]:
         return [{"kb_id": kb_id, **cfg} for kb_id, cfg in self.kbs.items()]
 
     def get(self, kb_id: str) -> Optional[Dict[str, Any]]:
-        with session_scope() as session:
+        with self._session() as session:
             return KnowledgeBaseRepository(session).get(kb_id)
 
     def find_by_name(self, name: str) -> Optional[str]:
         """kb_id of the knowledge base with this name, comparing case- and
         space-insensitively."""
-        with session_scope() as session:
+        with self._session() as session:
             return KnowledgeBaseRepository(session).find_by_name(name)
 
     # ------------------------------------------------------------- writing
@@ -147,7 +149,7 @@ class KnowledgeBaseManager:
         # -- two requests creating "Yillik raporlar" at the same moment used to
         # both pass the read.
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 repository = KnowledgeBaseRepository(session)
                 kb_id = str(uuid.uuid4())[:8]
                 while repository.get(kb_id) is not None:
@@ -178,7 +180,7 @@ class KnowledgeBaseManager:
         updates = dict(updates)
         if "chunker" in updates:
             updates["chunker"] = normalize_chunker_config(updates["chunker"])
-        with session_scope() as session:
+        with self._session() as session:
             record = KnowledgeBaseRepository(session).update(kb_id, updates)
         if record is None:
             return None
@@ -197,7 +199,7 @@ class KnowledgeBaseManager:
 
     def delete(self, kb_id: str) -> bool:
         """Remove the config record only. Storage is left in place."""
-        with session_scope() as session:
+        with self._session() as session:
             return KnowledgeBaseRepository(session).delete(kb_id)
 
     def delete_with_storage(self, kb_id: str, root: str = ".") -> Dict[str, Any]:
@@ -225,7 +227,7 @@ class KnowledgeBaseManager:
         from sqlalchemy.exc import SQLAlchemyError
 
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 repository = KnowledgeBaseRepository(session)
                 if repository.get(kb_id, lock=True) is None:
                     return {"deleted": False, "reason": "not found"}

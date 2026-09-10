@@ -43,6 +43,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Dict, Mapping, Optional
 
 from . import paths
+from .database import DatabaseSettings, database_from_env
 from .ingest import IngestLimits, limits_from_env
 from .paths import PathSettings
 from .query import QueryLimits, query_limits_from_env
@@ -281,6 +282,11 @@ class Settings:
     runtime_limits: RuntimeLimits = field(default_factory=RuntimeLimits)
     ingest_limits: IngestLimits = field(default_factory=IngestLimits)
     query_limits: QueryLimits = field(default_factory=QueryLimits)
+    #: Where the relational records live and how many connections may reach
+    #: them. A field since L3: the engine is owned by a ``Runtime`` and built
+    #: from this, so a second engine in one process can be given a second
+    #: database instead of quietly sharing the first one's pool.
+    database: DatabaseSettings = field(default_factory=DatabaseSettings)
     #: Where this configuration keeps its files. Explicit, so a data root is
     #: something a caller sets rather than something a module discovers.
     paths: PathSettings = field(default_factory=PathSettings)
@@ -398,6 +404,7 @@ class Settings:
             runtime_limits=runtime_limits,
             ingest_limits=limits_from_env(env),
             query_limits=query_limits_from_env(env),
+            database=database_from_env(env),
             paths=paths.paths_from_env(env),
             answer_key_configured=bool(env.get(answer_api_key_env)),
             embedding_key_configured=bool(env.get(embedding_api_key_env)),
@@ -485,5 +492,6 @@ class Settings:
 #: ``from_env({})`` must reproduce exactly.
 OWN_FIELDS = tuple(
     f.name for f in fields(Settings)
-    if f.name not in {"runtime_limits", "ingest_limits", "query_limits", "paths"}
+    if f.name not in {"runtime_limits", "ingest_limits", "query_limits", "paths",
+                      "database"}
 )

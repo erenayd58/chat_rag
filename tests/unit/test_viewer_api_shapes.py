@@ -62,14 +62,14 @@ def _corpus(sections=2, paragraphs=5):
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     """A packager root of this test's own, drained before and after."""
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
     yield tmp_path / "viewer-live"
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
 
 
 @pytest.fixture
@@ -85,7 +85,7 @@ def document(workspace):
     analysis.stage(doc_id="shape-doc", label="Sekil.pdf", units=_corpus(),
                    methods=["markdown", "structure-only"], kb_id="kb1", kb_name="sekil-kb",
                    chunking_mode="standard", content_sha="shape-sha")
-    analysis._queue.join()
+    analysis.state().queue.join()
     state = analysis.read_state("shape-doc", "shape-sha")
     assert state["status"] == analysis.STATUS_READY, state
     return "shape-doc"
@@ -218,7 +218,7 @@ def test_post_methods_adds_a_variant_and_the_new_arm_becomes_fetchable(client, d
     assert state["status"] in {analysis.STATUS_PENDING, analysis.STATUS_RUNNING,
                                analysis.STATUS_READY}
 
-    analysis._queue.join()
+    analysis.state().queue.join()
     state = client.get(f"{V1}/documents/{document}/analysis").json()
     assert state["status"] == analysis.STATUS_READY
     assert state["ready_methods"] == ["markdown", "structure-only", "agentic"]
@@ -241,4 +241,4 @@ def test_post_methods_normalises_like_an_upload(client, document):
     state = client.post(f"{V1}/documents/{document}/analysis/methods",
                         json={"methods": ["turbo", "markdown"]}).json()
     assert state["selected_methods"] == ["markdown", "structure-only"], "unknown names are dropped"
-    analysis._queue.join()
+    analysis.state().queue.join()

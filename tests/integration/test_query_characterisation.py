@@ -30,6 +30,7 @@ import interfaces.http as http
 V1 = http.v1.PREFIX
 from chat_rag.components.ingest import limits as L
 from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag import runtime
 from chat_rag.components.observability import telemetry as T
 from chat_rag.components.query import limits as Q
 
@@ -66,9 +67,9 @@ def app(tmp_path, monkeypatch):
     manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
     monkeypatch.setattr(entrypoint.services, "kb_manager", manager)
     registry = T.MetricsRegistry(window=100)
-    monkeypatch.setattr(T, "_registry", registry)
+    monkeypatch.setattr(runtime.current(), "metrics", registry)
     budget = L.ProviderBudget(ANSWER_BUDGET)
-    monkeypatch.setattr(Q, "_answer_budget", budget)
+    monkeypatch.setattr(runtime.current(), "answer_budget", budget)
     admission = Q.QueryAdmission(MAX_ACTIVE)
     monkeypatch.setattr(entrypoint.services, "query_admission", admission)
     model = GatedAnswerModel(expect=ANSWER_BUDGET)

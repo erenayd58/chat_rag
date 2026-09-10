@@ -56,14 +56,14 @@ def workspace(tmp_path, monkeypatch):
     repository -- which is why the drain lives here and not in a fixture that
     tears down later.
     """
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
     yield tmp_path / "viewer-live"
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
 
 
 def _stage_and_build(**overrides):
@@ -73,7 +73,7 @@ def _stage_and_build(**overrides):
     analysis.stage(**fields)
     # stage() queues the build; waiting on the queue is what a caller does,
     # and it keeps the worker and the test off the same document at once.
-    analysis._queue.join()
+    analysis.state().queue.join()
     return analysis.read_state("probe-doc")
 
 
@@ -97,7 +97,7 @@ def test_one_upload_runs_every_selected_method_over_one_canonical(workspace):
     analysis.stage(doc_id="multi", label="Cok yontemli", units=_corpus(),
                    methods=["markdown", "structure-only", "agentic"],
                    kb_id="kb1", kb_name="probe-kb", content_sha="c0ffee")
-    analysis._queue.join()
+    analysis.state().queue.join()
     state = analysis.read_state("multi", "c0ffee")
     assert state["status"] == analysis.STATUS_READY
     assert state["ready_methods"] == ["markdown", "structure-only", "agentic"]
@@ -117,7 +117,7 @@ def test_only_the_selected_methods_are_produced(workspace):
     """A method that was not asked for is absent -- never invented."""
     analysis.stage(doc_id="one", label="Tek yontem", units=_corpus(),
                    methods=["structure-only"], content_sha="beef")
-    analysis._queue.join()
+    analysis.state().queue.join()
     payload = analysis.payload("one", "beef")
     assert list(payload["arms"]) == ["structure-only"]
     assert payload["meta"]["deep"] is None, "no Deep panel for a document with no Deep variant"
@@ -132,10 +132,10 @@ def test_the_same_bytes_are_one_document_however_often_they_are_uploaded(workspa
     """
     analysis.stage(doc_id="first", label="Ayni belge.pdf", units=_corpus(),
                    methods=["structure-only"], content_sha="same-bytes")
-    analysis._queue.join()
+    analysis.state().queue.join()
     analysis.stage(doc_id="second", label="Ayni belge.pdf", units=_corpus(),
                    methods=["markdown"], content_sha="same-bytes")
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     key = analysis.key_for("first", "same-bytes")
     assert key == analysis.key_for("second", "same-bytes")
@@ -164,7 +164,7 @@ def test_two_files_with_one_name_stay_two_documents(workspace):
                    methods=["structure-only"], content_sha="aaa")
     analysis.stage(doc_id="b", label="rapor.pdf", units=_corpus(sections=3),
                    methods=["structure-only"], content_sha="bbb")
-    analysis._queue.join()
+    analysis.state().queue.join()
     assert analysis.key_for("a", "aaa") != analysis.key_for("b", "bbb")
     assert len(analysis.payload("a", "aaa")["pages"]) == 2
     assert len(analysis.payload("b", "bbb")["pages"]) == 3
@@ -174,13 +174,13 @@ def test_a_variant_can_be_added_later_without_reparsing(workspace):
     """Scenario 3: ask for another method; nothing is parsed or rebuilt."""
     analysis.stage(doc_id="grow", label="Buyuyen belge", units=_corpus(),
                    methods=["structure-only"], content_sha="grow1")
-    analysis._queue.join()
+    analysis.state().queue.join()
     key = analysis.key_for("grow", "grow1")
     before = analysis.units_path(key).stat().st_mtime_ns
     markdown_before = analysis.variant_dir(key, "markdown").exists()
 
     analysis.add_methods("grow", ["markdown"], "grow1")
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     assert not markdown_before
     assert analysis.units_path(key).stat().st_mtime_ns == before, "the canonical was rewritten"
@@ -194,7 +194,7 @@ def test_deleting_one_upload_keeps_the_others_analysis(workspace):
                    methods=["structure-only"], content_sha="shared")
     analysis.stage(doc_id="second", label="Ayni.pdf", units=_corpus(),
                    methods=["structure-only"], content_sha="shared")
-    analysis._queue.join()
+    analysis.state().queue.join()
     analysis.discard("first", "shared")
     assert analysis.payload("second", "shared") is not None
     analysis.discard("second", "shared")
@@ -213,7 +213,7 @@ def test_a_variant_that_cannot_run_is_recorded_not_faked(workspace, monkeypatch)
     monkeypatch.setattr(analysis, "_chunk_rows", explode)
     analysis.stage(doc_id="partial", label="Kismi", units=_corpus(),
                    methods=["markdown", "structure-only"], content_sha="partial")
-    analysis._queue.join()
+    analysis.state().queue.join()
     state = analysis.read_state("partial", "partial")
     assert state["status"] == analysis.STATUS_READY
     assert state["ready_methods"] == ["structure-only"]
@@ -263,7 +263,7 @@ def test_a_deep_upload_is_reused_and_never_run_again(workspace, monkeypatch):
     monkeypatch.setattr(deep_pipeline, "chunk_document", refuse)
     analysis.stage(doc_id="probe-doc", label="Probe belgesi", units=units, deep_result=run,
                    kb_id="kb1", kb_name="probe-kb", chunking_mode="deep_analysis")
-    analysis._queue.join()
+    analysis.state().queue.join()
     state = analysis.read_state("probe-doc")
 
     assert state["status"] == analysis.STATUS_READY
@@ -309,7 +309,7 @@ def test_an_interrupted_build_is_resumed_from_disk(workspace):
 
     assert analysis.read_state("probe-doc")["status"] == analysis.STATUS_PENDING
     assert analysis.resume_incomplete() == ["probe-doc"]
-    analysis._queue.join()
+    analysis.state().queue.join()
     assert analysis.read_state("probe-doc")["status"] == analysis.STATUS_READY
     assert analysis.payload("probe-doc") is not None
 
@@ -317,7 +317,7 @@ def test_an_interrupted_build_is_resumed_from_disk(workspace):
 def test_a_build_failure_is_a_state_not_a_crash(workspace, monkeypatch):
     monkeypatch.setattr(analysis, "_build", lambda doc_id: (_ for _ in ()).throw(RuntimeError("boom")))
     analysis.stage(doc_id="probe-doc", label="Probe", units=_corpus())
-    analysis._queue.join()
+    analysis.state().queue.join()
     state = analysis.read_state("probe-doc")
     assert state["status"] == analysis.STATUS_FAILED
     assert "boom" in state["error"]
@@ -335,12 +335,12 @@ def test_a_document_ingested_earlier_is_recovered_on_the_worker(workspace, monke
         seen.append((doc_id, kb_id, threading.current_thread().ident))
         return _corpus()
 
-    monkeypatch.setattr(analysis, "_unit_resolver", resolver)
+    monkeypatch.setattr(analysis.state(), "unit_resolver", resolver)
     state = analysis.request_build(doc_id="probe-doc", label="Eski belge", kb_id="kb1")
     assert state["status"] == analysis.STATUS_PENDING
     assert "unit_count" not in state, "the request writes no canonical of its own"
 
-    analysis._queue.join()
+    analysis.state().queue.join()
     assert [(d, k) for d, k, _ in seen] == [("probe-doc", "kb1")]
     assert seen[0][2] != main_thread, "the recovery must not run on the request's thread"
     assert analysis.read_state("probe-doc")["status"] == analysis.STATUS_READY
@@ -348,9 +348,9 @@ def test_a_document_ingested_earlier_is_recovered_on_the_worker(workspace, monke
 
 
 def test_a_document_with_no_recoverable_canonical_fails_clearly(workspace, monkeypatch):
-    monkeypatch.setattr(analysis, "_unit_resolver", lambda doc_id, kb_id: None)
+    monkeypatch.setattr(analysis.state(), "unit_resolver", lambda doc_id, kb_id: None)
     analysis.request_build(doc_id="probe-doc", label="Eski belge")
-    analysis._queue.join()
+    analysis.state().queue.join()
     state = analysis.read_state("probe-doc")
     assert state["status"] == analysis.STATUS_FAILED
     assert "structured parser" in state["error"]
@@ -377,12 +377,12 @@ def test_the_same_pdf_uploaded_again_still_packages_every_method(workspace):
     first = _corpus(document_id="upload-1")
     analysis.stage(doc_id="upload-1", label="Ayni.pdf", units=first, methods=wanted,
                    deep_result=_deep_run(first), content_sha="same-bytes")
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     second = _corpus(document_id="upload-2")
     analysis.stage(doc_id="upload-2", label="Ayni.pdf", units=second, methods=wanted,
                    deep_result=_deep_run(second), content_sha="same-bytes")
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     key = analysis.key_for("upload-2", "same-bytes")
     state = analysis.read_state("upload-2", "same-bytes")
@@ -420,7 +420,7 @@ def test_a_deep_failure_leaves_the_other_methods_standing(workspace, monkeypatch
     analysis.stage(doc_id="probe-doc", label="Probe belgesi", units=units,
                    methods=["markdown", "structure-only", "agentic"],
                    deep_result=_deep_run(units))
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     key = analysis.key_for("probe-doc")
     state = analysis.read_state("probe-doc")

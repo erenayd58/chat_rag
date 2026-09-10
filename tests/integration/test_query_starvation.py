@@ -35,6 +35,7 @@ import asgi as entrypoint
 import interfaces.http as http
 from chat_rag.components.ingest import limits as L
 from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
+from chat_rag import runtime
 from chat_rag.components.observability import telemetry as T
 from chat_rag.components.query import limits as Q
 
@@ -113,11 +114,11 @@ def server(tmp_path, monkeypatch):
     kb_manager = KnowledgeBaseManager(str(tmp_path / "kbs.json"))
     monkeypatch.setattr(entrypoint.services, "kb_manager", kb_manager)
     registry = T.MetricsRegistry(window=20)
-    monkeypatch.setattr(T, "_registry", registry)
+    monkeypatch.setattr(runtime.current(), "metrics", registry)
 
     model = GatedAnswerModel(expect=THREADS)
     budget = L.ProviderBudget(THREADS)
-    monkeypatch.setattr(Q, "_answer_budget", budget)
+    monkeypatch.setattr(runtime.current(), "answer_budget", budget)
     pipeline = BlockingPipeline(model, budget)
     monkeypatch.setattr(entrypoint.services, "get_pipeline", lambda *a, **k: pipeline)
 

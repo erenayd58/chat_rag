@@ -21,6 +21,7 @@ import interfaces.http as http
 
 V1 = http.v1.PREFIX
 from chat_rag.components.ingest import limits as L
+from chat_rag import runtime
 from chat_rag.components.observability import telemetry as T
 from chat_rag.components.query import limits as Q
 from chat_rag.core.exceptions import LLMException, QueryTimeout
@@ -55,14 +56,14 @@ class StubPipeline:
 @pytest.fixture
 def registry(monkeypatch):
     fresh = T.MetricsRegistry(window=50)
-    monkeypatch.setattr(T, "_registry", fresh)
+    monkeypatch.setattr(runtime.current(), "metrics", fresh)
     return fresh
 
 
 @pytest.fixture
 def budget(monkeypatch):
     fresh = L.ProviderBudget(2)
-    monkeypatch.setattr(Q, "_answer_budget", fresh)
+    monkeypatch.setattr(runtime.current(), "answer_budget", fresh)
     return fresh
 
 
@@ -189,7 +190,7 @@ def test_when_the_answer_model_is_at_capacity_the_query_is_refused_not_hung(
     """Admission has room but the answer budget is full and the wait cap is
     short: answer_capacity overload, with the reason named."""
     one = L.ProviderBudget(1)
-    monkeypatch.setattr(Q, "_answer_budget", one)
+    monkeypatch.setattr(runtime.current(), "answer_budget", one)
     holder = GatedAnswerModel(expect=1)
     use_pipelines(monkeypatch, lambda: StubPipeline(holder, one, wait_seconds=0.1))
     outcome = []

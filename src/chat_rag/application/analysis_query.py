@@ -48,6 +48,7 @@ from chat_rag.core.exceptions import LLMException
 
 from . import workspace
 from .errors import InvalidRequest, NotFound
+from .services import in_engine
 
 logger = logging.getLogger("RAG.analysis_query")
 
@@ -123,10 +124,32 @@ class _Answerer:
 
 
 # --------------------------------------------------------------- the engine
-_engine: ChatEngine | None = None
-#: What is registered, and out of which analysis: ``doc_id -> (content_id, methods)``.
-_registered: dict[str, tuple[str, tuple[str, ...]]] = {}
-_lock = threading.RLock()
+class AnalysisEngineHolder:
+    """One engine and what has been registered in it, for one runtime.
+
+    Both were module globals until L3 -- one engine per process, whatever else
+    was running in it -- so a second ``Services`` answered analysis questions
+    out of the first one's indexes, built from the first one's embedder and
+    answer model. A :class:`~chat_rag.runtime.Runtime` owns one of these now.
+    """
+
+    def __init__(self) -> None:
+        self.engine: ChatEngine | None = None
+        #: What is registered, and out of which analysis:
+        #: ``doc_id -> (content_id, methods)``.
+        self.registered: dict[str, tuple[str, tuple[str, ...]]] = {}
+        self.lock = threading.RLock()
+
+    def reset(self) -> None:
+        with self.lock:
+            self.engine = None
+            self.registered.clear()
+
+
+def _holder() -> AnalysisEngineHolder:
+    from chat_rag import runtime
+
+    return runtime.current().analysis
 
 
 def _build_engine(services) -> ChatEngine:
@@ -154,12 +177,12 @@ def _build_engine(services) -> ChatEngine:
 
 
 def engine(services) -> ChatEngine:
-    """The one engine this process holds, built on first use."""
-    global _engine
-    with _lock:
-        if _engine is None:
-            _engine = _build_engine(services)
-        return _engine
+    """The engine this runtime holds, built on first use."""
+    holder = _holder()
+    with holder.lock:
+        if holder.engine is None:
+            holder.engine = _build_engine(services)
+        return holder.engine
 
 
 def reset() -> None:
@@ -169,10 +192,7 @@ def reset() -> None:
     indexes are derived data, and rebuilding one costs what it cost the first
     time and nothing else.
     """
-    global _engine
-    with _lock:
-        _engine = None
-        _registered.clear()
+    _holder().reset()
 
 
 # ------------------------------------------------------------ registration
@@ -184,25 +204,28 @@ def _register(services, document_id: str) -> tuple[ChatEngine, list[str]]:
     registered again, and the indexes built from the previous rows are
     dropped rather than answered out of.
     """
+    holder = _holder()
     built = engine(services)
     found = workspace.chunk_rows(document_id)
     arms = found.get("arms") or {}
     if not arms:
         raise NotFound(f"no packaged chunks for {document_id!r}")
     identity = (str(found.get("key") or ""), tuple(sorted(arms)))
-    with _lock:
-        if _registered.get(document_id) != identity:
+    with holder.lock:
+        if holder.registered.get(document_id) != identity:
             built.register_live(document_id, str(found.get("label") or document_id), arms)
-            _registered[document_id] = identity
+            holder.registered[document_id] = identity
     return built, [method for method in viewer_methods.ORDER if method in arms]
 
 
+@in_engine
 def available_methods(services, document_id: str) -> list[str]:
     """The methods this document can be asked about now, in product order."""
     return _register(services, document_id)[1]
 
 
 # ------------------------------------------------------------- the use case
+@in_engine
 def ask(services, *, document_id: str, question: str, session_id: str,
         methods: Optional[Sequence[str]] = None, top_k: int = DEFAULT_TOP_K,
         answer: bool = True) -> dict:

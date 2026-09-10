@@ -198,9 +198,11 @@ def test_a_stop_drains_the_jobs_before_it_returns_the_pool(monkeypatch):
     order = []
     monkeypatch.setattr(entrypoint.services.ingest_jobs, "close",
                         lambda timeout=None: order.append("jobs"))
-    from chat_rag import storage as database
-
-    monkeypatch.setattr(database, "dispose", lambda: order.append("database"))
+    # This engine's pool, not the module-level accessor: since L3 the shutdown
+    # hook names the container it is stopping (``chat_rag/runtime.py``), which
+    # is the same object here and would not be in a process with two engines.
+    monkeypatch.setattr(entrypoint.services.runtime.database, "dispose",
+                        lambda: order.append("database"))
 
     entrypoint._on_stop(entrypoint.services)
 

@@ -154,6 +154,46 @@ storage/                  PostgreSQL, behind repository interfaces.  Every SQL
                           nothing above it imports SQLAlchemy.
 ```
 
+### What a running engine owns
+
+Seven things outlive any one call: the connection pool, three provider
+budgets, the metrics registry, the Viewer packager's queue and worker, and the
+analysis-query engine. Each was a module global built on first use — right for
+one process with one configuration, and wrong for a library, where a second
+`Services` would have spent the first one's provider slots and written to its
+database.
+
+They are a **`Runtime`** now ([chat_rag/runtime.py](../src/chat_rag/runtime.py)),
+and a `Services` owns one:
+
+```
+Services ── runtime ──┬── database        one pool, from settings.database
+                      ├── provider_budget | embedding_budget | answer_budget
+                      ├── metrics         this engine's counters
+                      ├── packager        the Viewer queue, worker and locks
+                      └── analysis        the analysis-query engine and indexes
+```
+
+Deep code is not handed one. `storage.session_scope()`, `limits.provider_budget()`
+and `telemetry.metrics()` kept their names and resolve through
+`chat_rag.runtime.current()`, which answers with the activated runtime if there
+is one and the **process default** otherwise. The first `build_services()` in a
+process installs itself as that default, so every caller that never sees a
+`Services` — Alembic, `tools/migrate.py`, a CLI command, a test reaching a
+repository — behaves exactly as it did.
+
+A second engine is reached by activation. `Services.activate()` sets it for a
+block; a pipeline carries the engine that built it and activates it around
+every operation; the two worker threads (ingest jobs, the packager) are handed
+their runtime, because a `ContextVar` is not inherited by a thread. The record
+stores skip all of that — they are handed their `Database` when the container
+is composed.
+
+`tests/unit/test_engine_isolation.py` states the whole claim as behaviour: a
+slot taken in one engine is not missing from the other, a trace recorded in one
+is invisible in the other, and a build queued in one is not in the other's
+queue.
+
 ### One store, and what is in it
 
 ```

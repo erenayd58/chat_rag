@@ -34,7 +34,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from chat_rag.core.exceptions import VectorDBException
 from chat_rag.core.models import DocumentChunk
-from chat_rag.storage import ChunkVectorRepository, session_scope
+from chat_rag.storage import ChunkVectorRepository
+from chat_rag.storage.engine import DatabaseBound
 from chat_rag.utils.logger import get_logger
 
 from .base import BaseVectorDB
@@ -55,7 +56,7 @@ _RECORD_FIELDS = (
 )
 
 
-class PgVectorStore(BaseVectorDB):
+class PgVectorStore(BaseVectorDB, DatabaseBound):
     """One collection of chunks and their embeddings, in PostgreSQL."""
 
     #: Width of the placeholder a lexical-only ingestion stores. The number is
@@ -67,7 +68,7 @@ class PgVectorStore(BaseVectorDB):
     #: into a dense corpus cannot narrow it.
     LEXICAL_PLACEHOLDER_DIMENSION = 1
 
-    def __init__(self, collection: str, kb_id: Optional[str] = None):
+    def __init__(self, collection: str, kb_id: Optional[str] = None, *, database=None):
         """Name the collection; touch nothing.
 
         No statement runs here. Building a pipeline must not need a reachable
@@ -75,6 +76,7 @@ class PgVectorStore(BaseVectorDB):
         both construct one on machines that have none -- so the collection row
         is created by the first write instead.
         """
+        self._database = database
         self.collection = str(collection)
         self.kb_id = kb_id
         self.logger = get_logger("PgVectorStore")
@@ -190,7 +192,7 @@ class PgVectorStore(BaseVectorDB):
             return
         embeddings = list(embeddings or [])
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 repository = ChunkVectorRepository(session)
                 repository.ensure_collection(self.collection, self.kb_id)
                 if embeddings:
@@ -222,7 +224,7 @@ class PgVectorStore(BaseVectorDB):
                      embedding: Optional[Sequence[float]] = None) -> None:
         """Change a chunk in place. Absent arguments leave their field alone."""
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 ChunkVectorRepository(session).update(
                     self.collection, chunk_id, content=content,
                     metadata=metadata, embedding=embedding,
@@ -246,7 +248,7 @@ class PgVectorStore(BaseVectorDB):
         if len(chunks) != len(embeddings):
             raise VectorDBException("replace_all needs one embedding per chunk")
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 repository = ChunkVectorRepository(session)
                 repository.ensure_collection(self.collection, self.kb_id)
                 repository.clear(self.collection)
@@ -261,7 +263,7 @@ class PgVectorStore(BaseVectorDB):
 
     def delete_chunk(self, chunk_id: str) -> None:
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 ChunkVectorRepository(session).delete_chunk(self.collection, chunk_id)
         except Exception as error:
             raise self._failure(f"delete chunk {chunk_id}", error) from error
@@ -274,7 +276,7 @@ class PgVectorStore(BaseVectorDB):
         that may have written nothing.
         """
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 ChunkVectorRepository(session).delete_by_doc_id(self.collection, doc_id)
         except Exception as error:
             raise self._failure(f"delete document {doc_id}", error) from error
@@ -282,7 +284,7 @@ class PgVectorStore(BaseVectorDB):
     def clear(self) -> int:
         """Empty the collection, keeping it. Used by the Chroma import tool."""
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 return ChunkVectorRepository(session).clear(self.collection)
         except Exception as error:
             raise self._failure("clear the collection", error) from error
@@ -301,7 +303,7 @@ class PgVectorStore(BaseVectorDB):
         true ranking, so nothing downstream had to be re-tuned for recall.
         """
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 return ChunkVectorRepository(session).search(
                     self.collection, query_embedding, top_k=top_k,
                     filter_dict=filter_dict,
@@ -311,7 +313,7 @@ class PgVectorStore(BaseVectorDB):
 
     def get_all_chunks(self) -> List[DocumentChunk]:
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 rows = ChunkVectorRepository(session).rows(self.collection)
         except Exception as error:
             raise self._failure("retrieve chunks", error) from error
@@ -321,7 +323,7 @@ class PgVectorStore(BaseVectorDB):
 
     def get_chunk_by_id(self, chunk_id: str) -> Optional[Dict[str, Any]]:
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 return ChunkVectorRepository(session).get(self.collection, chunk_id)
         except Exception as error:
             raise self._failure(f"get chunk {chunk_id}", error) from error
@@ -336,7 +338,7 @@ class PgVectorStore(BaseVectorDB):
         page.
         """
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 repository = ChunkVectorRepository(session)
                 return {
                     "chunks": repository.rows(self.collection, filter_dict,
@@ -352,7 +354,7 @@ class PgVectorStore(BaseVectorDB):
                               limit: int = 20) -> Dict[str, Any]:
         """The browse screen's phrase filter: a substring scan, not retrieval."""
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 return ChunkVectorRepository(session).search_text(
                     self.collection, search_text, offset=offset, limit=limit
                 )
@@ -361,7 +363,7 @@ class PgVectorStore(BaseVectorDB):
 
     def count(self) -> int:
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 return ChunkVectorRepository(session).count(self.collection)
         except Exception as error:
             raise self._failure("count chunks", error) from error
@@ -378,7 +380,7 @@ class PgVectorStore(BaseVectorDB):
         because the retriever probes for it by name.
         """
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 return ChunkVectorRepository(session).stored_dimension(self.collection)
         except Exception:
             # A status probe must not raise: it is asked while answering
@@ -389,7 +391,7 @@ class PgVectorStore(BaseVectorDB):
     def read_manifest(self) -> Optional[Dict[str, Any]]:
         """Which embedding wrote these vectors, or ``None`` if unrecorded."""
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 return ChunkVectorRepository(session).read_manifest(self.collection)
         except Exception:
             return None
@@ -397,7 +399,7 @@ class PgVectorStore(BaseVectorDB):
     def write_manifest(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
         """Record the embedding space this collection now holds."""
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 return ChunkVectorRepository(session).write_manifest(
                     self.collection, manifest, self.kb_id
                 )

@@ -27,6 +27,7 @@ from chat_rag.components.observability import telemetry as T
 from chat_rag.components.query import limits as Q
 from chat_rag.config.query import QueryLimits, query_limits_from_env
 from chat_rag.core.exceptions import LLMException, QueryOverloaded, QueryTimeout
+from chat_rag import runtime
 
 from query_doubles import FailingAnswerModel, GatedAnswerModel
 
@@ -83,7 +84,7 @@ def test_the_limits_describe_themselves():
 @pytest.fixture
 def budget(monkeypatch):
     fresh = L.ProviderBudget(2)
-    monkeypatch.setattr(Q, "_answer_budget", fresh)
+    monkeypatch.setattr(runtime.current(), "answer_budget", fresh)
     return fresh
 
 

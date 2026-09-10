@@ -14,10 +14,13 @@ Nothing already fixed is listed. This is not a changelog.
 with a bounded worker-thread pool (`WAITRESS_THREADS`, 8) plus one background
 thread that packages documents for the Viewer. Three things make a second
 worker process wrong rather than merely unnecessary: the Viewer packaging queue
-lives in memory, the per-knowledge-base pipeline cache is a module global, and
-the provider budgets are semaphores that only mean what they say inside one
-address space. A second process would duplicate all three and they would
-disagree.
+lives in memory, the per-knowledge-base pipeline cache lives beside it, and the
+provider budgets are semaphores that only mean what they say inside one address
+space. A second process would duplicate all three and they would disagree.
+
+All three belong to the running engine rather than to a module (`Services.runtime`,
+since L3), which is what lets one process hold two engines deliberately — but
+not what lets two processes share one.
 
 *To scale out* you would need an external queue and a shared pipeline
 registry. That is a different deployment shape, not a configuration change;

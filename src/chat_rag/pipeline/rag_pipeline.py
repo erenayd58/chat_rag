@@ -7,6 +7,7 @@ answer -- so what reaches the answer model is a function of the question and
 the index alone.
 """
 import contextlib
+import functools
 import json
 import re
 import time
@@ -70,6 +71,23 @@ def _source_pages(metadata: Optional[Dict[str, Any]]) -> Optional[List[Any]]:
     return None
 
 
+def _in_runtime(method):
+    """Run one pipeline operation inside the engine this pipeline belongs to.
+
+    Everything below this call reaches for something that used to be a process
+    global -- a provider budget, the metrics registry, the connection pool --
+    and asks ``chat_rag.runtime.current()`` for it instead. This is where the
+    answer is decided, and it is on the operations rather than on every helper
+    because these are the points at which the outside world enters a pipeline.
+    """
+    @functools.wraps(method)
+    def operation(self, *args, **kwargs):
+        with self._active():
+            return method(self, *args, **kwargs)
+
+    return operation
+
+
 class RAGPipeline:
     """Ingestion and query for one knowledge base."""
 
@@ -79,8 +97,16 @@ class RAGPipeline:
         embedding_model: Optional[BaseEmbedding] = None,
         vector_db: Optional[BaseVectorDB] = None,
         chunker: Optional[BaseChunker] = None,
-        settings: Optional[Settings] = None
+        settings: Optional[Settings] = None,
+        runtime: Optional[Any] = None,
     ):
+        #: The engine this pipeline belongs to. Given by ``Services``; a
+        #: pipeline built directly -- by a test, by the CLI, by a library
+        #: caller -- has none and resolves the current runtime, which is the
+        #: process default unless somebody activated one. Every public
+        #: operation below activates it, because the code it reaches (the
+        #: budgets, the metrics, the store) is not handed anything.
+        self.runtime = runtime
         self.settings = settings if settings is not None else Settings.from_env()
         self.retrieval_profile = getattr(
             self.settings, 'retrieval_profile', DEFAULT_RETRIEVAL_PROFILE
@@ -128,6 +154,20 @@ class RAGPipeline:
         except Exception:
             # Non-fatal; keyword search will lazily build if needed
             pass
+
+    def _active(self):
+        """This pipeline's runtime, for the length of a ``with`` block.
+
+        A no-op when it has none: ``current()`` already answers with the
+        process default, and activating that would only be a slower way of
+        saying the same thing.
+        """
+        owner = getattr(self, "runtime", None)
+        if owner is None:
+            return contextlib.nullcontext()
+        from chat_rag import runtime as runtime_module
+
+        return runtime_module.activate(owner)
 
     @property
     def answer_model(self) -> BaseLLM:
@@ -246,6 +286,7 @@ class RAGPipeline:
     # Ingestion
     # ------------------------------------------------------------------
 
+    @_in_runtime
     def ingest_document_from_file(
         self,
         file_path: str,
@@ -326,6 +367,7 @@ class RAGPipeline:
         except Exception as e:
             raise RAGException(f"Failed to ingest document from file {file_path}: {e}")
 
+    @_in_runtime
     def ingest_document(
         self,
         document_text: str,
@@ -490,6 +532,7 @@ class RAGPipeline:
     # Retrieval
     # ------------------------------------------------------------------
 
+    @_in_runtime
     def retrieve(
         self, query: str, top_k: int = None
     ) -> Tuple[List[RetrievalResult], Dict[str, Any]]:
@@ -700,6 +743,7 @@ class RAGPipeline:
     # Index state
     # ------------------------------------------------------------------
 
+    @_in_runtime
     def embedding_index_status(self) -> Dict[str, Any]:
         """Whether the store's vectors belong to the current embedding."""
         retriever = self.hybrid_retriever
@@ -714,6 +758,7 @@ class RAGPipeline:
             "stored": {}, "current": {},
         }
 
+    @_in_runtime
     def reindex_embeddings(self) -> Dict[str, Any]:
         """Re-embed every stored chunk with the current model and rewrite
         the store's vectors. Texts and metadata are untouched; only the
@@ -797,6 +842,7 @@ class RAGPipeline:
     # Answering
     # ------------------------------------------------------------------
 
+    @_in_runtime
     def get_retrieval_context(
         self,
         results: List[RetrievalResult],
@@ -819,6 +865,7 @@ class RAGPipeline:
 
         return "\n---\n".join(context_parts)
 
+    @_in_runtime
     def generate_answer(
         self,
         query: str,
@@ -898,6 +945,7 @@ Please provide a clear and accurate answer based on the context provided above."
             RAGLogger.log_llm_response(logger, str(e), success=False)
             return error_msg
 
+    @_in_runtime
     def query(
         self,
         question: str,

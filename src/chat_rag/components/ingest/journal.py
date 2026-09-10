@@ -51,7 +51,8 @@ import time
 from datetime import datetime
 from typing import Any, Callable, Optional
 
-from chat_rag.storage import IngestJobRepository, session_scope
+from chat_rag.storage import IngestJobRepository
+from chat_rag.storage.engine import DatabaseBound
 
 logger = logging.getLogger("chat_rag.ingest")
 
@@ -63,16 +64,17 @@ INTERRUPTED = "interrupted"
 RECOVERED = "recovered_from_ledger"
 
 
-class JobJournal:
+class JobJournal(DatabaseBound):
     """The ``ingest_jobs`` table, as the job manager sees it."""
 
-    def __init__(self, directory: Optional[str] = None):
+    def __init__(self, directory: Optional[str] = None, *, database=None):
         """``directory`` is accepted and unused.
 
         It named the directory of per-job JSON files until Step 8. The job
         manager and the restart tests still construct a journal with one;
         the records are rows either way.
         """
+        self._database = database
         self.directory = directory
 
     # ------------------------------------------------------------- writing
@@ -83,14 +85,14 @@ class JobJournal:
         if not job_id:
             return
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 IngestJobRepository(session).record(snapshot)
         except Exception as error:  # noqa: BLE001 - journalling is best effort
             logger.warning("could not journal ingest job %s: %s", job_id, error)
 
     def forget(self, job_id: str) -> None:
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 IngestJobRepository(session).forget(job_id)
         except Exception as error:  # noqa: BLE001
             logger.warning("could not remove the journal record %s: %s", job_id, error)
@@ -117,7 +119,7 @@ class JobJournal:
         """
         now = time.time() if now is None else now
         settled: list[dict[str, Any]] = []
-        with session_scope() as session:
+        with self._session() as session:
             repository = IngestJobRepository(session)
             if retention_seconds:
                 repository.prune(now - retention_seconds)
@@ -134,7 +136,7 @@ class JobJournal:
             return 0
         now = time.time() if now is None else now
         try:
-            with session_scope() as session:
+            with self._session() as session:
                 return IngestJobRepository(session).prune(now - retention_seconds)
         except Exception as error:  # noqa: BLE001 - pruning is best effort
             logger.warning("could not prune the ingest journal: %s", error)

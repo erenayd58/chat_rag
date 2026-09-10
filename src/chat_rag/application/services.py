@@ -19,17 +19,17 @@ migration to another store will do for real.
 
 from __future__ import annotations
 
+import functools
 import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from chat_rag import runtime as runtime_module
 from chat_rag.components.goldset import GoldSetManager
-from chat_rag.components.ingest import (
-    IngestManager, JobJournal, PipelineCache, configure_budget, configure_embedding_budget,
-)
+from chat_rag.components.ingest import IngestManager, JobJournal, PipelineCache
 from chat_rag.components.knowledgebase.manager import KnowledgeBaseManager
-from chat_rag.components.query import QueryAdmission, configure_answer_budget
+from chat_rag.components.query import QueryAdmission
 from chat_rag.config import Settings, paths
 from chat_rag.pipeline import RAGPipeline
 from chat_rag.utils import DocumentTracker
@@ -76,6 +76,17 @@ class Services:
     gold_manager: GoldSetManager
     pipeline_cache: PipelineCache
     query_admission: QueryAdmission
+    #: Everything this engine owns that is not a value: its connection pool,
+    #: its three provider budgets, its metrics registry, its Viewer packager
+    #: and its analysis engine. Each of those was a process global until L3
+    #: (``chat_rag/runtime.py`` says what that cost); a ``Services`` owns one
+    #: now, which is what lets two of them share a process.
+    #:
+    #: The default is the *process* default -- what a container assembled by
+    #: hand gets, and exactly the state it reached when these were globals.
+    #: ``build_services`` passes its own, which is what makes a second engine
+    #: a second engine.
+    runtime: Any = field(default_factory=lambda: runtime_module.default())
     #: A fresh reader of the ingest ledger. A factory rather than an instance
     #: because the ledger is a file re-read on construction, and several
     #: threads hold their own reader at once.
@@ -98,6 +109,32 @@ class Services:
     #: server down with it.
     sync_waiters: Any = field(default_factory=lambda: threading.BoundedSemaphore(1))
 
+    # ------------------------------------------------------------ runtime
+    def activate(self):
+        """Make this container's runtime the one deep code resolves through.
+
+        Everything that used to read a module global -- ``session_scope()``,
+        ``provider_budget()``, ``metrics()``, the packager's queue -- asks
+        :func:`chat_rag.runtime.current` instead, and inside this block the
+        answer is this engine's.
+
+        The product has one ``Services`` and installs it as the process
+        default, so its behaviour does not depend on this. A second one in the
+        same process does: outside an activation it is only its own attributes,
+        and inside one it is its own everything.
+        """
+        return runtime_module.activate(self.runtime)
+
+    def close(self) -> None:
+        """Give back what this engine holds: its workers, then its pool."""
+        jobs = getattr(self, "ingest_jobs", None)
+        if jobs is not None:
+            try:
+                jobs.close(timeout=5)
+            except Exception:  # noqa: BLE001 - closing must not raise
+                logger.warning("ingest jobs did not close cleanly", exc_info=True)
+        self.runtime.close()
+
     # ---------------------------------------------------------- pipelines
     def build_pipeline(self, kb_id: Optional[str] = None) -> RAGPipeline:
         """One pipeline for one knowledge base. Called by the cache, under its
@@ -106,8 +143,9 @@ class Services:
             kb = self.kb_manager.get(kb_id)
             if not kb:
                 raise ValueError("Knowledge base not found")
-            return RAGPipeline(settings=build_settings_for_kb(kb, kb_id))
-        return RAGPipeline(settings=self.settings)
+            return RAGPipeline(settings=build_settings_for_kb(kb, kb_id),
+                               runtime=self.runtime)
+        return RAGPipeline(settings=self.settings, runtime=self.runtime)
 
     def get_pipeline(self, session_id: str, kb_id: Optional[str] = None) -> RAGPipeline:
         """The pipeline for this session and knowledge base.
@@ -127,23 +165,47 @@ class Services:
         return self.pipeline_cache.lease_via(self.get_pipeline, session_id, kb_id)
 
 
+def in_engine(use_case):
+    """Run a use case inside the engine its container owns.
+
+    Applied to the use cases that reach past their arguments -- a query takes
+    an answer-budget slot and records a trace, an ops read asks the registry
+    for one -- because what they reach for is whichever runtime is current,
+    and the container is the thing that knows which that should be.
+
+    A use case that only touches ``services`` attributes needs no decoration:
+    the stores were handed their database when the container was composed.
+    """
+    @functools.wraps(use_case)
+    def call(services, *args, **kwargs):
+        with services.activate():
+            return use_case(services, *args, **kwargs)
+
+    return call
+
+
 def build_services(settings: Optional[Settings] = None) -> Services:
     """Compose the application.
 
-    No framework, no request, and no global state but the process-wide
-    provider budgets -- installed here because the transports that read them
-    are constructed much later, inside pipelines this container has not built
-    yet.
-    """
-    settings = settings if settings is not None else Settings.from_env()
+    No framework, no request, and -- since L3 -- no global state at all. The
+    connection pool, the three provider budgets, the metrics registry, the
+    Viewer packager and the analysis engine are a :class:`Runtime` this
+    container owns, sized from these settings rather than installed into the
+    process.
 
-    # The caps on outbound calls, from the validated settings, before any
-    # pipeline can make one. Three, because Deep Analysis, the embedding
-    # endpoint and the answer model are different services and none may starve
-    # the others (components/ingest/limits.py, components/query/limits.py).
-    configure_budget(settings.provider_max_inflight)
-    configure_embedding_budget(settings.embedding_max_inflight)
-    configure_answer_budget(settings.answer_max_inflight)
+    The *first* container built in a process installs its runtime as the
+    process default, which is what keeps every caller that was never handed
+    one -- a CLI command, ``tools/migrate.py``, Alembic, a test reaching a
+    repository directly -- behaving exactly as it did. A second container
+    does not, and is therefore its own engine.
+    """
+    # ``settings`` is passed through rather than resolved first: a runtime
+    # told nothing reads the environment *and* keeps its database tracking it
+    # across a dispose, which is what the module-level engine always did.
+    engine_runtime = runtime_module.Runtime(settings)
+    settings = engine_runtime.settings
+    runtime_module.install_default(engine_runtime)
+    database = engine_runtime.database
 
     if settings.query_limits.free_threads < 1:
         logger.warning(
@@ -156,8 +218,12 @@ def build_services(settings: Optional[Settings] = None) -> Services:
 
     services = Services(
         settings=settings,
-        kb_manager=KnowledgeBaseManager(),
-        gold_manager=GoldSetManager(),
+        runtime=engine_runtime,  # noqa: E501 - this engine's, not the process's
+        # Every record store is handed this engine's database rather than
+        # reaching for the process's one. Two containers, two pools.
+        kb_manager=KnowledgeBaseManager(database=database),
+        gold_manager=GoldSetManager(database=database),
+        documents=lambda: DocumentTracker(database=database),
         pipeline_cache=None,
         # How many request threads may be inside a query at once. A query runs
         # on the thread that received it -- retrieval, context, the answer
@@ -166,7 +232,7 @@ def build_services(settings: Optional[Settings] = None) -> Services:
         # question that finds no slot is refused at once and never queued,
         # because a queued query would hold the very thread this keeps free.
         query_admission=QueryAdmission(settings.query_max_active),
-        default_pipeline=RAGPipeline(settings=settings),
+        default_pipeline=RAGPipeline(settings=settings, runtime=engine_runtime),
         sync_waiters=threading.BoundedSemaphore(max(1, settings.ingest_limits.sync_waiters)),
     )
     # Built pipelines, per session and knowledge base, bounded (see
@@ -192,7 +258,11 @@ def build_services(settings: Optional[Settings] = None) -> Services:
         execute=lambda job: ingest.execute_job(services, job),
         # A client holding a job_id from before a restart gets a truthful
         # answer rather than a 404; the ledger settles what actually completed.
-        journal=JobJournal(paths.ingest_journal()),
+        journal=JobJournal(paths.ingest_journal(), database=database),
+        # The worker outlives the call that queued the job and a ContextVar is
+        # not inherited by a thread, so it is given the runtime to activate
+        # around every job it runs.
+        runtime=engine_runtime,
     )
 
     # The packaging worker's way back to the parser cache. The only wiring

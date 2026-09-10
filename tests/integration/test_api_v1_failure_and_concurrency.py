@@ -57,9 +57,9 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(RAGPipeline, "_create_embedding",
                         lambda self: DeterministicEmbedding())
 
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
 
     services = build_services()
@@ -68,9 +68,9 @@ def api(tmp_path, monkeypatch):
         yield client
     services.ingest_jobs.close(timeout=PATIENCE_SECONDS)
     services.pipeline_cache.clear()
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
 
 
 def _ok(response):

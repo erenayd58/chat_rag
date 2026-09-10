@@ -453,13 +453,15 @@ class MetricsRegistry:
             self.started_at = time.time()
 
 
-_registry_lock = threading.Lock()
-_registry: Optional[MetricsRegistry] = None
-
-
 def metrics() -> MetricsRegistry:
-    global _registry
-    with _registry_lock:
-        if _registry is None:
-            _registry = MetricsRegistry()
-        return _registry
+    """The current runtime's registry.
+
+    A module global until L3, which meant one set of counters per process --
+    so a second engine in the same process recorded into the first one's
+    window and ``/api/ops/metrics`` described both at once. It belongs to a
+    :class:`~chat_rag.runtime.Runtime` now; this function kept its name and
+    resolves through whichever runtime the call belongs to.
+    """
+    from chat_rag import runtime
+
+    return runtime.current().metrics

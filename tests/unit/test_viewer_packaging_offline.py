@@ -68,7 +68,7 @@ def test_a_standard_upload_packages_with_no_network_at_all(workspace, no_network
     """The default upload path: Standard asked for, Deep produced deterministically."""
     analysis.stage(doc_id="probe-doc", label="Probe belgesi", units=_corpus(),
                    kb_id="kb1", kb_name="probe-kb", chunking_mode="standard")
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     state = analysis.read_state("probe-doc")
     assert state["status"] == analysis.STATUS_READY, state.get("error")
@@ -83,7 +83,7 @@ def test_a_deep_upload_packages_with_no_network_at_all(workspace, no_network):
 
     analysis.stage(doc_id="probe-doc", label="Probe belgesi", units=units, deep_result=run,
                    kb_id="kb1", kb_name="probe-kb", chunking_mode="deep_analysis")
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     state = analysis.read_state("probe-doc")
     assert state["status"] == analysis.STATUS_READY, state.get("error")
@@ -94,7 +94,7 @@ def test_a_deep_upload_packages_with_no_network_at_all(workspace, no_network):
 def test_the_packaged_deep_variant_records_no_provider_calls(workspace, no_network):
     analysis.stage(doc_id="probe-doc", label="Probe belgesi", units=_corpus(),
                    kb_id="kb1", kb_name="probe-kb", chunking_mode="standard")
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     deep = analysis.payload("probe-doc")["meta"]["deep"]
     assert deep["calls"] == {"proposer": 0, "verifier": 0, "total": 0}
@@ -156,7 +156,7 @@ def test_packaging_holds_no_provider_slot(workspace, no_network, monkeypatch):
         analysis.stage(doc_id="probe-doc", label="Probe", units=units, kb_id="kb1", kb_name="probe-kb",
                        chunking_mode="deep_analysis", deep_result=_deep_run(units),
                        methods=[M.STANDARD, M.DEEP, M.MARKDOWN])
-        analysis._queue.join()
+        analysis.state().queue.join()
         state = analysis.read_state("probe-doc")
         assert state["status"] == analysis.STATUS_READY, state
         assert budget.snapshot() == {"limit": 2, "inflight": 0, "peak": 0,

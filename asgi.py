@@ -11,13 +11,19 @@ No route, schema or status code moved on the way: the contract is what it was,
 and the operator's ``/api/ops/metrics`` kept its path and its body.
 
 **One process, not several workers.** Three pieces of this application keep
-real state in module globals that processes cannot share: the Viewer packager
-is one background thread over an in-memory queue with a per-document lock (two
+real state in memory that processes cannot share: the Viewer packager is one
+background thread over an in-memory queue with a per-document lock (two
 processes would each resume every unfinished document at start-up), the
 pipeline cache holds a built pipeline per session and knowledge base, and the
-provider budgets (``components/ingest/limits.py``) are plain semaphores that
-mean what they say only inside one address space. ``docs/limitations.md`` says
-what scaling out would take instead.
+provider budgets are plain semaphores that mean what they say only inside one
+address space. ``docs/limitations.md`` says what scaling out would take
+instead.
+
+Since L3 that state belongs to the container rather than to the module it
+lives in -- ``services.runtime``, see ``chat_rag/runtime.py`` -- which changes
+nothing here (this process composes exactly one ``Services``) and is what lets
+a library caller compose a second one without inheriting this one's queue,
+budgets, counters and connection pool.
 
 **The request threads are the number the limits are sized against.** Every
 handler on this surface is a synchronous ``def`` -- it retrieves, it reads a
@@ -68,7 +74,6 @@ configure_logging()
 import interfaces.http as http  # noqa: E402
 from chat_rag.application.services import Services, default_services  # noqa: E402
 from chat_rag.config.runtime import runtime_from_env  # noqa: E402
-from chat_rag import storage as database  # noqa: E402
 from interfaces.http import v1  # noqa: E402
 from runtime import bootstrap  # noqa: E402
 
@@ -97,7 +102,12 @@ def _on_stop(services: Services) -> None:
     # The database pool goes last, after the jobs that were still writing to
     # it have finished. Disposing it first would fail their final ledger write,
     # which is the one write a job must not lose.
-    database.dispose()
+    #
+    # This engine's pool, named rather than resolved: the pool belongs to the
+    # container being stopped (``chat_rag/runtime.py``), and a shutdown hook
+    # should say which one it is giving back even when -- as here -- there is
+    # only one in the process.
+    services.runtime.database.dispose()
 
 
 def _size_thread_pool() -> None:

@@ -18,6 +18,7 @@ from chat_rag.components.observability import events, telemetry as T
 from chat_rag.components.query import QUERY_DEADLINE_SEMANTICS, answer_budget
 
 from . import workspace
+from .services import in_engine
 
 #: How many consecutive failed jobs it takes before the service calls itself
 #: degraded. Small enough to notice a broken provider, large enough that one
@@ -25,6 +26,7 @@ from . import workspace
 DEGRADED_AFTER_JOBS = 5
 
 
+@in_engine
 def service_state(services) -> tuple[str, bool, list]:
     """``(status, ready, reasons)`` -- what this process can do right now.
 
@@ -76,6 +78,7 @@ def service_state(services) -> tuple[str, bool, list]:
     return status, True, reasons
 
 
+@in_engine
 def query_capacity(services) -> dict:
     """One line of query capacity: callers in a query, answer calls in flight,
     and both limits. Snapshot reads under short locks, so this answers while
@@ -90,6 +93,7 @@ def query_capacity(services) -> dict:
     }
 
 
+@in_engine
 def health(services) -> dict:
     """Liveness, readiness and one line of capacity. Deliberately small."""
     status, ready, reasons = service_state(services)
@@ -118,6 +122,7 @@ def health(services) -> dict:
     }
 
 
+@in_engine
 def metrics(services, *, recent: int = 10) -> dict:
     """Everything an operator needs when health says to look closer.
 

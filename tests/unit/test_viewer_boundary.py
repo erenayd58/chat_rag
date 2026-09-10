@@ -66,16 +66,16 @@ def _corpus(sections=2, paragraphs=5):
 @pytest.fixture(autouse=True)
 def workspace(tmp_path, monkeypatch):
     """A packaging root of this test's own, with the worker idle either side."""
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
-        analysis._revoked.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
+        analysis.state().revoked.clear()
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
     yield tmp_path / "viewer-live"
-    analysis._queue.join()
-    with analysis._lock:
-        analysis._inflight.clear()
-        analysis._revoked.clear()
+    analysis.state().queue.join()
+    with analysis.state().lock:
+        analysis.state().inflight.clear()
+        analysis.state().revoked.clear()
 
 
 def _build(doc_id="edge-doc", **overrides):
@@ -84,7 +84,7 @@ def _build(doc_id="edge-doc", **overrides):
                   chunking_mode="standard")
     fields.update(overrides)
     analysis.stage(**fields)
-    analysis._queue.join()
+    analysis.state().queue.join()
     return analysis.read_state(fields["doc_id"], fields.get("content_sha"))
 
 
@@ -154,7 +154,7 @@ def test_a_failed_rebuild_keeps_the_last_published_payload(workspace, monkeypatc
 
     monkeypatch.setattr(corpus, "load_corpus", refuse)
     analysis.add_methods("edge-doc", [M.MARKDOWN])
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     state = analysis.read_state("edge-doc")
     assert state["status"] == analysis.STATUS_FAILED
@@ -185,12 +185,12 @@ def test_a_repaired_rebuild_republishes_over_the_stale_payload(workspace, monkey
     monkeypatch.setattr(corpus, "load_corpus",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("nope")))
     analysis.add_methods("edge-doc", [M.MARKDOWN])
-    analysis._queue.join()
+    analysis.state().queue.join()
     assert analysis.read_state("edge-doc")["status"] == analysis.STATUS_FAILED
 
     monkeypatch.setattr(corpus, "load_corpus", real)
     analysis.add_methods("edge-doc", [M.MARKDOWN])
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     state = analysis.read_state("edge-doc")
     assert state["status"] == analysis.STATUS_READY
@@ -226,7 +226,7 @@ def test_deleting_a_document_mid_build_leaves_nothing_behind(workspace, monkeypa
 
     assert analysis.discard("edge-doc") is True
     release.set()
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     assert not analysis.document_dir(key).exists(), "the build rebuilt a deleted document"
     assert analysis.states() == {}
@@ -250,7 +250,7 @@ def test_a_build_that_fails_after_a_delete_records_no_state_for_it(workspace, mo
 
     assert analysis.discard("edge-doc") is True
     release.set()
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     assert not analysis.document_dir(key).exists()
     assert analysis.read_state("edge-doc")["status"] == analysis.STATUS_MISSING
@@ -276,7 +276,7 @@ def test_asking_for_the_document_again_withdraws_the_delete(workspace, monkeypat
     analysis.stage(doc_id="edge-doc", label="Kenar.pdf", units=_corpus(),
                    methods=[M.STANDARD], kb_id="kb1", chunking_mode="standard")
     release.set()
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     state = analysis.read_state("edge-doc")
     assert state["status"] == analysis.STATUS_READY, state
@@ -314,13 +314,13 @@ def test_restart_recovery_queues_the_unfinished_and_only_those(workspace):
     analysis._set_state(stuck, status=analysis.STATUS_RUNNING)
 
     first = analysis.resume_incomplete()
-    analysis._queue.join()
+    analysis.state().queue.join()
     assert first == [stuck]
 
     # Deterministic: with the same disk, the same answer -- and now that the
     # rebuild finished, nothing is outstanding.
     assert analysis.resume_incomplete() == []
-    analysis._queue.join()
+    analysis.state().queue.join()
     assert analysis.read_state("stuck-doc")["status"] == analysis.STATUS_READY
     assert analysis.read_state("done-doc")["status"] == analysis.STATUS_READY
 
@@ -333,7 +333,7 @@ def test_a_ready_document_whose_payload_vanished_is_rebuilt(workspace):
 
     assert analysis.read_state("edge-doc")["status"] == analysis.STATUS_PENDING
     assert analysis.resume_incomplete() == [key]
-    analysis._queue.join()
+    analysis.state().queue.join()
     assert analysis.read_state("edge-doc")["status"] == analysis.STATUS_READY
 
 
@@ -371,7 +371,7 @@ def test_a_restart_sweeps_before_it_resumes(workspace):
     (analysis.document_dir(key) / "state.json.111.222.tmp").write_text("{}", encoding="utf-8")
 
     analysis.resume_incomplete()
-    analysis._queue.join()
+    analysis.state().queue.join()
 
     assert list(analysis.document_dir(key).rglob("*.tmp")) == []
 

@@ -75,6 +75,7 @@ frozen benchmark trees in the chunk repository.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -112,39 +113,73 @@ _UNITS = "units.jsonl"
 _RUN = "run"
 _VARIANTS = "variants"
 
-_queue: "queue.Queue[str]" = queue.Queue()
-_inflight: set[str] = set()
-_lock = threading.Lock()
-_worker: threading.Thread | None = None
-#: One build at a time per document.
-_build_locks: dict[str, threading.Lock] = {}
-#: One reader or writer at a time per document's own payload file.
-#:
-#: Deliberately not ``_build_locks``: that one is held for a whole build, and a
-#: status poll must not queue behind minutes of chunking. This one is held for
-#: the length of a single read or a single replace.
-#:
-#: It has to cover reads as well as writes. Replacing a file that any other
-#: handle has open fails on Windows with PermissionError, so a browser polling
-#: the payload was enough to break the build's own write of it. The *record*
-#: no longer needs this: it is a row, and two writers to it are serialised by
-#: the database (``ContentRepository.upsert_state`` takes the row lock) rather
-#: than by a lock only this process can see.
-_artifact_locks: dict[str, threading.RLock] = {}
-#: Documents deleted while their build was running.
-#:
-#: ``discard`` removes the directory, but a build already inside ``_build``
-#: goes on writing to it and every write recreates it -- so a delete during
-#: packaging left a half-built analysis on disk under a document the console
-#: no longer knows, and the workspace listed it. The build itself is not
-#: interrupted (it holds open files and a chunker mid-run); instead the key is
-#: marked here and the build removes its own output at the end, so the delete
-#: wins whichever of the two finishes last. Re-staging the same document
-#: clears the mark, because that is a new request for it.
-_revoked: set[str] = set()
-#: How the worker recovers the canonical of a document ingested before this
-#: packaging existed. Registered by the application, called on the worker.
-_unit_resolver = None
+class PackagerState:
+    """The packager's queue, its worker and its per-document locks.
+
+    Nine module globals until L3, which made the packager a property of the
+    *process*: a second ``Services`` shared the first one's queue, and its
+    worker resumed the first one's documents. A
+    :class:`~chat_rag.runtime.Runtime` owns one of these now, and the module
+    functions below resolve through :func:`_S`.
+
+    Nothing here is built at import and the worker is not started until this
+    runtime is actually asked to package something.
+    """
+
+    def __init__(self) -> None:
+        self.queue: "queue.Queue[str]" = queue.Queue()
+        self.inflight: set[str] = set()
+        self.lock = threading.Lock()
+        self.worker: threading.Thread | None = None
+        #: One build at a time per document.
+        self.build_locks: dict[str, threading.Lock] = {}
+        #: One reader or writer at a time per document's own payload file.
+        #:
+        #: Deliberately not :attr:`build_locks`: that one is held for a whole
+        #: build, and a status poll must not queue behind minutes of chunking.
+        #: This one is held for the length of a single read or a single
+        #: replace.
+        #:
+        #: It has to cover reads as well as writes. Replacing a file that any
+        #: other handle has open fails on Windows with PermissionError, so a
+        #: browser polling the payload was enough to break the build's own
+        #: write of it. The *record* no longer needs this: it is a row, and two
+        #: writers to it are serialised by the database
+        #: (``ContentRepository.upsert_state`` takes the row lock) rather than
+        #: by a lock only this process can see.
+        self.artifact_locks: dict[str, threading.RLock] = {}
+        #: Documents deleted while their build was running.
+        #:
+        #: ``discard`` removes the directory, but a build already inside
+        #: ``_build`` goes on writing to it and every write recreates it -- so
+        #: a delete during packaging left a half-built analysis on disk under a
+        #: document the console no longer knows, and the workspace listed it.
+        #: The build itself is not interrupted (it holds open files and a
+        #: chunker mid-run); instead the key is marked here and the build
+        #: removes its own output at the end, so the delete wins whichever of
+        #: the two finishes last. Re-staging the same document clears the mark,
+        #: because that is a new request for it.
+        self.revoked: set[str] = set()
+        #: How the worker recovers the canonical of a document ingested before
+        #: this packaging existed. Registered by the application, called on the
+        #: worker.
+        self.unit_resolver = None
+
+
+def state() -> PackagerState:
+    """This call's packager state -- the current runtime's.
+
+    Public because it is what replaced the module globals: a caller that used
+    to reach ``analysis._queue`` asks ``analysis.state().queue`` instead, and
+    gets the queue belonging to the engine it is talking to.
+    """
+    from chat_rag import runtime
+
+    return runtime.current().packager
+
+
+#: The short name the module itself uses.
+_S = state
 
 
 # --------------------------------------------------------------------------
@@ -242,10 +277,10 @@ def _write_json(path: Path, payload: Any) -> None:
 
 
 def _artifact_lock(key: str) -> threading.RLock:
-    with _lock:
-        lock = _artifact_locks.get(key)
+    with _S().lock:
+        lock = _S().artifact_locks.get(key)
         if lock is None:
-            lock = _artifact_locks[key] = threading.RLock()
+            lock = _S().artifact_locks[key] = threading.RLock()
         return lock
 
 
@@ -389,12 +424,12 @@ def discard(doc_id: str, content_sha: str | None = None) -> bool:
             # content, and another upload may be showing them.
             return True
         repository.delete(key)
-    with _lock:
+    with _S().lock:
         # Marked before the removal, so a build that is between two writes
         # cannot slip its output in after the directory is gone.
-        if key in _inflight:
-            _revoked.add(key)
-        _inflight.discard(key)
+        if key in _S().inflight:
+            _S().revoked.add(key)
+        _S().inflight.discard(key)
     shutil.rmtree(directory, ignore_errors=True)
     return True
 
@@ -428,8 +463,7 @@ def _count_lines(path: Path) -> int:
 
 def set_unit_resolver(resolver) -> None:
     """Register how to recover an already-ingested document's canonical."""
-    global _unit_resolver
-    _unit_resolver = resolver
+    _S().unit_resolver = resolver
 
 
 def _merge_requested(state: dict, wanted: Sequence[str]) -> list[str]:
@@ -719,8 +753,8 @@ def _deterministic_deep(key: str) -> Any:
 
 
 def _build_lock(key: str) -> threading.Lock:
-    with _lock:
-        return _build_locks.setdefault(key, threading.Lock())
+    with _S().lock:
+        return _S().build_locks.setdefault(key, threading.Lock())
 
 
 def build(doc_id_or_key: str, content_sha: str | None = None) -> dict:
@@ -742,10 +776,10 @@ def _sweep_if_revoked(key: str) -> bool:
     a build whether it succeeded or raised, so neither outcome can leave a
     document the console no longer has.
     """
-    with _lock:
-        if key not in _revoked:
+    with _S().lock:
+        if key not in _S().revoked:
             return False
-        _revoked.discard(key)
+        _S().revoked.discard(key)
     shutil.rmtree(document_dir(key), ignore_errors=True)
     logger.info(f"{key}: discarded after its document was deleted mid-build")
     return True
@@ -754,12 +788,12 @@ def _sweep_if_revoked(key: str) -> bool:
 def _ensure_units(key: str, state: dict) -> dict:
     if units_path(key).is_file():
         return state
-    if _unit_resolver is None:
+    if _S().unit_resolver is None:
         raise FileNotFoundError(f"{key} has no canonical units and no way to recover them")
     doc_ids = state.get("doc_ids") or []
     units = None
     for doc_id in doc_ids:
-        units = _unit_resolver(doc_id, state.get("kb_id"))
+        units = _S().unit_resolver(doc_id, state.get("kb_id"))
         if units:
             break
     if not units:
@@ -1095,9 +1129,17 @@ def payload(doc_id: str, content_sha: str | None = None) -> dict | None:
 # --------------------------------------------------------------------------
 
 
-def _run_worker() -> None:
+def _run_worker(owner=None) -> None:
+    from chat_rag import runtime
+
+    context = runtime.activate(owner) if owner is not None else contextlib.nullcontext()
+    with context:
+        _worker_loop()
+
+
+def _worker_loop() -> None:
     while True:
-        key = _queue.get()
+        key = _S().queue.get()
         try:
             build(key)
             logger.info(f"Viewer analysis ready for {key}")
@@ -1118,31 +1160,38 @@ def _run_worker() -> None:
                 except Exception:  # pragma: no cover - state write is best effort
                     pass
         finally:
-            with _lock:
-                _inflight.discard(key)
-            _queue.task_done()
+            with _S().lock:
+                _S().inflight.discard(key)
+            _S().queue.task_done()
 
 
 def _ensure_worker() -> None:
-    global _worker
-    with _lock:
-        if _worker is None or not _worker.is_alive():
-            _worker = threading.Thread(target=_run_worker, name="viewer-analysis", daemon=True)
-            _worker.start()
+    state = _S()
+    with state.lock:
+        if state.worker is None or not state.worker.is_alive():
+            # The worker outlives the call that started it and a ContextVar is
+            # not inherited by a thread, so it is handed the runtime it belongs
+            # to and activates it for every build (see ``_run_worker``).
+            from chat_rag import runtime
+
+            state.worker = threading.Thread(
+                target=_run_worker, args=(runtime.current(),),
+                name="viewer-analysis", daemon=True)
+            state.worker.start()
 
 
 def enqueue(key: str) -> str:
     """Queue a build, at most once at a time per document."""
-    with _lock:
+    with _S().lock:
         # Asking for this document again withdraws an earlier delete: the
         # analysis that is about to be built is the one that was just asked
         # for, not the one that was thrown away.
-        _revoked.discard(key)
-        if key in _inflight:
+        _S().revoked.discard(key)
+        if key in _S().inflight:
             return STATUS_PENDING
-        _inflight.add(key)
+        _S().inflight.add(key)
     _ensure_worker()
-    _queue.put(key)
+    _S().queue.put(key)
     return STATUS_PENDING
 
 

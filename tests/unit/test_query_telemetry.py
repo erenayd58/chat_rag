@@ -20,6 +20,7 @@ import threading
 import pytest
 
 from chat_rag.components.ingest import limits as L
+from chat_rag import runtime
 from chat_rag.components.observability import telemetry as T
 from chat_rag.components.query import limits as Q
 from chat_rag.core.exceptions import LLMException
@@ -33,7 +34,7 @@ from query_doubles import (
 @pytest.fixture
 def registry(monkeypatch):
     fresh = T.MetricsRegistry(window=20)
-    monkeypatch.setattr(T, "_registry", fresh)
+    monkeypatch.setattr(runtime.current(), "metrics", fresh)
     return fresh
 
 
