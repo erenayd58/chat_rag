@@ -15,6 +15,10 @@ change it.
 
 ### Fixed
 
+- `Engine.close()` finishes the packaging it had accepted, stops its packager
+  worker and joins it before the connection pool is returned. The worker used
+  to outlive the engine for the life of the interpreter, holding the runtime
+  the close had given back and rebuilding the pool on its next build.
 - `Engine.migrate()` and `migrate_database()` report a failed migration as
   that migration's own error, and release the advisory lock. The unlock used
   to run inside the aborted transaction, so what came back was

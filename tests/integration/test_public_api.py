@@ -558,6 +558,53 @@ def test_an_engine_is_a_context_manager_and_closes_what_it_holds():
         engine.knowledge_bases.list()
 
 
+def test_closing_an_engine_finishes_its_packaging_stops_the_worker_and_returns_the_pool(
+        monkeypatch):
+    """The packager's worker is a daemon thread over an in-memory queue. Left
+    to the process, a closed engine kept it alive for the life of the
+    interpreter -- holding the runtime the close had given back and, on its
+    next build, rebuilding the pool the close had just disposed. Closing now
+    finishes what was queued (a build is a state write the packager owes),
+    stops the worker behind it and joins it, and only then returns the pool.
+    """
+    import threading
+    import time
+
+    from chat_rag.storage import ContentRepository, session_scope
+
+    key = "doc-engine-close-probe"
+    written = threading.Event()
+
+    def slow_build(built_key: str) -> dict:
+        time.sleep(0.4)
+        state = analysis._set_state(built_key, status=analysis.STATUS_READY)
+        written.set()
+        return state
+
+    monkeypatch.setattr(analysis, "build", slow_build)
+    packagers_before = sum(1 for t in threading.enumerate() if t.name == "viewer-analysis")
+
+    engine = Engine(EngineConfig(retrieval_profile="bm25_only"))
+    with engine.activate():
+        assert analysis.enqueue(key) == analysis.STATUS_PENDING
+        worker = analysis.state().worker
+    assert worker is not None and worker.is_alive()
+    pool = engine.services.runtime.database
+    assert not written.is_set(), "the build finished before the close could be a test of it"
+
+    engine.close()
+
+    assert written.is_set(), "the close abandoned a build it had accepted"
+    assert not worker.is_alive(), "the packager's worker outlived its engine"
+    with engine.activate():
+        assert analysis.state().worker is None
+        assert not analysis.state().inflight
+    assert pool.pool_status()["pool"] is None, "the connection pool was given back"
+    assert sum(1 for t in threading.enumerate() if t.name == "viewer-analysis") == packagers_before
+    with session_scope() as session:
+        assert ContentRepository(session).get(key)["status"] == analysis.STATUS_READY
+
+
 def test_the_stated_configuration_is_the_one_the_engine_runs_on():
     """``EngineConfig`` is a subset of ``Settings``, not a second system:
     what it states reaches the settings, and what it does not is inherited."""

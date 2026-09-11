@@ -142,7 +142,9 @@ class Services:
         return runtime_module.activate(self.runtime)
 
     def close(self) -> None:
-        """Give back what this engine holds: its workers, then its pool."""
+        """Give back what this engine holds: its ingest workers, then its
+        packager, then its pool -- each after the one whose writes it carries
+        (``Runtime.close`` says why the packager goes before the pool)."""
         jobs = getattr(self, "ingest_jobs", None)
         if jobs is not None:
             try:

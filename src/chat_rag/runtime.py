@@ -222,14 +222,22 @@ class Runtime:
             return self._analysis
 
     # ----------------------------------------------------------- shutdown
-    def close(self) -> None:
+    def close(self, timeout: float = 30.0) -> None:
         """Release what this runtime holds. Safe to call more than once.
 
-        The packager's worker is a daemon thread over an in-memory queue and
-        is left to the process; what has to be given back is the connection
-        pool, because a second engine in the same process would otherwise hold
-        its own pool open for the life of the interpreter.
+        The packager first, then the pool, in that order on purpose. The
+        packager's worker is a daemon thread over an in-memory queue; left
+        to the process it kept this runtime alive after its engine had been
+        closed and, on its next build, lazily rebuilt the pool that had just
+        been disposed. So the worker is told to stop behind whatever it was
+        already given, and joined -- bounded by ``timeout`` -- before the pool
+        goes, so the last build's state write lands on the pool that is
+        about to be returned rather than on a new one nobody would dispose.
         """
+        with self._lock:
+            packager = self._packager
+        if packager is not None:
+            packager.close(timeout)
         with self._lock:
             database, self._database = self._database, None
         if database is not None:

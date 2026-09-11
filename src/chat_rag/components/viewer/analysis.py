@@ -165,6 +165,41 @@ class PackagerState:
         #: worker.
         self.unit_resolver = None
 
+    def close(self, timeout: float = 30.0) -> bool:
+        """Finish what is queued, stop the worker, join it.
+
+        The worker is a daemon thread over an in-memory queue, which is right
+        for the product's one process and its one runtime -- the process's end
+        is the worker's. It is wrong for a library engine: an ``Engine`` that
+        is closed used to leave its worker alive for the life of the
+        interpreter, holding the runtime (and so its budgets, its counters and
+        the pool it would lazily rebuild) that the close had just given back.
+
+        The stop is a sentinel behind everything already queued, so every
+        build accepted before the close still completes -- a build is a state
+        write the packager owes -- and the worker exits when it reaches it.
+        The join is bounded; ``True`` means the worker is gone, ``False`` that
+        a build outlasted ``timeout`` and the worker will exit after it.
+        Nothing is queued after the sentinel by a closed engine, and a live
+        one asking again simply starts a worker again (``_ensure_worker``).
+        """
+        with self.lock:
+            worker = self.worker
+        if worker is None or not worker.is_alive():
+            return True
+        self.queue.put(_STOP)
+        worker.join(timeout)
+        stopped = not worker.is_alive()
+        if stopped:
+            with self.lock:
+                if self.worker is worker:
+                    self.worker = None
+        return stopped
+
+
+#: What the worker reads from its queue when it is told to stop.
+_STOP = object()
+
 
 def state() -> PackagerState:
     """This call's packager state -- the current runtime's.
@@ -1140,6 +1175,9 @@ def _run_worker(owner=None) -> None:
 def _worker_loop() -> None:
     while True:
         key = _S().queue.get()
+        if key is _STOP:
+            _S().queue.task_done()
+            return
         try:
             build(key)
             logger.info(f"Viewer analysis ready for {key}")
