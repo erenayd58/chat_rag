@@ -13,7 +13,14 @@ change it.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- `Engine.migrate()` and `migrate_database()` report a failed migration as
+  that migration's own error, and release the advisory lock. The unlock used
+  to run inside the aborted transaction, so what came back was
+  `InFailedSqlTransaction`, and the lock stayed with a pooled connection --
+  every other process's migrate then waited on it for as long as this one
+  lived.
 
 ## [0.1.0]
 

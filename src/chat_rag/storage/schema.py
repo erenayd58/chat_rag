@@ -37,6 +37,7 @@ query it will make.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional
 
@@ -44,6 +45,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from .engine import Database
+
+logger = logging.getLogger("RAG.storage")
 
 #: The advisory lock schema changes are made under. Any constant would do; it
 #: only has to be one nobody else in this database picks. Advisory locks are
@@ -116,10 +119,35 @@ def upgrade(database: Database) -> tuple[Optional[str], Optional[str]]:
                 command.upgrade(config, "head")
                 connection.commit()
             return before, head
+        except BaseException:
+            # A migration that failed leaves the transaction aborted, and an
+            # aborted transaction refuses every statement -- the unlock below
+            # included, which used to raise ``InFailedSqlTransaction`` *over*
+            # the migration's own error and leave the lock held by a pooled
+            # connection for the life of the process. The lock is the
+            # session's, not the transaction's: it survives the rollback,
+            # and the rollback is what makes the unlock possible.
+            connection.rollback()
+            raise
         finally:
-            # Released explicitly rather than left to the session's end, so
-            # the next process is not waiting on a connection this pool is
-            # merely keeping warm.
-            connection.execute(text("SELECT pg_advisory_unlock(:key)"),
-                               {"key": MIGRATION_LOCK_KEY})
-            connection.commit()
+            _unlock(connection)
+
+
+def _unlock(connection: Connection) -> None:
+    """Give the migration lock back, whatever state the connection is in.
+
+    Released explicitly rather than left to the session's end, so the next
+    process is not waiting on a connection this pool is merely keeping warm.
+    If the release itself fails, the connection is invalidated -- closed
+    rather than returned to the pool -- because a session-level lock ends
+    with its session, and that is the one release that cannot fail. Never
+    raises: an error here must not replace the one that may be in flight.
+    """
+    try:
+        connection.execute(text("SELECT pg_advisory_unlock(:key)"),
+                           {"key": MIGRATION_LOCK_KEY})
+        connection.commit()
+    except Exception as error:  # noqa: BLE001 - the lock goes with the session
+        logger.warning("could not release the migration lock (%s); "
+                       "closing its connection instead", type(error).__name__)
+        connection.invalidate()

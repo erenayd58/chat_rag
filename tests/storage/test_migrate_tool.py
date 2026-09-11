@@ -117,6 +117,53 @@ def test_a_second_migration_waits_for_the_first_rather_than_racing_it():
             holder.commit()
 
 
+def _lock_is_free() -> bool:
+    """Asked from a connection of its own: advisory locks are re-entrant within
+    one session, so the holder asking would be told yes for the wrong reason."""
+    with storage.engine().connect() as other:
+        acquired = other.execute(
+            text("SELECT pg_try_advisory_lock(:key)"), {"key": MIGRATION_LOCK_KEY}
+        ).scalar()
+        if acquired:
+            other.execute(text("SELECT pg_advisory_unlock(:key)"),
+                          {"key": MIGRATION_LOCK_KEY})
+            other.commit()
+    return bool(acquired)
+
+
+def test_a_failed_migration_raises_its_own_error_and_releases_the_lock(monkeypatch):
+    """A migration that fails leaves its transaction aborted, and an aborted
+    transaction refuses every statement. The unlock used to be one of them:
+    ``InFailedSqlTransaction`` came back *instead of* the migration's error,
+    and the lock stayed with the pooled connection for the life of the
+    process -- every other process's migrate then waited on it forever.
+    """
+    from alembic import command
+    from sqlalchemy.exc import ProgrammingError
+
+    from chat_rag import runtime
+    from chat_rag.storage import schema
+
+    def broken_upgrade(config, revision):
+        # What a migration with a mistake in it does: a statement that fails
+        # on the connection the lock was taken on.
+        config.attributes["connection"].execute(
+            text("CREATE TABLE migration_probe (x int, x int)"))
+
+    monkeypatch.setattr(schema, "head_revision", lambda: "somewhere-past-head")
+    monkeypatch.setattr(command, "upgrade", broken_upgrade)
+
+    with pytest.raises(ProgrammingError) as failure:
+        schema.upgrade(runtime.current().database)
+    assert "migration_probe" in str(failure.value), (
+        "the error that came back is not the migration's own")
+    assert _lock_is_free(), "the failed migration is still holding the lock"
+
+    # And the next attempt is not waiting on the last one.
+    monkeypatch.undo()
+    assert migrate.upgrade() == "current"
+
+
 # ------------------------------------------------------------------ the wait
 
 
