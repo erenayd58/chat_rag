@@ -725,3 +725,26 @@ def test_every_caller_shares_one_cache_entry_per_knowledge_base(wired):
         assert searched.status_code == 200, searched.text
 
     assert seen == ["global", "global", "global"], seen
+
+
+def test_an_unhandled_failure_answers_without_the_exceptions_text(api, monkeypatch, caplog):
+    """A 500 says that the server failed and no more. The exception's own text
+    is the log's: a database error names the host, the port and the database
+    it could not reach, and that reached the wire once."""
+    from chat_rag.application import ops
+
+    secret = "connection to server at db-internal.example, port 5432 failed"
+
+    def explode(_services):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(ops, "health", explode)
+    with caplog.at_level("ERROR", logger="RAG.api.v1"):
+        refused = api.client.get(f"{V1}/health")
+
+    assert refused.status_code == 500
+    body = refused.json()["error"]
+    assert body["type"] == "internal"
+    assert secret not in refused.text, "the exception's text reached the wire"
+    assert body["message"], "a 500 still says something"
+    assert secret in caplog.text, "the text went nowhere: the log must have it"

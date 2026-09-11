@@ -60,6 +60,11 @@ REFUSALS: dict[type, tuple[int, str]] = {
 #: What an unhandled exception is called. Never a message a client can act on,
 #: because nobody decided this one.
 INTERNAL = (500, "internal")
+#: What an unhandled exception says on the wire. The exception's own text is
+#: for the log: a database error names the host, the port and the database it
+#: could not reach, a provider error can quote a URL, and none of that belongs
+#: in a body served to whoever asked.
+INTERNAL_MESSAGE = "The server failed to handle this request; the log has the details."
 
 
 def _response(status: int, kind: str, message: str, *, details: dict | None = None,
@@ -151,12 +156,14 @@ async def http_error(_request: Request, error: HTTPException) -> JSONResponse:
                      headers=getattr(error, "headers", None))
 
 
-async def failed(_request: Request, error: Exception) -> JSONResponse:
+async def failed(request: Request, error: Exception) -> JSONResponse:
     """Anything nobody decided about: logged with its traceback, answered
-    without one."""
-    logger.error(f"v1 request failed: {error}", exc_info=True)
+    without one -- and without its text, which is the log's and not the
+    client's (see :data:`INTERNAL_MESSAGE`)."""
+    logger.error(f"v1 request failed: {request.method} {request.url.path}: "
+                 f"{type(error).__name__}: {error}", exc_info=True)
     status, kind = INTERNAL
-    return _response(status, kind, str(error))
+    return _response(status, kind, INTERNAL_MESSAGE)
 
 
 def install(app: FastAPI) -> None:
