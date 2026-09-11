@@ -10,18 +10,21 @@ test that replaces a seam on it is honoured by every route at once and no
 module in this package holds a reference of its own. It is the one object the
 process composed, handed in by ``interfaces.http.create_app``.
 
-The session id is the one thing this API takes from the transport that it did
-not ask for. It selects a cached pipeline and nothing else -- it is not
-identity, it is not authorisation, and this surface never sets it. A caller
-that carries one on the ASGI scope gets its own cache entry; there is no
-cookie to read otherwise, so the shared 'global' entry is used instead. Real
-sessions belong to the authentication work that is deliberately not in this
-step.
+The session id selects a cached pipeline and nothing else -- it is not
+identity, it is not authorisation, and this surface neither sets nor reads
+one. Every caller of a knowledge base shares its one pipeline: the store
+handle and the lexical index are the knowledge base's, not the caller's, and
+a pipeline built per caller was a pipeline built per request once the Flask
+cookie that used to name a browser went (Step 13) -- every question and every
+search read the whole corpus and rebuilt its index. The shared entry is what
+the pipeline cache invalidates on an ingest and a delete, and the library's
+``Engine`` still has a session of its own because two engines in one process
+must not share a cache entry. Real sessions belong to the authentication work
+that is deliberately not in this step.
 """
 
 from __future__ import annotations
 
-import uuid
 from typing import Annotated, Optional
 
 from fastapi import Depends, Query, Request
@@ -30,9 +33,7 @@ from chat_rag.application.services import Services
 
 from .envelope import clamp, whole_number
 
-#: Where a caller's session id is read from on the ASGI scope.
-SESSION_STATE = "session_id"
-#: The cache entry a caller with no session of its own shares.
+#: The cache entry every caller of this surface shares, per knowledge base.
 SHARED_SESSION = "global"
 
 
@@ -40,19 +41,14 @@ def container(request: Request) -> Services:
     return request.app.state.services
 
 
-def session_id(request: Request) -> str:
-    """The caller's pipeline-cache key, or the shared one."""
-    return getattr(request.state, SESSION_STATE, "") or SHARED_SESSION
+def session_id(_request: Request) -> str:
+    """The pipeline-cache key this surface uses: the shared one, always.
 
-
-def fresh_session_id(request: Request) -> str:
-    """The session id, or a new one for a caller that never took a page.
-
-    Used by the two POSTs, which are reachable by a client that never loaded a
-    screen; a fresh id gives that client its own cache entry rather than
-    sharing the one every anonymous caller would share.
+    A dependency rather than a constant so a route reads as "the session it
+    was given", and so the one place that decides what a session is on this
+    surface stays this function.
     """
-    return getattr(request.state, SESSION_STATE, "") or str(uuid.uuid4())
+    return SHARED_SESSION
 
 
 class Pagination:
@@ -89,5 +85,4 @@ def optional_number(raw: Optional[str]) -> Optional[int]:
 
 Container = Annotated[Services, Depends(container)]
 SessionId = Annotated[str, Depends(session_id)]
-FreshSessionId = Annotated[str, Depends(fresh_session_id)]
 Page = Annotated[Pagination, Depends(Pagination)]

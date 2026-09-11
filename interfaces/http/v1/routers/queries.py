@@ -34,7 +34,7 @@ from chat_rag.application import chunks as search_use_case
 from chat_rag.application import query as use_case
 from chat_rag.application.errors import InvalidRequest
 
-from ..dependencies import Container, FreshSessionId
+from ..dependencies import Container, SessionId
 from ..schemas import (
     AnalysisQueryRequest, AnalysisQueryResult, Answer, QueryRequest, ScoredChunk,
     SearchRequest, SearchResults,
@@ -54,7 +54,7 @@ MAX_SEARCH_RESULTS = 200
 
 @router.post("/queries", response_model=Answer,
              summary="Answer one question over one knowledge base")
-def ask(services: Container, session: FreshSessionId,
+def ask(services: Container, session: SessionId,
         payload: Annotated[QueryRequest, Body(default_factory=QueryRequest)]) -> Answer:
     """The answer carries its citations -- the sources it was given, each
     saying whether the answer actually used it -- and ``grounded``, which is
@@ -74,7 +74,7 @@ def ask(services: Container, session: FreshSessionId,
 
 @router.post("/searches", response_model=SearchResults,
              summary="Retrieval without an answer: the ranked chunks")
-def search(services: Container, session: FreshSessionId,
+def search(services: Container, session: SessionId,
            payload: Annotated[SearchRequest, Body(default_factory=SearchRequest)]
            ) -> SearchResults:
     """A method the configured retriever cannot serve is refused with **400**
@@ -109,7 +109,7 @@ def search(services: Container, session: FreshSessionId,
 
 @router.post("/analysis-queries", response_model=AnalysisQueryResult, tags=["analysis"],
              summary="One question, over one document, through each chunking method")
-def analysis_query(services: Container, session: FreshSessionId,
+def analysis_query(services: Container, session: SessionId,
                    payload: Annotated[AnalysisQueryRequest,
                                       Body(default_factory=AnalysisQueryRequest)]
                    ) -> AnalysisQueryResult:

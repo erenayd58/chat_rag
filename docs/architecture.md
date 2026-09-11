@@ -186,8 +186,11 @@ an HTTP break and an HTTP addition is not a Python one.
 
 The facade adds three things and no behaviour. It **owns a container and a
 runtime** (`build_services`, the same composition `asgi.py` performs), it
-**owns a session id** — the pipeline cache's key, which the HTTP surface takes
-from the transport and a library caller has no way to invent — and it **runs
+**owns a session id** — the pipeline cache's key. The HTTP surface uses one
+shared entry per knowledge base for every caller (a pipeline is the knowledge
+base's store handle and lexical index, not the caller's, and the surface
+carries no session of its own); a library engine has an id of its own so two
+engines in one process cannot share a cache entry — and it **runs
 every call inside its own activation**, so the store, the budgets, the counters
 and the packaging queue a call reaches for are that engine's. A rule it appears
 to enforce lives in a use case; a refusal it raises is that use case's own

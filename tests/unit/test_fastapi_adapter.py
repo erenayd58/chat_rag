@@ -704,10 +704,13 @@ def test_the_operator_route_answers_from_the_same_container(wired):
     assert body["ingest"]["workers"] == wired.container.ingest_jobs.snapshot()["workers"]
 
 
-def test_a_caller_with_no_session_of_its_own_shares_one_cache_entry(wired):
+def test_every_caller_shares_one_cache_entry_per_knowledge_base(wired):
     """The session id selects a cached pipeline and nothing else. There is no
-    cookie on this surface, so a plain client gets the shared entry rather
-    than a pipeline of its own per request."""
+    cookie on this surface, so every caller gets the shared entry -- the two
+    POSTs included. They used to be given a fresh id per request, which was
+    a fresh pipeline per request: the whole corpus read and its lexical index
+    rebuilt for every question and every search once the Flask cookie that
+    made those ids stable went with Step 13."""
     seen: list[str] = []
     wired.container.get_pipeline = lambda session_id, kb_id=None: (
         seen.append(session_id) or Pipeline(wired.store))
@@ -716,5 +719,9 @@ def test_a_caller_with_no_session_of_its_own_shares_one_cache_entry(wired):
         answered = client.get(f"{V1}/meta/models")
         assert answered.status_code == 200
         assert "set-cookie" not in answered.headers, "this surface starts no session"
+        asked = client.post(f"{V1}/queries", json={"question": "soru"})
+        assert asked.status_code == 200, asked.text
+        searched = client.post(f"{V1}/searches", json={"query": "soru", "method": "bm25"})
+        assert searched.status_code == 200, searched.text
 
-    assert seen == ["global"], seen
+    assert seen == ["global", "global", "global"], seen

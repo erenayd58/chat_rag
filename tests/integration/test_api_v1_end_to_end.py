@@ -445,3 +445,73 @@ def test_deleting_a_knowledge_base_takes_its_corpus_and_leaves_the_ledger_row(ap
     # Its vectors do not: the collection went with the knowledge base.
     reborn = _knowledge_base(api, "Yeni")["id"]
     assert _ok(api.get(f"{V1}/knowledge-bases/{reborn}/chunks"))["page"]["total"] == 0
+
+
+# =========================================================== the pipeline
+def test_repeated_questions_and_searches_reuse_one_pipeline_and_read_the_corpus_once(
+        api, monkeypatch):
+    """A question is not a reason to build a pipeline.
+
+    The two POSTs used to be given a fresh session id per request, and the
+    session is the pipeline cache's key: every question and every search
+    built a pipeline of its own, and building one reads the whole corpus
+    and indexes it. Every caller of a knowledge base shares its one
+    pipeline now, so a burst of requests is one build, one read of the
+    corpus, and then cache hits.
+    """
+    from chat_rag.components.vectordb.pgvector_store import PgVectorStore
+
+    reads: list[str] = []
+    read_all = PgVectorStore.get_all_chunks
+    monkeypatch.setattr(PgVectorStore, "get_all_chunks",
+                        lambda store: reads.append(store.collection) or read_all(store))
+
+    kb_id = _knowledge_base(api, "Yillik raporlar")["id"]
+    document_id = _document_of(api, _upload(api, kb_id))
+    # The packager builds this upload's analysis on its own thread; waiting
+    # for it keeps the counts below about the five requests and nothing else.
+    _ready_analysis(api, document_id)
+    cache = api.services.pipeline_cache
+    misses_before = cache.stats["misses"]
+    reads_before = len(reads)
+
+    for _ in range(3):
+        assert _ok(api.post(f"{V1}/searches", json={
+            "query": "takipteki alacaklar", "knowledge_base_id": kb_id,
+            "method": "bm25"}))["items"]
+    for _ in range(2):
+        assert _ok(api.post(f"{V1}/queries", json={
+            "question": "Takipteki alacaklar nasil degisti?",
+            "knowledge_base_id": kb_id}))["citations"]
+
+    assert cache.stats["misses"] == misses_before, (
+        "a request built a pipeline: the cache missed on a knowledge base "
+        "whose pipeline the ingest had already built")
+    assert len(reads) == reads_before, (
+        f"the corpus was read {len(reads) - reads_before} more time(s) for "
+        "five requests that should have hit one index")
+    assert cache.snapshot()["size"] == len(cache.snapshot()["knowledge_bases"]), (
+        "more than one pipeline for one knowledge base: a session of its own "
+        "per request is back")
+
+
+def test_a_second_upload_reaches_searches_through_the_shared_pipeline(api):
+    """The shared entry is the one the ingest writes through, so the index a
+    search reads is the one the ingest just rebuilt -- and the rebuild is the
+    ingest's, once, not every search's."""
+    kb_id = _knowledge_base(api, "Karisik")["id"]
+    first = _document_of(api, _upload(api, kb_id))
+    assert _ok(api.post(f"{V1}/searches", json={
+        "query": "takipteki alacaklar", "knowledge_base_id": kb_id,
+        "method": "bm25"}))["items"][0]["document_id"] == first
+
+    second = _document_of(
+        api, _upload(api, kb_id, name="surdurulebilirlik.md", text=OTHER_DOCUMENT))
+    _ready_analysis(api, second)
+    misses = api.services.pipeline_cache.stats["misses"]
+
+    found = _ok(api.post(f"{V1}/searches", json={
+        "query": "karbon ayak izi yenilenebilir enerji", "knowledge_base_id": kb_id,
+        "method": "bm25"}))
+    assert found["items"][0]["document_id"] == second
+    assert api.services.pipeline_cache.stats["misses"] == misses

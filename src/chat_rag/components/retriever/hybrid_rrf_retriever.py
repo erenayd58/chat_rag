@@ -22,6 +22,7 @@ index", which is the same answer a missing file gave.
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +40,7 @@ from chat_rag.core.exceptions import EmbeddingException, RetrieverException
 from chat_rag.core.models import DocumentChunk, RetrievalResult
 
 from .bm25_only_retriever import BM25_B, BM25_K1, fold_turkish
+from .built_index import BuiltIndex, IndexHolder
 
 RRF_RANK_CONSTANT = 60
 CANDIDATE_POOL_SIZE = 50
@@ -94,12 +96,42 @@ class HybridRRFRetriever:
         self.vector_db = vector_db
         self.rank_constant = rank_constant
         self.candidate_pool_size = candidate_pool_size
-        self.chunks_list: List[DocumentChunk] = []
-        self._chunks_by_id: Dict[str, DocumentChunk] = {}
-        self._chunks_by_position: Dict[tuple, DocumentChunk] = {}
-        self._bm25: Optional[DeterministicBM25] = None
+        # One reference to one immutable index (``built_index.py`` says why):
+        # a pipeline is shared by every caller of its knowledge base, and a
+        # rebuild on one thread must not be half-visible to a search on another.
+        self._index = IndexHolder()
         self._index_status: Optional[Dict[str, Any]] = None
-        self.last_stats: Dict[str, Any] = {}
+        # Per thread, for the same reason: the pipeline reads these right after
+        # its own search, and a concurrent search must not overwrite them.
+        self._stats = threading.local()
+
+    # ------------------------------------------------------- index state
+    #
+    # The names the rest of the product and its tests read, answered from the
+    # one built index so they can never disagree with each other.
+    @property
+    def chunks_list(self) -> List[DocumentChunk]:
+        built = self._index.current
+        return list(built.chunks) if built is not None else []
+
+    @property
+    def _chunks_by_id(self) -> Dict[str, DocumentChunk]:
+        built = self._index.current
+        return dict(built.by_id) if built is not None else {}
+
+    @property
+    def _bm25(self) -> Optional[DeterministicBM25]:
+        built = self._index.current
+        return built.engine if built is not None else None
+
+    @property
+    def last_stats(self) -> Dict[str, Any]:
+        """What the last search *on this thread* did."""
+        return getattr(self._stats, "value", {})
+
+    @last_stats.setter
+    def last_stats(self, value: Dict[str, Any]) -> None:
+        self._stats.value = value
 
     # ------------------------------------------------------------- config
     @property
@@ -152,7 +184,7 @@ class HybridRRFRetriever:
         try:
             stored_count = int(self.vector_db.count())
         except Exception:
-            stored_count = len(self.chunks_list)
+            stored_count = len(self._index.current or ())
         self._index_status = index_status(
             manifest=self._manifest(),
             identity=_identity(self.embedding_model),
@@ -183,7 +215,7 @@ class HybridRRFRetriever:
         try:
             count = int(self.vector_db.count())
         except Exception:
-            count = len(self.chunks_list)
+            count = len(self._index.current or ())
         manifest = writer(build_manifest(
             _identity(self.embedding_model), dimension=dimension, chunk_count=count
         ))
@@ -199,26 +231,28 @@ class HybridRRFRetriever:
         return False, status["reason"]
 
     # ------------------------------------------------------------ indexes
+    @staticmethod
+    def _build(chunks: List[DocumentChunk]) -> BuiltIndex:
+        return BuiltIndex.over(chunks, lambda ordered: DeterministicBM25(
+            [fold_turkish(_lexical_text(chunk)) for chunk in ordered],
+            k1=BM25_K1, b=BM25_B))
+
     def build_index(self, chunks: List[DocumentChunk], *args: Any, **kwargs: Any) -> None:
-        ordered = sorted(chunks, key=lambda chunk: chunk.chunk_id)
-        self.chunks_list = ordered
-        self._chunks_by_id = {chunk.chunk_id: chunk for chunk in ordered}
-        self._chunks_by_position = {
-            (chunk.doc_id, int(chunk.chunk_index)): chunk for chunk in ordered
-        }
-        self._bm25 = (
-            DeterministicBM25([fold_turkish(_lexical_text(chunk)) for chunk in ordered],
-                              k1=BM25_K1, b=BM25_B)
-            if ordered else None
-        )
+        """Index these chunks: the pipeline that wrote them, after its write."""
+        self._index.replace(self._build(chunks))
         self._index_status = None
 
     def build_keyword_index(self, chunks: List[DocumentChunk]) -> None:
         self.build_index(chunks)
 
-    def ensure_index(self) -> None:
-        if self._bm25 is None and not self.chunks_list:
-            self.build_index(self.vector_db.get_all_chunks())
+    def ensure_index(self) -> BuiltIndex:
+        """The index to search with, built from the store if there is none.
+
+        Returned rather than only made, because a search must use the one it
+        was handed for the whole of itself; reading ``self`` again half way
+        through is how a concurrent rebuild gets in.
+        """
+        return self._index.ensure(lambda: self._build(self.vector_db.get_all_chunks()))
 
     def invalidate_index(self) -> None:
         """Forget the lexical index so the next search rebuilds it.
@@ -229,24 +263,21 @@ class HybridRRFRetriever:
         that knowledge base is told here, and rebuilds lazily on its next
         query rather than eagerly for a user who may never come back.
         """
-        self._bm25 = None
-        self.chunks_list = []
-        self._chunks_by_id = {}
-        self._chunks_by_position = {}
+        self._index.replace(None)
         self._index_status = None
 
     def neighbor(self, chunk: DocumentChunk, offset: int) -> Optional[DocumentChunk]:
         """The adjacent chunk of the same document, if indexed."""
-        self.ensure_index()
-        return self._chunks_by_position.get((chunk.doc_id, int(chunk.chunk_index) + offset))
+        built = self.ensure_index()
+        return built.by_position.get((chunk.doc_id, int(chunk.chunk_index) + offset))
 
     def chunk_by_id(self, chunk_id: str) -> Optional[DocumentChunk]:
-        self.ensure_index()
-        return self._chunks_by_id.get(chunk_id)
+        return self.ensure_index().by_id.get(chunk_id)
 
     # ------------------------------------------------------------- search
-    def _chunk_from_hit(self, hit: Dict[str, Any]) -> DocumentChunk:
-        known = self._chunks_by_id.get(hit["chunk_id"])
+    @staticmethod
+    def _chunk_from_hit(built: BuiltIndex, hit: Dict[str, Any]) -> DocumentChunk:
+        known = built.by_id.get(hit["chunk_id"])
         if known is not None:
             return known
         metadata = hit.get("metadata") or {}
@@ -269,7 +300,7 @@ class HybridRRFRetriever:
                 + str(self.index_status.get("reason"))
             )
         try:
-            self.ensure_index()
+            built = self.ensure_index()
             vector = self.embedding_model.encode_queries([query])[0]
             hits = self.vector_db.query(np.asarray(vector, dtype=float).tolist(), top_k=top_k)
         except EmbeddingException:
@@ -281,7 +312,8 @@ class HybridRRFRetriever:
             distance = hit.get("distance")
             score = 1.0 - float(distance) if distance is not None else 0.0
             result = RetrievalResult(
-                chunk=self._chunk_from_hit(hit), score=score, retrieval_method="dense", rank=rank
+                chunk=self._chunk_from_hit(built, hit), score=score,
+                retrieval_method="dense", rank=rank,
             )
             result.dense_rank = rank + 1
             result.dense_score = score
@@ -292,19 +324,20 @@ class HybridRRFRetriever:
 
     def keyword_search(self, query: str, top_k: int = 10, **kwargs: Any) -> List[RetrievalResult]:
         try:
-            self.ensure_index()
-            if self._bm25 is None:
+            built = self.ensure_index()
+            if built.engine is None:
                 return []
-            scores = self._bm25.scores(fold_turkish(query))
+            chunks = built.chunks
+            scores = built.engine.scores(fold_turkish(query))
             order = sorted(
-                range(len(self.chunks_list)),
-                key=lambda i: (-float(scores[i]), self.chunks_list[i].chunk_id),
+                range(len(chunks)),
+                key=lambda i: (-float(scores[i]), chunks[i].chunk_id),
             )
             results: List[RetrievalResult] = []
             for rank, index in enumerate(order[:top_k]):
                 if float(scores[index]) <= 0.0:
                     break
-                chunk = self.chunks_list[index]
+                chunk = chunks[index]
                 result = RetrievalResult(
                     chunk=chunk, score=float(scores[index]), retrieval_method="bm25", rank=rank
                 )

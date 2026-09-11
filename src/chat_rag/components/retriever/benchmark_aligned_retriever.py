@@ -19,6 +19,8 @@ from chat_rag.components.vectordb import BaseVectorDB
 from chat_rag.core.exceptions import ConfigurationException, RetrieverException
 from chat_rag.core.models import DocumentChunk, RetrievalResult
 
+from .built_index import BuiltIndex, IndexHolder
+
 
 FROZEN_RETRIEVAL_COMMIT = "1e7f7186c13729c739ccb3170da0892f7350cb27"
 FROZEN_RETRIEVAL_CONFIG = {
@@ -137,9 +139,26 @@ class BenchmarkAlignedRetriever:
         self.embedding_model = embedding_model
         self.vector_db = vector_db
         self.config = _frozen_config(config)
-        self.chunks_list: List[DocumentChunk] = []
-        self._chunks_by_id: dict[str, DocumentChunk] = {}
-        self._index: DeterministicHybridIndex | None = None
+        # One reference to one immutable index (``built_index.py`` says why):
+        # the pipeline is shared by every caller of its knowledge base.
+        self._built = IndexHolder()
+
+    # The names the rest of the product and its tests read, answered from
+    # the one built index so they can never disagree with each other.
+    @property
+    def chunks_list(self) -> List[DocumentChunk]:
+        built = self._built.current
+        return list(built.chunks) if built is not None else []
+
+    @property
+    def _chunks_by_id(self) -> dict[str, DocumentChunk]:
+        built = self._built.current
+        return dict(built.by_id) if built is not None else {}
+
+    @property
+    def _index(self) -> DeterministicHybridIndex | None:
+        built = self._built.current
+        return built.engine if built is not None else None
 
     @staticmethod
     def _retrieval_document(chunk: DocumentChunk) -> RetrievalDocument:
@@ -165,54 +184,54 @@ class BenchmarkAlignedRetriever:
         that knowledge base is told here, and rebuilds lazily on its next
         query rather than eagerly for a user who may never come back.
         """
-        self._index = None
-        self.chunks_list = []
-        self._chunks_by_id = {}
+        self._built.replace(None)
+
+    def _build(self, chunks: List[DocumentChunk],
+               document_embeddings: np.ndarray | None = None) -> BuiltIndex:
+        def engine(ordered):
+            embeddings = (
+                self.embedding_model.encode_documents([chunk.content for chunk in ordered])
+                if document_embeddings is None
+                else np.asarray(document_embeddings, dtype=np.float32)
+            )
+            bm25 = self.config["bm25"]
+            rrf = self.config["rrf"]
+            return DeterministicHybridIndex(
+                documents=[self._retrieval_document(chunk) for chunk in ordered],
+                document_embeddings=embeddings,
+                bm25_k1=bm25["k1"],
+                bm25_b=bm25["b"],
+                rrf_rank_constant=rrf["rank_constant"],
+                dense_weight=rrf["dense_weight"],
+                bm25_weight=rrf["bm25_weight"],
+                candidate_pool_size=rrf["candidate_pool_size"],
+            )
+
+        return BuiltIndex.over(chunks, engine)
 
     def build_index(
         self,
         chunks: List[DocumentChunk],
         document_embeddings: np.ndarray | None = None,
     ) -> None:
-        ordered = sorted(chunks, key=lambda chunk: chunk.chunk_id)
-        self.chunks_list = ordered
-        self._chunks_by_id = {chunk.chunk_id: chunk for chunk in ordered}
-        if not ordered:
-            self._index = None
-            return
-        embeddings = (
-            self.embedding_model.encode_documents([chunk.content for chunk in ordered])
-            if document_embeddings is None
-            else np.asarray(document_embeddings, dtype=np.float32)
-        )
-        bm25 = self.config["bm25"]
-        rrf = self.config["rrf"]
-        self._index = DeterministicHybridIndex(
-            documents=[self._retrieval_document(chunk) for chunk in ordered],
-            document_embeddings=embeddings,
-            bm25_k1=bm25["k1"],
-            bm25_b=bm25["b"],
-            rrf_rank_constant=rrf["rank_constant"],
-            dense_weight=rrf["dense_weight"],
-            bm25_weight=rrf["bm25_weight"],
-            candidate_pool_size=rrf["candidate_pool_size"],
-        )
+        self._built.replace(self._build(chunks, document_embeddings))
 
-    def ensure_index(self) -> None:
-        if self._index is None:
-            self.build_index(self.vector_db.get_all_chunks())
+    def ensure_index(self) -> BuiltIndex:
+        """The index to search with, built from the store if there is none.
+        Returned, so a search uses one index for the whole of itself."""
+        return self._built.ensure(lambda: self._build(self.vector_db.get_all_chunks()))
 
     def hybrid_search(self, query: str, top_k: int = 5, *args, **kwargs):
         try:
-            self.ensure_index()
-            if self._index is None:
+            built = self.ensure_index()
+            if built.engine is None:
                 return []
             query_vector = self.embedding_model.encode_queries([query])[0]
-            hits = self._index.search(query, query_vector, top_k=top_k)
+            hits = built.engine.search(query, query_vector, top_k=top_k)
             results: List[RetrievalResult] = []
             for hit in hits:
                 result = RetrievalResult(
-                    chunk=self._chunks_by_id[hit.chunk_id],
+                    chunk=built.by_id[hit.chunk_id],
                     score=hit.rrf_score,
                     retrieval_method="benchmark_aligned_rrf",
                     rank=hit.rank - 1,

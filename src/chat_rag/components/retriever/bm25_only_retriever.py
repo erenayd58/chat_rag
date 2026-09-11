@@ -20,6 +20,8 @@ from amsc.retrieval.pipeline import DeterministicBM25
 from chat_rag.core.exceptions import RetrieverException
 from chat_rag.core.models import DocumentChunk, RetrievalResult
 
+from .built_index import BuiltIndex, IndexHolder
+
 BM25_K1 = 1.5
 BM25_B = 0.75
 
@@ -78,9 +80,9 @@ class BM25OnlyRetriever:
     def __init__(self, embedding_model: Any, vector_db: Any) -> None:
         self.embedding_model = embedding_model
         self.vector_db = vector_db
-        self.chunks_list: List[DocumentChunk] = []
-        self._chunks_by_id: dict[str, DocumentChunk] = {}
-        self._bm25: DeterministicBM25 | None = None
+        # One reference to one immutable index (``built_index.py`` says why):
+        # the pipeline is shared by every caller of its knowledge base.
+        self._index = IndexHolder()
 
     @property
     def config(self) -> dict:
@@ -89,25 +91,38 @@ class BM25OnlyRetriever:
             "dense": None,
         }
 
+    # The names the rest of the product and its tests read, answered from
+    # the one built index so they can never disagree with each other.
+    @property
+    def chunks_list(self) -> List[DocumentChunk]:
+        built = self._index.current
+        return list(built.chunks) if built is not None else []
+
+    @property
+    def _chunks_by_id(self) -> dict[str, DocumentChunk]:
+        built = self._index.current
+        return dict(built.by_id) if built is not None else {}
+
+    @property
+    def _bm25(self) -> DeterministicBM25 | None:
+        built = self._index.current
+        return built.engine if built is not None else None
+
+    @staticmethod
+    def _build(chunks: List[DocumentChunk]) -> BuiltIndex:
+        return BuiltIndex.over(chunks, lambda ordered: DeterministicBM25(
+            [fold_turkish(chunk.content) for chunk in ordered], k1=BM25_K1, b=BM25_B))
+
     def build_index(self, chunks: List[DocumentChunk], *args, **kwargs) -> None:
-        ordered = sorted(chunks, key=lambda chunk: chunk.chunk_id)
-        self.chunks_list = ordered
-        self._chunks_by_id = {chunk.chunk_id: chunk for chunk in ordered}
-        if not ordered:
-            self._bm25 = None
-            return
-        self._bm25 = DeterministicBM25(
-            [fold_turkish(chunk.content) for chunk in ordered],
-            k1=BM25_K1,
-            b=BM25_B,
-        )
+        self._index.replace(self._build(chunks))
 
     def build_keyword_index(self, chunks: List[DocumentChunk]) -> None:
         self.build_index(chunks)
 
-    def ensure_index(self) -> None:
-        if self._bm25 is None:
-            self.build_index(self.vector_db.get_all_chunks())
+    def ensure_index(self) -> BuiltIndex:
+        """The index to search with, built from the store if there is none.
+        Returned, so a search uses one index for the whole of itself."""
+        return self._index.ensure(lambda: self._build(self.vector_db.get_all_chunks()))
 
     def invalidate_index(self) -> None:
         """Forget the lexical index so the next search rebuilds it.
@@ -118,23 +133,22 @@ class BM25OnlyRetriever:
         that knowledge base is told here, and rebuilds lazily on its next
         query rather than eagerly for a user who may never come back.
         """
-        self._bm25 = None
-        self.chunks_list = []
-        self._chunks_by_id = {}
+        self._index.replace(None)
 
     def hybrid_search(self, query: str, top_k: int = 5, *args, **kwargs) -> List[RetrievalResult]:
         try:
-            self.ensure_index()
-            if self._bm25 is None:
+            built = self.ensure_index()
+            if built.engine is None:
                 return []
-            scores = self._bm25.scores(fold_turkish(query))
+            chunks = built.chunks
+            scores = built.engine.scores(fold_turkish(query))
             order = sorted(
-                range(len(self.chunks_list)),
-                key=lambda i: (-float(scores[i]), self.chunks_list[i].chunk_id),
+                range(len(chunks)),
+                key=lambda i: (-float(scores[i]), chunks[i].chunk_id),
             )
             results: List[RetrievalResult] = []
             for rank, index in enumerate(order[:top_k]):
-                chunk = self.chunks_list[index]
+                chunk = chunks[index]
                 result = RetrievalResult(
                     chunk=chunk,
                     score=float(scores[index]),
