@@ -202,15 +202,17 @@ These fail loudly and mean something specific:
 |---|---|
 | `chunk/tests/unit/test_library_surface.py` | nothing on the library's product path imports research or legacy code — and names the import chain that broke it |
 | `chat_rag/tests/unit/test_amsc_surface.py` | product code imports only `amsc.surface.CONSOLE_API` |
-| `chat_rag/tests/unit/test_amsc_pin.py` | the pinned `amsc` revision provides every symbol the product imports, is on a remote branch, and the requirement line is shaped so pip can read it |
+| `chat_rag/tests/unit/test_amsc_pin.py` | the pinned `amsc` revision provides every symbol the product imports, is on a remote branch, the requirement line is shaped so pip can read it, and `pyproject.toml` pins the same commit as a direct reference |
 | `chat_rag/tests/unit/test_configuration.py` | the precedence rule, one owner per default, `env.example` cannot drift from the code, and every setting that is read is also applied |
 | `chat_rag/tests/unit/test_provider_surface.py` | every shipped answer transport can be selected, is documented, and honours the query deadline |
 | `chat_rag/tests/unit/test_state_isolation.py` | a test run cannot write to the developer's real state |
 | `chunk/tests/unit/test_methods_registry.py` | the chunking-method registry is the one source of method identity, and a method registered in it reaches every consumer — including a Viewer page built before it existed |
 | `chat_rag/tests/unit/test_chunker_extension.py` | one registration in the library is a console method: catalogue, API, upload, packager, Viewer routes — with no edit in this repository |
-| `chat_rag/tests/unit/test_promote_chunk_pin.py` | the pin-promotion command moves only the sha, and refuses an unpushed, uncommitted or untracked revision |
+| `chat_rag/tests/unit/test_promote_chunk_pin.py` | the pin-promotion command moves only the sha, in both files that name it, and refuses an unpushed, uncommitted or untracked revision |
 | `chat_rag/tests/unit/test_public_surface.py` | the published API is exactly `chat_rag.api.__all__`, both import paths agree, and no internal type reaches a public signature — no public *parameter* names one at all |
-| `chat_rag/tests/unit/test_distribution.py` | what is in the wheel: the library and its migrations ship, the FastAPI adapter, `asgi.py`, `cli/` and `tools/` do not, and no web framework is a declared dependency |
+| `chat_rag/tests/unit/test_distribution.py` | what is in the wheel: the library and its migrations ship, the FastAPI adapter, `asgi.py`, `cli/` and `tools/` do not, no web framework is a declared dependency, and `amsc-poc` is declared as a direct reference to the pinned commit |
+| `chat_rag/tests/integration/test_clean_install.py` | the wheel and the sdist each install into an empty venv naming nothing else, and the installed library builds its schema in an empty database, ingests and searches (network and `git` needed; `-k "not clean_install"` offline) |
+| `chat_rag/tests/integration/test_public_migration.py` | `Engine.migrate()` / `migrate_database()` create, upgrade and report `current` against an empty database, and refuse with the published exceptions |
 
 ---
 
@@ -228,10 +230,14 @@ python tools/wheel_smoke.py    # the library installs into an empty venv and wor
 
 The third answers a different question from the first two. They ask whether
 this *repository* runs; `wheel_smoke` asks whether the **distribution** does —
-it builds the wheel, installs it into an interpreter with nothing else in it,
-and checks that the published surface is intact, the migrations are in the
-package, `interfaces`/`asgi`/`cli` are not, importing the surface loads no
-torch, and asking for what an extra provides is refused by name.
+it builds the wheel, installs it into an interpreter with nothing else in it
+(nothing else named, either: the wheel's own metadata is what fetches
+`amsc-poc`), and checks that the published surface is intact, the migrations
+are in the package, `interfaces`/`asgi`/`cli` are not, importing the surface
+loads no torch, and asking for what an extra provides is refused by name.
+`--sdist` builds and installs the source distribution the same way;
+`--database-url` (an empty database of its own) adds the first use —
+`migrate_database()`, a knowledge base, a Markdown ingest, a lexical search;
 `--with-extras` installs `chat-rag[all]` as well, which downloads torch.
 
 A fourth tool sits beside them but answers a release question rather than a
@@ -350,8 +356,9 @@ and less clearly:
                                     revision that is unpushed or that HEAD does
                                     not contain (an untracked new file included),
                                     rewrites the sha in requirements.txt and
-                                    runs tests/unit/test_amsc_pin.py, putting
-                                    the file back if that fails
+                                    pyproject.toml and runs
+                                    tests/unit/test_amsc_pin.py, putting both
+                                    files back if that fails
 5.  python -m pytest -q             the rest of the chat_rag suite
 6.  python tools/verify_reproducibility.py     the declared source installs
 ```
@@ -371,6 +378,11 @@ Notes that save an afternoon:
   fail outright while every suite stayed green. `test_amsc_pin.py` checks the
   line's shape for exactly this reason, and `promote_chunk_pin.py` rewrites
   only the sha of that one line so the shape cannot be lost by hand again.
+* **The pin lives in two files.** `requirements.txt` is what this repository
+  and the image install; `pyproject.toml` is what the wheel declares, so a
+  consumer's `pip install` can fetch `amsc-poc` unaided. `test_amsc_pin.py`
+  holds them equal and the promotion tool moves them together — never edit
+  one by hand.
 * **Adding a name to `amsc.surface.CONSOLE_API` is part of step 1**, not an
   afterthought: the console may import nothing else, and the guard on both
   sides reads the declaration from the installed library.

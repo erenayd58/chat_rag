@@ -200,19 +200,20 @@ def _build_schema() -> None:
     asserted once.
     """
     from alembic import command
-    from alembic.config import Config
     from sqlalchemy import text
 
     from chat_rag import storage
+    from chat_rag.storage.schema import alembic_config
 
     with storage.engine().connect() as connection:
         connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
         connection.execute(text("CREATE SCHEMA public"))
         connection.commit()
 
-    settings = Config(os.path.join(REPO_ROOT, "alembic.ini"))
-    settings.set_main_option("script_location", os.path.join(REPO_ROOT, "src", "chat_rag", "storage", "migrations"))
-    command.upgrade(settings, "head")
+    # The package's own configuration, not ``alembic.ini``: the migrations are
+    # found from where ``chat_rag.storage`` is, which is what an installed
+    # wheel has and a checkout's ini file does not describe.
+    command.upgrade(alembic_config(), "head")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -254,6 +255,43 @@ def _empty_tables(_database):
             "TRUNCATE TABLE " + ", ".join(ALL_TABLES) + " RESTART IDENTITY CASCADE"
         ))
     yield
+
+
+@pytest.fixture
+def fresh_database():
+    """A database of this test's own, created and dropped around it.
+
+    Made beside the suite's own, on the same server, so a test can prove a
+    claim about an *empty* PostgreSQL -- the migrations building a schema, a
+    library engine migrating its own database -- rather than about whatever
+    the session has already built. Yields the URL; nothing is applied to it.
+    """
+    import uuid
+
+    from sqlalchemy import create_engine, text
+
+    from chat_rag import storage
+    from chat_rag.storage.engine import configured_settings
+
+    settings = configured_settings()
+    name = "chat_rag_fresh_" + uuid.uuid4().hex[:12]
+    # AUTOCOMMIT: CREATE DATABASE cannot run inside a transaction block.
+    admin = create_engine(settings.url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as connection:
+        connection.execute(text(f'CREATE DATABASE "{name}"'))
+    url = settings.url.rsplit("/", 1)[0] + "/" + name
+    try:
+        yield url
+    finally:
+        storage.dispose()  # nothing of ours may still hold a connection to it
+        with admin.connect() as connection:
+            connection.execute(
+                text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                     "WHERE datname = :name"),
+                {"name": name},
+            )
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+        admin.dispose()
 
 
 @pytest.fixture

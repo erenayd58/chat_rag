@@ -8,9 +8,10 @@ does the copying.
 
 What is tested here is the part a mistake hides in -- the refusals -- and the
 one guarantee that makes the tool safe to reach for: it rewrites the sha of
-the one requirement line and touches nothing else in the file. Each case runs
-against a throwaway git repository built in ``tmp_path``, so no network, no
-sibling checkout and no state of the developer's is involved.
+the one requirement in each of the two files that name it and touches nothing
+else in either. Each case runs against a throwaway git repository built in
+``tmp_path``, so no network, no sibling checkout and no state of the
+developer's is involved.
 """
 
 from __future__ import annotations
@@ -30,6 +31,14 @@ sentence-transformers
 amsc-poc @ git+https://github.com/erenayd58/chunk.git@{sha}
 openai
 flask
+"""
+
+PYPROJECT_BEFORE = """[project]
+name = "chat-rag"
+dependencies = [
+  "amsc-poc @ git+https://github.com/erenayd58/chunk.git@{sha}",
+  "SQLAlchemy>=2.0",
+]
 """
 
 
@@ -66,10 +75,14 @@ def library(tmp_path):
 
 @pytest.fixture
 def requirements(tmp_path, monkeypatch):
-    """A requirements.txt of our own, so no test can rewrite the real one."""
+    """A requirements.txt and a pyproject.toml of our own, so no test can
+    rewrite the real ones."""
     path = tmp_path / "requirements.txt"
     path.write_text(REQUIREMENTS_BEFORE.format(sha="0" * 40), encoding="utf-8")
+    wheel = tmp_path / "pyproject.toml"
+    wheel.write_text(PYPROJECT_BEFORE.format(sha="0" * 40), encoding="utf-8")
     monkeypatch.setattr(promote, "REQUIREMENTS", path)
+    monkeypatch.setattr(promote, "PYPROJECT", wheel)
     monkeypatch.setattr(promote, "validate", lambda python: subprocess.CompletedProcess([], 0, "", ""))
     return path
 
@@ -89,7 +102,17 @@ def test_it_writes_the_new_sha_and_changes_nothing_else(library, requirements, c
     assert run(library) == 0
     after = requirements.read_text(encoding="utf-8")
     assert after == REQUIREMENTS_BEFORE.format(sha=head(library))
+    assert promote.PYPROJECT.read_text(encoding="utf-8") == PYPROJECT_BEFORE.format(sha=head(library))
     assert "wrote" in capsys.readouterr().out
+
+
+def test_two_pins_that_have_drifted_are_brought_together(library, requirements):
+    """The failure two copies of a value invite: one moved, the other not.
+    A promotion always writes both, so a pin that is already right in one
+    file is not a reason to leave the other behind."""
+    requirements.write_text(REQUIREMENTS_BEFORE.format(sha=head(library)), encoding="utf-8")
+    assert run(library) == 0
+    assert promote.PYPROJECT.read_text(encoding="utf-8") == PYPROJECT_BEFORE.format(sha=head(library))
 
 
 def test_promoting_the_same_commit_twice_is_a_no_op(library, requirements, capsys):
@@ -170,6 +193,7 @@ def test_a_failing_pin_test_puts_requirements_back(library, requirements, monkey
     )
     assert run(library) == 1
     assert requirements.read_text(encoding="utf-8") == before
+    assert promote.PYPROJECT.read_text(encoding="utf-8") == PYPROJECT_BEFORE.format(sha="0" * 40)
     assert "put back" in capsys.readouterr().err
 
 
@@ -187,12 +211,27 @@ def test_only_the_sha_of_the_one_pin_line_moves():
     assert line.rsplit("@", 1)[-1] == "b" * 40
 
 
+def test_only_the_sha_of_the_one_dependency_entry_moves():
+    text = PYPROJECT_BEFORE.format(sha="a" * 40)
+    rewritten = promote.rewrite_wheel(text, "b" * 40)
+    assert rewritten == PYPROJECT_BEFORE.format(sha="b" * 40)
+    assert promote.current_wheel_pin(rewritten) == "b" * 40
+
+
 def test_a_requirements_file_with_no_pin_line_is_an_error():
     with pytest.raises(promote.Failure, match="no `amsc-poc"):
         promote.current_pin("flask\nopenai\n")
 
 
-def test_the_real_requirements_file_is_one_this_tool_can_read():
-    """The tool and ``test_amsc_pin.py`` must agree about the real file."""
+def test_a_pyproject_with_no_pin_entry_is_an_error():
+    with pytest.raises(promote.Failure, match="pyproject.toml has no"):
+        promote.current_wheel_pin('dependencies = [\n  "amsc-poc",\n]\n')
+
+
+def test_the_real_files_are_ones_this_tool_can_read():
+    """The tool and ``test_amsc_pin.py`` must agree about the real files --
+    and the real files must agree with each other."""
     text = promote.REQUIREMENTS.read_text(encoding="utf-8")
+    wheel = promote.PYPROJECT.read_text(encoding="utf-8")
     assert len(promote.current_pin(text)) == 40
+    assert promote.current_wheel_pin(wheel) == promote.current_pin(text)

@@ -11,14 +11,20 @@
 # claim from the outside: the library and its migrations are in it, and the
 # adapter, the entry point and the operator programs are not.
 #
-# ``requirements.txt`` stays the authoritative install for this repository: it
-# pins ``amsc-poc`` to an immutable commit, which is a statement about a
-# deployment rather than a range this library depends on. The install order is
+# ``requirements.txt`` stays the authoritative install for this repository --
+# the whole product, adapter and server included. The install order is
 #
 #     pip install -r requirements.txt   # the pinned dependencies, amsc included
 #     pip install --no-deps -e .        # this package, in place
 #
-# and ``tests/unit/test_amsc_pin.py`` keeps that pin honest.
+# ``amsc-poc``, the chunking library, is on no index: it is a sibling
+# repository, and this distribution names it the one way pip can fetch it --
+# a direct reference to an immutable commit (PEP 440), the same commit
+# ``requirements.txt`` pins. That is what makes ``pip install <this wheel>``
+# resolve on a machine that has never seen either checkout; the cost is that
+# the installing machine needs ``git``, as the Docker build already does.
+# ``tests/unit/test_amsc_pin.py`` keeps the two pins honest and equal, and
+# ``tools/promote_chunk_pin.py`` moves them together.
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
@@ -52,7 +58,7 @@ classifiers = [
 # them, so SQLAlchemy, psycopg, alembic and pgvector are here rather than in
 # an extra that could be left out.
 dependencies = [
-  "amsc-poc",
+  "amsc-poc @ git+https://github.com/erenayd58/chunk.git@f8409805a9cd9c5f1db771b2fdbf28d891c1c54b",
   "SQLAlchemy>=2.0",
   "psycopg[binary]>=3.1",
   "alembic>=1.13",

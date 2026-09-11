@@ -14,6 +14,7 @@ else.** Everything under it is free to change without notice.
 from chat_rag import Engine, EngineConfig
 
 with Engine(EngineConfig(database_url="postgresql+psycopg://...")) as engine:
+    engine.migrate()                            # the schema, created or brought to head
     kb = engine.knowledge_bases.create("Reports")
     document = kb.ingest("report.pdf")
     document.analysis().request()
@@ -21,14 +22,14 @@ with Engine(EngineConfig(database_url="postgresql+psycopg://...")) as engine:
     answer = kb.ask("What changed?")
 ```
 
-Twenty-eight names, in four groups. `from chat_rag import X` and
+Thirty names, in four groups. `from chat_rag import X` and
 `from chat_rag.api import X` are the same object; there is one list.
 
 | group | names |
 |---|---|
-| the engine and its configuration | `Engine`, `EngineConfig`, `Settings`, `open_engine` |
+| the engine and its configuration | `Engine`, `EngineConfig`, `Settings`, `open_engine`, `migrate_database` |
 | what it holds | `KnowledgeBase`, `KnowledgeBases`, `Document`, `IngestJob`, `Analysis` |
-| what its calls answer with | `Answer`, `Arm`, `Chunk`, `Comparison`, `Health`, `Hit`, `Method`, `Source` |
+| what its calls answer with | `Answer`, `Arm`, `Chunk`, `Comparison`, `Health`, `Hit`, `Method`, `Migration`, `Source` |
 | what its calls refuse with | `ApplicationError`, `InvalidRequest`, `NotFound`, `Conflict`, `Unavailable`, `NotReady`, `ProcessingFailed`, `IngestOverloaded`, `IngestInterrupted`, `QueryOverloaded`, `QueryTimeout` |
 
 The refusals are the application's own classes, re-exported — not a
@@ -110,6 +111,34 @@ pass-through mappings listed above.
 
 ---
 
+## The schema
+
+The migrations ship in the wheel, and applying them is a call on the surface
+rather than a step outside it:
+
+```python
+from chat_rag import Engine, EngineConfig, migrate_database
+
+migrate_database(database_url="postgresql+psycopg://...")   # a setup script, a deploy step
+
+with Engine(EngineConfig(database_url="postgresql+psycopg://...")) as engine:
+    done = engine.migrate()                                  # or the engine's own
+    done.outcome                                             # 'created' | 'upgraded' | 'current'
+```
+
+Both are idempotent and safe at every start: an empty database gets the
+schema, one that is behind is brought to head, one already at head reports
+`current` and applies nothing. The upgrade runs under a PostgreSQL advisory
+lock, so two programs starting together cannot both migrate. No `alembic.ini`
+and no checkout is involved — the migrations are found from where the package
+is. A database that is not configured or cannot be reached is refused with
+`Unavailable`; a migration that was attempted and failed (a server without
+the `vector` extension is the usual one) with `ProcessingFailed`, cause
+chained. `migrate_database` is `Engine.migrate` on an engine built for the
+call and closed after it.
+
+---
+
 ## Installing
 
 ```bash
@@ -119,12 +148,23 @@ pip install chat-rag[pdf]         # + pymupdf, pymupdf4llm, python-docx
 pip install chat-rag[all]         # both
 ```
 
+`chat-rag` is not on PyPI. Install it from the built artifact (`python -m
+build`, then `pip install dist/chat_rag-*.whl`) or straight from the
+repository (`pip install "chat-rag @ git+https://github.com/erenayd58/chat_rag.git"`).
+Either way nothing else has to be named: the chunking library, `amsc-poc`,
+is on no index either, and the wheel's metadata carries a direct reference to
+the commit it is pinned to — the same commit `requirements.txt` names, held
+equal by `tests/unit/test_amsc_pin.py` — so pip fetches it on its own. The
+installing machine needs `git` for that, as the Docker build does. A wheel
+with a direct reference in it cannot be uploaded to PyPI; that is a fact
+about this distribution's current state, not a plan.
+
 **PostgreSQL is required, not an extra.** The knowledge bases, the ingest
 ledger, the content identities and their analysis state, the ingest journal,
 the gold set and the chunk vectors are all rows. There is no degraded mode
 that runs without one, so SQLAlchemy, psycopg, Alembic and pgvector are core
 dependencies and the schema (`chat_rag/storage/migrations/`) ships in the
-wheel.
+wheel — see [The schema](#the-schema) above for applying it.
 
 The extras are the two things a deployment may genuinely not need:
 
@@ -138,9 +178,13 @@ local model raises `ConfigurationException` with the install line in the
 message; without `[pdf]`, `ParserFactory` registers no PDF parser and a PDF is
 refused while a `.md` file ingests exactly as before.
 
-`tools/wheel_smoke.py` builds the wheel, installs it into an empty
-interpreter and checks each of those claims, including that importing the
-surface pulls in no torch.
+`tools/wheel_smoke.py` builds the wheel (and, with `--sdist`, the source
+distribution), installs each into an empty interpreter naming nothing else,
+and checks every claim above — including that importing the surface pulls in
+no torch and, given `--database-url`, that the first use works: migrate,
+create a knowledge base, ingest a Markdown document, search it.
+`tests/integration/test_clean_install.py` runs the same functions from the
+suite against a throwaway database, for both artifacts.
 
 ---
 
@@ -148,10 +192,10 @@ surface pulls in no torch.
 
 These are properties of the library today, not bugs to be surprised by.
 
-* **`amsc-poc` is not on any index.** It is pinned to a GitHub commit in
-  `requirements.txt`, and a consumer installing the wheel has to supply the
-  same requirement. Until it is published, `pip install chat-rag` alone cannot
-  resolve.
+* **Neither `chat-rag` nor `amsc-poc` is on an index.** The wheel installs
+  by itself — its metadata says where `amsc-poc` comes from — but the
+  installing machine needs `git` and a network, and the artifact cannot be
+  published to PyPI while it carries a direct reference.
 * **One process, one engine's worth of state.** The Viewer packager is a
   thread over an in-memory queue, the pipeline cache holds built pipelines,
   and the provider budgets are semaphores. Two `Engine`s in one process are
@@ -161,10 +205,10 @@ These are properties of the library today, not bugs to be surprised by.
 * **A data root separates files, not rows.** `EngineConfig(data_dir=...)`
   gives an engine its own packaged analyses, staged uploads and caches. Two
   engines under one `DATABASE_URL` still share every record.
-* **Applying the schema is the consumer's step.** The migrations ship, but
-  `alembic.ini` does not — it is repository configuration. Point Alembic's
-  `script_location` at `chat_rag/storage/migrations` inside the installed
-  package, or run `tools/migrate.py` from a checkout.
+* **Applying the schema is still the consumer's decision.** `Engine.migrate()`
+  and `migrate_database()` do it; nothing does it for you, because a library
+  that alters a database on construction has spoken for a program that has
+  not. Downgrades and new revisions are Alembic operations on a checkout.
 * **`configure_logging` is not called for you.** A library installs no
   handlers; `chat_rag` attaches a `NullHandler` and nothing else.
 * **Thread defaults are the process's.** Call

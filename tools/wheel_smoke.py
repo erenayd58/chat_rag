@@ -1,7 +1,9 @@
-"""Build the wheel, install it into an empty environment, and use it.
+"""Build the distribution, install it into an empty environment, and use it.
 
     python tools/wheel_smoke.py
-    python tools/wheel_smoke.py --with-extras     # also prove [all] adds them
+    python tools/wheel_smoke.py --sdist                # the source distribution too
+    python tools/wheel_smoke.py --database-url URL     # and the first use, for real
+    python tools/wheel_smoke.py --with-extras          # also prove [all] adds them
     python tools/wheel_smoke.py --keep
 
 ``tools/import_smoke.py`` proves the *product* imports from its declared
@@ -15,9 +17,15 @@ cannot do by name rather than by ImportError.
 What it checks
 --------------
 
-* the wheel **builds** from this checkout;
+* the wheel **builds** from this checkout (and, with ``--sdist``, so does the
+  source distribution, which is then installed the same way -- a build from
+  source in an isolated environment, which is what a consumer without a wheel
+  gets);
 * it **installs** into a fresh interpreter with no wheels warmed and no
-  sibling checkout to fall back on;
+  sibling checkout to fall back on -- and with nothing named but the
+  artifact. ``amsc-poc`` is on no index; the wheel's own metadata says where
+  it comes from (``pyproject.toml``), and this is where that claim is tested
+  rather than worked around;
 * ``import chat_rag`` costs nothing -- no torch, no sentence-transformers, no
   PDF stack in ``sys.modules`` afterwards, which is what makes the extras real
   rather than a metadata gesture;
@@ -27,7 +35,13 @@ What it checks
   embedding model without ``[local]`` says which extra to install, rather than
   failing with a traceback from three frames down;
 * the adapter is **not there**: ``import interfaces`` and ``import asgi`` fail,
-  because they are not the library and never shipped.
+  because they are not the library and never shipped;
+* given ``--database-url``, the **first use**: ``migrate_database`` builds
+  the schema in an empty database and reports ``current`` the second time;
+  an ``Engine`` on it creates a knowledge base, ingests a Markdown document
+  with no extra installed and no provider configured, and searches it
+  lexically. The URL should name an empty database of its own -- the schema
+  is created in it and nothing is dropped afterwards.
 
 ``--with-extras`` then installs ``chat-rag[all]`` into a second environment and
 checks the other half of the same claim: the local model can now be *built*,
@@ -35,13 +49,13 @@ and it is building it -- not importing the library -- that loads torch. An
 extra changes what the engine can do, never what importing it costs. It is off
 by default because it downloads torch and a set of model weights.
 
-The one thing this cannot check
--------------------------------
+What it needs
+-------------
 
-``amsc-poc`` is not on any index. It is passed to pip here as the pinned
-``git+https`` requirement ``requirements.txt`` names, which is exactly what a
-consumer would have to do today -- and is the reason this library is not yet
-``pip install chat-rag`` for somebody outside this repository.
+A network -- ``amsc-poc`` is fetched from its pinned commit, the rest from
+the index -- and ``git`` on the installing machine, for the same reason the
+Docker build installs it. ``tests/integration/test_clean_install.py`` drives
+the same functions from the suite, against a throwaway database.
 """
 
 from __future__ import annotations
@@ -49,7 +63,6 @@ from __future__ import annotations
 import argparse
 import json
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -57,19 +70,13 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PIN = re.compile(r"^(amsc-poc\s*@\s*git\+\S+)$", re.M)
-
-
-def pinned_amsc() -> str | None:
-    """The ``amsc-poc`` requirement, read from the file that owns the pin."""
-    found = PIN.search((ROOT / "requirements.txt").read_text(encoding="utf-8"))
-    return found.group(1).strip() if found else None
 
 
 def run(command: list[str], cwd: Path | None = None,
         timeout: int = 1800) -> subprocess.CompletedProcess:
     return subprocess.run(command, cwd=str(cwd) if cwd else None, timeout=timeout,
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace")
 
 
 def venv_python(venv: Path) -> Path:
@@ -85,9 +92,10 @@ def tail(finished: subprocess.CompletedProcess, lines: int = 25) -> str:
 # --------------------------------------------------------------- the probe
 #
 # Run inside the clean interpreter. It prints one JSON line, so this side
-# reports rather than parses prose.
+# reports rather than parses prose. ``sys.argv[1]``, when given, is a database
+# URL: the first-use half runs only then.
 PROBE = r"""
-import json, sys
+import json, os, sys, tempfile
 
 report = {}
 
@@ -150,6 +158,44 @@ for name in ("interfaces", "asgi", "cli"):
     except ImportError:
         pass
 
+# The first use, when a database was given: the schema from the package's own
+# migrations, then a knowledge base, a document and a search on it -- with no
+# extra installed and no provider configured, which is the smallest engine
+# there is.
+url = sys.argv[1] if len(sys.argv) > 1 else ""
+if url:
+    from chat_rag import migrate_database
+
+    first = migrate_database(database_url=url)
+    second = migrate_database(database_url=url)
+    report["migration"] = [first.outcome, second.outcome]
+    report["schema_head"] = first.after
+
+    # Under the interpreter's own directory, which the caller removes; a
+    # system temp directory would outlive the run.
+    data = tempfile.mkdtemp(prefix="smoke-data-", dir=os.getcwd())
+    document = os.path.join(data, "notes.md")
+    with open(document, "w", encoding="utf-8") as handle:
+        handle.write(
+            "# Liquidity\n\nThe liquidity coverage ratio stayed above the "
+            "regulatory minimum through the year.\n\n# Credit\n\nNon-performing "
+            "loans were provisioned in full.\n"
+        )
+    config = EngineConfig(database_url=url, data_dir=data,
+                          retrieval_profile="bm25_only", read_environment=False)
+    with Engine(config) as engine:
+        kb = engine.knowledge_bases.create("Smoke")
+        ingested = kb.ingest(document)
+        hits = kb.search("liquidity coverage", method="bm25", limit=3)
+        report["first_use"] = {
+            "knowledge_bases": [k.name for k in engine.knowledge_bases.list()],
+            "chunks": ingested.chunk_count,
+            "hits": len(hits),
+            "top_hit_mentions_liquidity": bool(hits) and "liquidity" in hits[0].content.lower(),
+            "health": engine.health().state,
+        }
+    report["heavy_after_first_use"] = loaded()
+
 print("@@" + json.dumps(report))
 """
 
@@ -168,28 +214,48 @@ class Report:
         if self.failures:
             print(f"{len(self.failures)} check(s) failed: {', '.join(self.failures)}")
             return 1
-        print("the wheel installs into an empty environment and is usable there")
+        print("the distribution installs into an empty environment and is usable there")
         return 0
 
 
-def build_wheel(report: Report, out: Path) -> Path | None:
-    built = run([sys.executable, "-m", "build", "--wheel", "--no-isolation",
-                 "--outdir", str(out), str(ROOT)])
+def build(report: Report, out: Path, *, sdist: bool = False) -> dict[str, Path]:
+    """The artifacts, built from this checkout the way a release would be.
+
+    ``--no-isolation`` because the build backend is already installed here
+    and a fresh isolated environment would download setuptools to prove a
+    claim about this repository's packaging. Returns ``{"wheel": path}`` and,
+    when asked, ``"sdist"`` too; empty when the build failed.
+    """
+    command = [sys.executable, "-m", "build", "--wheel", "--no-isolation",
+               "--outdir", str(out), str(ROOT)]
+    if sdist:
+        command.insert(4, "--sdist")
+    built = run(command)
     if built.returncode != 0:
-        report.check(False, "wheel.build", "python -m build failed")
+        report.check(False, "dist.build", "python -m build failed")
         print(tail(built))
-        return None
+        return {}
     wheels = sorted(out.glob("*.whl"))
-    if len(wheels) != 1:
-        report.check(False, "wheel.build", f"expected one wheel, got {len(wheels)}")
-        return None
-    report.check(True, "wheel.build", wheels[0].name)
-    return wheels[0]
+    sdists = sorted(out.glob("*.tar.gz"))
+    if len(wheels) != 1 or (sdist and len(sdists) != 1):
+        report.check(False, "dist.build",
+                     f"expected one wheel{' and one sdist' if sdist else ''}, got "
+                     f"{[p.name for p in wheels + sdists]}")
+        return {}
+    artifacts = {"wheel": wheels[0]}
+    if sdist:
+        artifacts["sdist"] = sdists[0]
+    report.check(True, "dist.build", ", ".join(p.name for p in artifacts.values()))
+    return artifacts
 
 
-def install(report: Report, name: str, venv: Path, requirement: str,
-            amsc: str | None) -> Path | None:
-    """A fresh interpreter with exactly ``requirement`` and its dependencies."""
+def install(report: Report, name: str, venv: Path, requirement: str) -> Path | None:
+    """A fresh interpreter with exactly ``requirement`` and its dependencies.
+
+    Nothing else is named. ``amsc-poc`` in particular is not: the artifact's
+    own metadata says where it comes from, and a consumer's pip has to be
+    able to follow that on its own.
+    """
     made = run([sys.executable, "-m", "venv", str(venv)], timeout=900)
     if made.returncode != 0:
         report.check(False, name, "could not create a clean venv")
@@ -197,51 +263,51 @@ def install(report: Report, name: str, venv: Path, requirement: str,
         return None
     python = venv_python(venv)
 
-    # amsc-poc is not on an index; it is named here exactly as requirements.txt
-    # pins it, which is what a consumer has to do today.
-    wanted = [requirement] + ([amsc] if amsc else [])
     installed = run([str(python), "-m", "pip", "install",
-                     "--disable-pip-version-check", *wanted], timeout=5400)
+                     "--disable-pip-version-check", requirement], timeout=5400)
     if installed.returncode != 0:
         report.check(False, name, "pip install failed")
         print(tail(installed))
         return None
-    report.check(True, name, f"installed {requirement.split('/')[-1]} into a clean venv")
+    report.check(True, name, f"installed {Path(requirement.split('[')[0]).name} "
+                             "into a clean venv, naming nothing else")
     return python
 
 
-def probe(report: Report, python: Path, *, expect_heavy: bool) -> dict | None:
+def probe(report: Report, python: Path, *, expect_heavy: bool,
+          database_url: str | None = None, prefix: str = "wheel") -> dict | None:
     """Use the installed library, in its own interpreter, from a directory
     that is not this checkout -- so nothing can pass by being on the path."""
     where = python.parent.parent
-    finished = run([str(python), "-c", PROBE], cwd=where, timeout=1800)
+    command = [str(python), "-c", PROBE] + ([database_url] if database_url else [])
+    finished = run(command, cwd=where, timeout=1800)
     if finished.returncode != 0:
-        report.check(False, "wheel.import", "the installed library could not be used")
+        report.check(False, f"{prefix}.import", "the installed library could not be used")
         print(tail(finished, 40))
         return None
     line = next((l for l in finished.stdout.splitlines() if l.startswith("@@")), None)
     if line is None:
-        report.check(False, "wheel.import", "the probe printed no report")
+        report.check(False, f"{prefix}.import", "the probe printed no report")
         print(tail(finished, 40))
         return None
     found = json.loads(line[2:])
 
-    report.check(True, "wheel.import", f"chat_rag {found['version']} imports and answers")
-    report.check(found["heavy_after_import"] == [], "import.cost",
+    report.check(True, f"{prefix}.import", f"chat_rag {found['version']} imports and answers")
+    report.check(found["heavy_after_import"] == [], f"{prefix}.import.cost",
                  "importing the surface loads no torch and no PDF stack"
                  if not found["heavy_after_import"]
                  else f"loaded {found['heavy_after_import']}")
     report.check(found["published"] == found["api_published"],
-                 "wheel.surface",
+                 f"{prefix}.surface",
                  f"{len(found['published'])} published names, both import paths agreeing")
     report.check(found["resolves"] == found["api_published"],
-                 "wheel.resolves", "every published name resolves")
+                 f"{prefix}.resolves", "every published name resolves")
     report.check(found["settings_is_public"] is True,
-                 "wheel.settings", "EngineConfig.build() returns the published Settings")
+                 f"{prefix}.settings", "EngineConfig.build() returns the published Settings")
     report.check(bool(found["migrations"]),
-                 "wheel.migrations", f"the schema ships: {', '.join(found['migrations'])}")
+                 f"{prefix}.migrations", f"the schema ships: {', '.join(found['migrations'])}")
     report.check(not found.get("leaked"),
-                 "wheel.boundary",
+                 f"{prefix}.boundary",
                  "interfaces, asgi and cli are not installed"
                  if not found.get("leaked") else f"leaked: {found['leaked']}")
 
@@ -257,47 +323,72 @@ def probe(report: Report, python: Path, *, expect_heavy: bool) -> dict | None:
                      + ", ".join(found["heavy_after_local"]))
     else:
         refusal = found["local_refusal"] or ""
-        report.check("chat-rag[local]" in refusal, "extras.refusal",
+        report.check("chat-rag[local]" in refusal, f"{prefix}.extras.refusal",
                      "asking for a local model names the extra to install"
                      if "chat-rag[local]" in refusal else f"said: {refusal[:120]!r}")
-        report.check(found["heavy_after_local"] == [], "extras.absent",
+        report.check(found["heavy_after_local"] == [], f"{prefix}.extras.absent",
                      "and nothing heavy was loaded on the way to that refusal"
                      if not found["heavy_after_local"]
                      else f"loaded {found['heavy_after_local']}")
+
+    if database_url:
+        migration = found.get("migration") or []
+        report.check(migration == ["created", "current"], f"{prefix}.migrate",
+                     f"migrate_database() created the schema at {found.get('schema_head')} "
+                     "and reported current the second time"
+                     if migration == ["created", "current"] else f"reported {migration}")
+        use = found.get("first_use") or {}
+        worked = (use.get("knowledge_bases") == ["Smoke"] and use.get("chunks", 0) > 0
+                  and use.get("hits", 0) > 0 and use.get("top_hit_mentions_liquidity"))
+        report.check(worked, f"{prefix}.first_use",
+                     f"a knowledge base, {use.get('chunks')} chunks from a Markdown "
+                     f"document, {use.get('hits')} lexical hits, health {use.get('health')!r}"
+                     if worked else f"first use fell short: {use}")
+        report.check(found.get("heavy_after_first_use") == [], f"{prefix}.first_use.cost",
+                     "and none of it loaded torch or the PDF stack"
+                     if not found.get("heavy_after_first_use")
+                     else f"loaded {found.get('heavy_after_first_use')}")
     return found
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--sdist", action="store_true",
+                        help="also build the source distribution and install from it")
+    parser.add_argument("--database-url", default=None, metavar="URL",
+                        help="an empty PostgreSQL database to migrate and use from the "
+                             "installed library (the schema is created; nothing is dropped)")
     parser.add_argument("--with-extras", action="store_true",
                         help="also install chat-rag[all] and check the extras arrive "
                              "(downloads torch)")
     parser.add_argument("--keep", action="store_true",
-                        help="leave the wheel and the environments in place")
+                        help="leave the artifacts and the environments in place")
     args = parser.parse_args(argv)
 
-    print("chat_rag wheel smoke")
+    print("chat_rag distribution smoke")
     print(f"  driver   python {platform.python_version()} on {sys.platform}")
-    amsc = pinned_amsc()
-    print(f"  amsc     {'pinned in requirements.txt' if amsc else 'NOT FOUND in requirements.txt'}")
+    print(f"  database {'given' if args.database_url else 'none -- first use not exercised'}")
     print()
 
-    work = Path(tempfile.mkdtemp(prefix="chat_rag-wheel-"))
+    work = Path(tempfile.mkdtemp(prefix="chat_rag-dist-"))
     report = Report()
     try:
-        wheel = build_wheel(report, work / "dist")
-        if wheel is None:
+        artifacts = build(report, work / "dist", sdist=args.sdist)
+        if not artifacts:
             return report.finish()
 
-        python = install(report, "wheel.install", work / "bare", str(wheel), amsc)
-        if python is not None:
-            probe(report, python, expect_heavy=False)
+        for kind, artifact in artifacts.items():
+            python = install(report, f"{kind}.install", work / kind, str(artifact))
+            if python is not None:
+                probe(report, python, expect_heavy=False,
+                      database_url=args.database_url if kind == "wheel" else None,
+                      prefix=kind)
 
         if args.with_extras:
             extras = install(report, "extras.install", work / "full",
-                             f"{wheel}[all]", amsc)
+                             f"{artifacts['wheel']}[all]")
             if extras is not None:
-                probe(report, extras, expect_heavy=True)
+                probe(report, extras, expect_heavy=True, prefix="extras")
         else:
             print("  SKIP  extras.install          "
                   "not run -- pass --with-extras (downloads torch)")

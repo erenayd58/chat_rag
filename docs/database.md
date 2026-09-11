@@ -310,7 +310,13 @@ artifacts are addressed by a row rather than the row being the directory.
 
 ## Migrations
 
-Alembic, configured in `alembic.ini`, scripts in `storage/migrations/`.
+Alembic, configured in `alembic.ini` for a checkout, scripts in
+`storage/migrations/`. An installed library has the scripts and not the ini
+file, and needs neither: `Engine.migrate()` / `migrate_database()`
+([library-api.md](library-api.md#the-schema)) build the configuration from
+where the package is (`chat_rag.storage.schema`), and `tools/migrate.py`
+and the test session use the same module — one place that knows where the
+migrations are.
 
 ```bash
 alembic upgrade head            # create or update the schema

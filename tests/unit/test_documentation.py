@@ -169,7 +169,9 @@ def test_nothing_tracked_names_a_developers_home_directory():
 
 
 def test_no_document_writes_a_commit_sha():
-    """``requirements.txt`` is the one place a revision is written.
+    """``requirements.txt`` and ``pyproject.toml`` are the places a revision is
+    written -- the install and the wheel's metadata, held equal by
+    ``test_amsc_pin.py`` -- and no document is a third.
 
     The README used to name the pinned commit twice in prose. Both copies had
     drifted from the pin by the time anyone looked, which is the failure mode
@@ -187,7 +189,7 @@ def test_no_document_writes_a_commit_sha():
                 offenders.append(
                     f"{path.relative_to(REPO).as_posix()}:{number}: {candidate}")
     assert offenders == [], (
-        "documents naming a commit revision; requirements.txt owns the pin:\n  "
+        "documents naming a commit revision; requirements.txt and pyproject.toml own the pin:\n  "
         + "\n  ".join(offenders)
     )
 

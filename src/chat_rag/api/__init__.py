@@ -3,6 +3,7 @@
     from chat_rag import Engine, EngineConfig
 
     with Engine(EngineConfig(database_url=...)) as engine:
+        engine.migrate()                      # the schema, created or brought to head
         kb = engine.knowledge_bases.create("Reports")
         document = kb.ingest("report.pdf")
         document.analysis().request()
@@ -45,9 +46,9 @@ from chat_rag.core.exceptions import (
 from chat_rag.config import Settings
 
 from .config import EngineConfig
-from .engine import Engine, open_engine
+from .engine import Engine, migrate_database, open_engine
 from .resources import Analysis, Document, IngestJob, KnowledgeBase, KnowledgeBases
-from .results import Answer, Arm, Chunk, Comparison, Health, Hit, Method, Source
+from .results import Answer, Arm, Chunk, Comparison, Health, Hit, Method, Migration, Source
 
 #: The published names. Two groups, and the second is why it is worth writing
 #: this list out: a caller has to be able to *catch* what this library refuses
@@ -61,6 +62,7 @@ __all__ = [
     "EngineConfig",
     "Settings",
     "open_engine",
+    "migrate_database",
     # the things it holds
     "KnowledgeBase",
     "KnowledgeBases",
@@ -75,6 +77,7 @@ __all__ = [
     "Health",
     "Hit",
     "Method",
+    "Migration",
     "Source",
     # what its calls refuse with
     "ApplicationError",

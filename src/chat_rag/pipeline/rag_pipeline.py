@@ -71,6 +71,28 @@ def _source_pages(metadata: Optional[Dict[str, Any]]) -> Optional[List[Any]]:
     return None
 
 
+def _progress(message: str) -> None:
+    """A progress line for whoever is watching, and never a reason to fail.
+
+    The ingest and query paths narrate what they are doing to stdout, and a
+    document title or a chunk of text passes through those lines. On Windows a
+    redirected stream falls back to the machine's code page -- cp1254 on the
+    machine this is developed on -- and a character outside it raises
+    ``UnicodeEncodeError`` from ``print``. The product's entrypoints
+    reconfigure the streams for exactly that reason
+    (``runtime/bootstrap.py``); a program that merely imported the library
+    has not, and its ingest must not fail because a log line could not be
+    spelled. The line is written with the characters it can spell and the
+    rest escaped; a stream that is closed or gone is skipped.
+    """
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        print(message.encode("ascii", "backslashreplace").decode("ascii"))
+    except (OSError, ValueError):
+        pass
+
+
 def _in_runtime(method):
     """Run one pipeline operation inside the engine this pipeline belongs to.
 
@@ -324,7 +346,7 @@ class RAGPipeline:
             if doc_title is None:
                 doc_title = os.path.basename(file_path)
 
-            print(f"Parsing file: {file_path}")
+            _progress(f"Parsing file: {file_path}")
 
             from time import perf_counter
             _parse_started = perf_counter()
@@ -341,7 +363,7 @@ class RAGPipeline:
                 try:
                     parsed_units = self.parser_factory.parse_units(file_path)
                 except Exception as exc:
-                    print(f"  - Structured unit extraction unavailable: {exc}")
+                    _progress(f"  - Structured unit extraction unavailable: {exc}")
                     parsed_units = None
 
                 parser_metadata = self.parser_factory.get_metadata(file_path)
@@ -357,12 +379,12 @@ class RAGPipeline:
             merged_metadata = additional_metadata or {}
             merged_metadata.update(parser_metadata)
 
-            print(f"  - Extracted {len(document_text)} characters")
-            print(f"  - Parser used: {parser_metadata.get('parser', 'unknown')}")
+            _progress(f"  - Extracted {len(document_text)} characters")
+            _progress(f"  - Parser used: {parser_metadata.get('parser', 'unknown')}")
             if parsed_units is not None:
-                print(f"  - Structured canonical units: {len(parsed_units)}")
+                _progress(f"  - Structured canonical units: {len(parsed_units)}")
             else:
-                print("  - Structured canonical units: none (flat text fallback)")
+                _progress("  - Structured canonical units: none (flat text fallback)")
 
             return self.ingest_document(
                 document_text=document_text,
@@ -404,10 +426,10 @@ class RAGPipeline:
         # the Standard path.
         self.last_deep_analysis_report = None
         try:
-            print(f"Ingesting document: {doc_title}")
+            _progress(f"Ingesting document: {doc_title}")
 
             if deep_analysis:
-                print("  - Creating chunks (Deep Analysis: amsc.deep.pipeline)...")
+                _progress("  - Creating chunks (Deep Analysis: amsc.deep.pipeline)...")
                 if not hasattr(self.chunker, "chunk_text_deep"):
                     raise ConfigurationException(
                         "Deep Analysis requires the structure-first chunker; "
@@ -432,7 +454,7 @@ class RAGPipeline:
                     ),
                 )
                 if configuration.missing:
-                    print(f"  - {configuration.fallback_reason}")
+                    _progress(f"  - {configuration.fallback_reason}")
                 # The transports are built here, not inside amsc, so that
                 # every proposer and verifier call goes through the
                 # process-wide provider budget (components.ingest.limits).
@@ -449,9 +471,9 @@ class RAGPipeline:
                     )
                     T.annotate(chunks=len(chunks) if chunks else 0)
                 self.last_deep_analysis_report = deep_report
-                print(f"  - Deep Analysis status: {deep_report.get('status')}")
+                _progress(f"  - Deep Analysis status: {deep_report.get('status')}")
             else:
-                print("  - Creating chunks...")
+                _progress("  - Creating chunks...")
                 with T.stage(T.CHUNK):
                     chunks = self.chunker.chunk_text(
                         document_text, doc_id, doc_title, "",
@@ -462,10 +484,10 @@ class RAGPipeline:
                     T.annotate(chunks=len(chunks) if chunks else 0)
 
             if not chunks:
-                print("  ⚠️  Warning: No chunks created for document (text may be too short)")
+                _progress("  ⚠️  Warning: No chunks created for document (text may be too short)")
                 return []
 
-            print(f"  - Created {len(chunks)} chunks")
+            _progress(f"  - Created {len(chunks)} chunks")
             # Chunked, nothing written: a job that must stop, stops here.
             checkpoint()
 
@@ -489,13 +511,13 @@ class RAGPipeline:
                     # Lexical-only retrieval: no dense leg exists, so no vectors are
                     # computed and none are stored. Metadata still has to be applied
                     # because the chunk rows carry it into the store.
-                    print("  - Skipping embeddings (lexical-only retrieval)")
+                    _progress("  - Skipping embeddings (lexical-only retrieval)")
                     if additional_metadata:
                         for chunk in chunks:
                             if chunk.metadata:
                                 chunk.metadata.update(additional_metadata)
                 else:
-                    print("  - Generating embeddings...")
+                    _progress("  - Generating embeddings...")
                     # A table embeds as its pipes *and* its rendering: the
                     # rendering is the half a question resembles, the markdown
                     # keeps the sentences and row labels it was derived from, and
@@ -516,22 +538,22 @@ class RAGPipeline:
             # than a late one.
             checkpoint()
             with T.stage(T.INDEX):
-                print("  - Storing in vector database...")
+                _progress("  - Storing in vector database...")
                 if chunks and (embeddings or not needs_embeddings):
                     self.vector_db.add_chunks(chunks, embeddings)
                     if self.retrieval_profile == 'hybrid_rrf' and embeddings:
                         self.hybrid_retriever.record_index(len(embeddings[0]))
                 else:
-                    print("  ⚠️  Warning: No chunks to store")
+                    _progress("  ⚠️  Warning: No chunks to store")
                     return []
 
-                print("  - Building BM25 index...")
+                _progress("  - Building BM25 index...")
                 all_chunks = self.vector_db.get_all_chunks()
                 if all_chunks:
                     self.hybrid_retriever.build_keyword_index(all_chunks)
                 T.annotate(stored=len(chunks), indexed=len(all_chunks or []))
 
-            print(f"✓ Document '{doc_title}' ingested successfully!")
+            _progress(f"✓ Document '{doc_title}' ingested successfully!")
             return chunks
 
         except (ConfigurationException, IndexIncompatibleException, IngestInterrupted):

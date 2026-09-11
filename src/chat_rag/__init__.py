@@ -19,6 +19,7 @@ The public API::
     from chat_rag import Engine, EngineConfig
 
     with Engine(EngineConfig(database_url=...)) as engine:
+        engine.migrate()
         kb = engine.knowledge_bases.create("Reports")
         document = kb.ingest("report.pdf")
         answer = kb.ask("What changed?")
@@ -39,9 +40,9 @@ if TYPE_CHECKING:  # for a type checker and an IDE, never at run time
         Analysis, Answer, ApplicationError, Arm, Chunk, Comparison, Conflict,
         Document, Engine, EngineConfig, Health, Hit, IngestInterrupted,
         IngestJob, IngestOverloaded, InvalidRequest, KnowledgeBase,
-        KnowledgeBases, Method, NotFound, NotReady, ProcessingFailed,
-        QueryOverloaded, QueryTimeout, Settings, Source, Unavailable,
-        open_engine,
+        KnowledgeBases, Method, Migration, NotFound, NotReady,
+        ProcessingFailed, QueryOverloaded, QueryTimeout, Settings, Source,
+        Unavailable, migrate_database, open_engine,
     )
 
 #: The public API, re-exported from :mod:`chat_rag.api`. One list rather than
@@ -52,6 +53,7 @@ __all__ = [
     "EngineConfig",
     "Settings",
     "open_engine",
+    "migrate_database",
     "KnowledgeBase",
     "KnowledgeBases",
     "Document",
@@ -64,6 +66,7 @@ __all__ = [
     "Health",
     "Hit",
     "Method",
+    "Migration",
     "Source",
     "ApplicationError",
     "InvalidRequest",

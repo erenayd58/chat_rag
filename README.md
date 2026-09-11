@@ -735,13 +735,14 @@ pip install chat-rag[all]         # both
 ```
 
 The extras degrade by refusing rather than by pretending — without `[local]`,
-asking for a local model names the extra to install. This repository's own
-install is unchanged; `requirements.txt` names everything explicitly.
+asking for a local model names the extra to install. The wheel installs with
+nothing else named: it carries where `amsc-poc` comes from. This repository's
+own install is unchanged; `requirements.txt` names everything explicitly.
 
-**[docs/library-api.md](docs/library-api.md) is the contract**: the
-twenty-eight published names, what a refusal means and how to catch it, what
-0.x promises, how a removal is announced, and the limitations a consumer
-should know about (starting with `amsc-poc` not being on any index).
+**[docs/library-api.md](docs/library-api.md) is the contract**: the thirty
+published names, what a refusal means and how to catch it, how the schema is
+created (`engine.migrate()` — no `alembic.ini`), what 0.x promises, how a
+removal is announced, and the limitations a consumer should know about.
 [CHANGELOG.md](CHANGELOG.md) records what changes.
 
 ## The console — `frontend/`

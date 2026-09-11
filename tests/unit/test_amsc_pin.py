@@ -1,5 +1,5 @@
 """Does the ``amsc`` revision pinned in requirements.txt provide what the
-product imports?
+product imports -- and does the wheel pin the same one?
 
 Locally ``amsc`` is an editable install of the sibling ``chunk`` checkout, so
 ``import app`` succeeds whatever the pin says; a clean install (the
@@ -27,6 +27,12 @@ install and no image build was possible at all; a checkout with an editable
 above passed because its regex was happy to stop after 40 hex characters.
 So the file is now also checked for being *installable-shaped*, not just for
 naming a good commit.
+
+Since L6 the pin is written in a second place: ``pyproject.toml`` names the
+same commit as a direct reference, which is what lets ``pip install <wheel>``
+resolve ``amsc-poc`` on a machine with neither checkout. Two copies of a
+value drift, so the last test here holds them equal -- and
+``tools/promote_chunk_pin.py`` moves both.
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 REQUIREMENTS = ROOT / "requirements.txt"
+PYPROJECT = ROOT / "pyproject.toml"
 PIN = re.compile(r"amsc-poc\s*@\s*git\+\S+?@([0-9a-f]{7,40})")
 IMPORT = re.compile(r"^\s*from\s+(amsc(?:\.[\w]+)*)\s+import\s+([^\n#]+)", re.M)
 
@@ -193,3 +200,38 @@ def test_the_dependencies_the_product_imports_are_declared():
     for required in ("openai", "fastapi", "uvicorn"):
         assert required in declared, f"{required} is imported but no longer declared"
 
+
+# ------------------------------------------------- the wheel's copy of it
+
+def _wheel_pin() -> str:
+    """The direct reference ``pyproject.toml`` declares, as pip will read it."""
+    import tomllib
+
+    declared = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    pins = [line for line in declared["project"]["dependencies"]
+            if re.split(r"[\s<>=!@\[;]", line, maxsplit=1)[0].lower() == "amsc-poc"]
+    assert len(pins) == 1, f"pyproject.toml declares amsc-poc {len(pins)} times: {pins}"
+    return pins[0]
+
+
+def test_the_wheel_names_amsc_as_a_direct_reference():
+    """``amsc-poc`` is on no index. A bare name in the wheel's metadata is a
+    dependency pip cannot resolve, so the distribution has to say where it
+    comes from -- and the only immutable place is a commit."""
+    pin = _wheel_pin()
+    assert re.fullmatch(r"amsc-poc\s*@\s*git\+https://\S+@[0-9a-f]{40}", pin), (
+        f"pyproject.toml declares {pin!r}; a consumer's pip cannot resolve that")
+
+
+def test_the_wheel_and_the_deployment_pin_the_same_commit():
+    """Two places name the revision, so the two are held equal. A promotion
+    that moved one and not the other would ship a wheel that installs a
+    different chunking library from the one the image runs."""
+    wheel = _wheel_pin().rsplit("@", 1)[-1]
+    assert wheel == _pinned_commit(), (
+        f"pyproject.toml pins {wheel[:7]}, requirements.txt pins "
+        f"{_pinned_commit()[:7]}; run tools/promote_chunk_pin.py, which moves both")
+    # And the URL, not just the sha: the same repository.
+    wheel_url = _wheel_pin().split("@", 1)[1].strip().rsplit("@", 1)[0]
+    deployment_url = PIN_LINE.search(REQUIREMENTS.read_text(encoding="utf-8")).group(1).rsplit("@", 1)[0]
+    assert wheel_url == deployment_url

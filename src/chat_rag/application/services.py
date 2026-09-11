@@ -19,6 +19,7 @@ migration to another store will do for real.
 
 from __future__ import annotations
 
+import copy
 import functools
 import logging
 import threading
@@ -37,9 +38,24 @@ from chat_rag.utils import DocumentTracker
 logger = logging.getLogger("RAG.services")
 
 
-def build_settings_for_kb(kb_cfg: dict, kb_id: Optional[str] = None) -> Settings:
-    """The process settings, narrowed to one knowledge base's own choices."""
-    s = Settings.from_env()
+def build_settings_for_kb(kb_cfg: dict, kb_id: Optional[str] = None,
+                          base: Optional[Settings] = None) -> Settings:
+    """The engine's settings, narrowed to one knowledge base's own choices.
+
+    ``base`` is the container's own configuration -- what an ``EngineConfig``
+    stated, or what the environment said when the product composed -- and a
+    *copy* of it is what this knowledge base's pipeline runs on. It used to
+    be read from the environment here, every time, which meant a library
+    engine's retrieval profile and providers reached its default pipeline and
+    none of the ones that ingest and answer: ``EngineConfig(retrieval_profile=
+    "bm25_only", read_environment=False)`` still embedded through whatever
+    ``EMBEDDING_PROVIDER`` the process had. The product composes once from
+    the environment, so for it the two readings are the same values.
+
+    Left unsaid, the environment is read, which is what a caller with no
+    container has always got.
+    """
+    s = copy.copy(base) if base is not None else Settings.from_env()
     # A knowledge base may name its own embedding model only for the provider
     # it was created for: the older records carry local sentence-transformers
     # names, which must not be sent to an OpenAI-compatible gateway (the
@@ -143,7 +159,7 @@ class Services:
             kb = self.kb_manager.get(kb_id)
             if not kb:
                 raise ValueError("Knowledge base not found")
-            return RAGPipeline(settings=build_settings_for_kb(kb, kb_id),
+            return RAGPipeline(settings=build_settings_for_kb(kb, kb_id, base=self.settings),
                                runtime=self.runtime)
         return RAGPipeline(settings=self.settings, runtime=self.runtime)
 

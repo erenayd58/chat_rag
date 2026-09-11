@@ -45,6 +45,12 @@ internal arrangement and became a promise.
   `InvalidRequest`, `NotFound`, `Conflict`, `Unavailable`, `NotReady`,
   `ProcessingFailed`, and the resource-control four — `IngestOverloaded`,
   `IngestInterrupted`, `QueryOverloaded`, `QueryTimeout`.
+- **`Engine.migrate()`** and **`migrate_database()`**, answering with a
+  **`Migration`** — the schema, created or brought to head from the
+  migrations inside the installed package, under an advisory lock, without
+  `alembic.ini` or a checkout. `outcome` is `created`, `upgraded` or
+  `current`; an unreachable database is `Unavailable`, a failed migration
+  `ProcessingFailed`.
 - **`chat_rag.__version__`**, read from the installed distribution's metadata.
 - **`py.typed`**, so the annotations on all of the above are visible to a
   consumer's type checker.
@@ -59,14 +65,27 @@ internal arrangement and became a promise.
   `migrations/versions/` have no `__init__.py` — Alembic loads them by path —
   so `packages.find` never saw them, and an installed library could not create
   its own schema.
+- The wheel names where `amsc-poc` comes from: a direct reference to the
+  pinned commit, so `pip install <wheel>` and `pip install <sdist>` resolve
+  with nothing else named. Both are installed into an empty environment and
+  used, first migration included, by `tests/integration/test_clean_install.py`.
+- A knowledge base's pipeline is built from the engine's own settings. It
+  used to re-read the environment, so `EngineConfig(retrieval_profile=...,
+  embedding_provider=..., read_environment=False)` reached the default
+  pipeline and none of the ones that ingest and answer.
+- An ingest no longer fails because a progress line could not be printed.
+  The pipeline narrates to stdout, and a program whose stdout is on a legacy
+  code page (a redirected stream on Windows) got `UnicodeEncodeError` inside
+  the ingest; the line is now escaped instead. The product's entrypoints
+  already reconfigured their streams and never saw it.
 
 ### Notes
 
 - **PostgreSQL is required.** It is not an extra and there is no mode without
   it.
-- **`amsc-poc` is not on an index.** A consumer must supply the same pinned
-  `git+https` requirement `requirements.txt` names. Until that changes,
-  `pip install chat-rag` alone cannot resolve.
+- **Neither `chat-rag` nor `amsc-poc` is on an index.** The wheel installs
+  by itself, from a file or from the repository, but the installing machine
+  needs `git`; and a wheel carrying a direct reference cannot go to PyPI.
 - Importing `chat_rag` still costs nothing: the published names resolve on
   first use, so reading `chat_rag.__version__` does not load the pipeline.
 

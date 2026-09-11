@@ -19,7 +19,11 @@ deploy has gone wrong:
 The suite's database is built by ``alembic upgrade head`` already
 (``tests/conftest.py``), so these run against a database that is at head --
 which is exactly the state a restart finds, and the state the interesting
-assertion is about.
+assertion is about. The lock and the upgrade themselves are the library's
+(``chat_rag.storage.schema``) since the public API grew ``Engine.migrate()``;
+what is tested here is what this tool adds around them and that it still
+answers the way the entrypoint expects. The empty-database path is
+``tests/integration/test_public_migration.py``'s.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from sqlalchemy import text
 
 from chat_rag import storage
 from chat_rag.storage.engine import DatabaseUnavailable
+from chat_rag.storage.schema import MIGRATION_LOCK_KEY
 from tools import migrate
 
 
@@ -84,7 +89,7 @@ def test_the_advisory_lock_is_released_afterwards():
         held = connection.execute(
             text("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
                  "AND objid = :key"),
-            {"key": migrate.MIGRATION_LOCK_KEY & 0xFFFFFFFF},
+            {"key": MIGRATION_LOCK_KEY & 0xFFFFFFFF},
         ).scalar()
     assert held == 0
 
@@ -96,7 +101,7 @@ def test_a_second_migration_waits_for_the_first_rather_than_racing_it():
     re-entrant within one session, which would make a self-test pass for the
     wrong reason.
     """
-    key = migrate.MIGRATION_LOCK_KEY
+    key = MIGRATION_LOCK_KEY
     with storage.engine().connect() as holder:
         holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": key})
         try:

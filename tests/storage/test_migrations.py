@@ -26,13 +26,12 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import uuid
 from pathlib import Path
 
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect
 
 from chat_rag.storage.models import ALL_TABLES, Base
 
@@ -98,36 +97,9 @@ def test_nothing_in_the_source_creates_a_schema_by_itself():
 # ==========================================================================
 # a fresh install
 # ==========================================================================
-@pytest.fixture
-def fresh_database():
-    """A database of this test's own, created and dropped around it.
-
-    Made beside the suite's own, on the same server, so this proves the
-    migrations run against an empty PostgreSQL rather than against whatever
-    the session has already built.
-    """
-    from chat_rag import storage
-    from chat_rag.storage.engine import configured_settings
-
-    settings = configured_settings()
-    name = "chat_rag_fresh_" + uuid.uuid4().hex[:12]
-    # AUTOCOMMIT: CREATE DATABASE cannot run inside a transaction block.
-    admin = create_engine(settings.url, isolation_level="AUTOCOMMIT")
-    with admin.connect() as connection:
-        connection.execute(text(f'CREATE DATABASE "{name}"'))
-    url = settings.url.rsplit("/", 1)[0] + "/" + name
-    try:
-        yield url
-    finally:
-        storage.dispose()  # nothing of ours may still hold a connection to it
-        with admin.connect() as connection:
-            connection.execute(
-                text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                     "WHERE datname = :name"),
-                {"name": name},
-            )
-            connection.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
-        admin.dispose()
+# ``fresh_database`` -- an empty database of the test's own, beside the
+# suite's -- is a session fixture (tests/conftest.py), shared with the tests
+# that prove an installed library can migrate one.
 
 
 def test_an_empty_database_upgrades_to_a_working_application(fresh_database, monkeypatch):

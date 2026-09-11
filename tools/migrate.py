@@ -26,6 +26,13 @@ why), which makes this cheap insurance rather than a live requirement -- but it
 is the requirement that would otherwise be discovered during the first deploy
 that scaled.
 
+The lock and the upgrade are the library's own (``chat_rag.storage.schema``),
+so this tool, the test session and ``Engine.migrate()`` bring a database to
+head the same way and from the same migrations -- the package's, found from
+where the package is, not from ``alembic.ini``. What this tool adds is the
+waiting and the printing, which are a container's concerns and not a
+library's.
+
 **It says what it did.** A migration that runs as a side effect of a deploy is
 only acceptable if the deploy log shows the revision it moved from and the one
 it moved to. That is the objection ``alembic.ini`` raises against automatic
@@ -51,12 +58,6 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 logger = logging.getLogger("RAG.migrate")
-
-#: The advisory lock this repository uses for schema changes. Any constant
-#: would do; it only has to be one nobody else in this database picks. Advisory
-#: locks are per-database and are released when the session ends, so a killed
-#: container cannot leave one behind.
-MIGRATION_LOCK_KEY = 0x1CE5_2A67
 
 #: How long a connection refused is treated as "not up yet" rather than as a
 #: wrong address. Long enough for a database recovering its write-ahead log,
@@ -114,71 +115,44 @@ def wait_for_database(timeout: float | None = None) -> None:
             time.sleep(RETRY_INTERVAL_SECONDS)
 
 
-def _alembic_config():
-    from alembic.config import Config
-
-    settings = Config(os.path.join(REPO_ROOT, "alembic.ini"))
-    settings.set_main_option(
-        "script_location",
-        os.path.join(REPO_ROOT, "src", "chat_rag", "storage", "migrations")
-    )
-    return settings
+# ``chat_rag`` is imported inside the functions, as it always was here: the
+# package applies ``.env`` to the environment on import, and ``enabled()`` has
+# to read ``CHAT_RAG_MIGRATE_ON_START`` from the process environment alone.
 
 
 def current_revision(connection) -> str | None:
     """What the database says it is at, or ``None`` for an empty one."""
-    from alembic.runtime.migration import MigrationContext
+    from chat_rag.storage import schema
 
-    return MigrationContext.configure(connection).get_current_revision()
+    return schema.current_revision(connection)
 
 
 def head_revision() -> str | None:
-    """What this checkout's migrations end at."""
-    from alembic.script import ScriptDirectory
+    """What the installed package's migrations end at."""
+    from chat_rag.storage import schema
 
-    return ScriptDirectory.from_config(_alembic_config()).get_current_head()
+    return schema.head_revision()
 
 
 def upgrade(timeout: float | None = None) -> str:
-    """Take the lock, upgrade to head, report what moved.
+    """Wait for the database, bring it to head under the lock, say what moved.
 
-    Returns ``'created'``, ``'upgraded'`` or ``'current'``.
+    Returns ``'created'``, ``'upgraded'`` or ``'current'``. The lock and the
+    upgrade are :func:`chat_rag.storage.schema.upgrade`, run against the
+    process default's database -- the one ``DATABASE_URL`` names.
     """
-    from alembic import command
-    from sqlalchemy import text
-
-    from chat_rag import storage
+    from chat_rag import runtime
+    from chat_rag.storage import schema
 
     wait_for_database(timeout)
 
-    head = head_revision()
-    # One connection for the whole thing: the advisory lock lives on the
-    # session that took it, and env.py runs the migrations on the connection it
-    # is handed (`context.attributes['connection']`) rather than opening a
-    # second one that the lock would not cover.
-    with storage.engine().connect() as connection:
-        connection.execute(text("SELECT pg_advisory_lock(:key)"),
-                           {"key": MIGRATION_LOCK_KEY})
-        try:
-            before = current_revision(connection)
-            if before == head:
-                print(f"[migrate] already at head ({head})")
-                return "current"
-
-            print(f"[migrate] {before or 'an empty database'} -> {head}")
-            settings = _alembic_config()
-            settings.attributes["connection"] = connection
-            command.upgrade(settings, "head")
-            connection.commit()
-            print(f"[migrate] done: now at {head}")
-            return "created" if before is None else "upgraded"
-        finally:
-            # Released explicitly rather than left to the session's end, so the
-            # next container is not waiting on a connection this pool is merely
-            # keeping warm.
-            connection.execute(text("SELECT pg_advisory_unlock(:key)"),
-                               {"key": MIGRATION_LOCK_KEY})
-            connection.commit()
+    before, head = schema.upgrade(runtime.current().database)
+    if before == head:
+        print(f"[migrate] already at head ({head})")
+        return "current"
+    print(f"[migrate] {before or 'an empty database'} -> {head}")
+    print(f"[migrate] done: now at {head}")
+    return "created" if before is None else "upgraded"
 
 
 def report(timeout: float | None = None) -> int:

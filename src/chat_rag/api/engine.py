@@ -58,6 +58,7 @@ from chat_rag.application import catalogue as catalogue_use_case
 from chat_rag.application import documents as documents_use_case
 from chat_rag.application import ingest as ingest_use_case
 from chat_rag.application import ops as ops_use_case
+from chat_rag.application import schema as schema_use_case
 from chat_rag.application import workspace as workspace_use_case
 from chat_rag.application.services import Services, build_services
 from chat_rag.components.ingest import sweep_staging
@@ -65,7 +66,7 @@ from chat_rag.config import Settings, paths
 
 from .config import EngineConfig, describe
 from .resources import Document, KnowledgeBase, KnowledgeBases
-from .results import Health, Method
+from .results import Health, Method, Migration
 
 
 class Engine:
@@ -209,6 +210,25 @@ class Engine:
             return ingest_use_case.list_jobs(self._services, knowledge_base_id,
                                              active_only=active_only)
 
+    # ----------------------------------------------------------- the schema
+    def migrate(self) -> Migration:
+        """Create or upgrade this engine's database schema. Idempotent.
+
+        The first call a program makes against a new database, and a safe one
+        to make at every start: an empty database gets the schema, one that
+        is behind is brought to head, and one already at head is reported as
+        ``current`` with nothing applied. Held under an advisory lock, so two
+        programs starting together cannot both migrate.
+
+        The migrations are the package's own, so this needs no checkout and
+        no ``alembic.ini`` -- an installed wheel can build the schema it
+        expects. ``Unavailable`` when the database is not configured or
+        cannot be reached; ``ProcessingFailed`` when a migration was
+        attempted and failed, with the cause chained.
+        """
+        with self._active():
+            return Migration.of(schema_use_case.upgrade(self._services))
+
     # ------------------------------------------------------------- start-up
     def recover(self) -> Mapping[str, Any]:
         """Pick up what a previous process left, the way a server start does.
@@ -300,4 +320,18 @@ def open_engine(config: Optional[EngineConfig] = None, **settings: Any) -> Engin
     return Engine(config if config is not None else EngineConfig(**settings))
 
 
-__all__ = ["Engine", "KnowledgeBase", "open_engine"]
+def migrate_database(config: Optional[EngineConfig] = None, **settings: Any) -> Migration:
+    """Create or upgrade the schema, without holding an engine afterwards.
+
+    ``migrate_database(database_url=...)`` is :meth:`Engine.migrate` on an
+    engine built for the call and closed after it -- for a deployment step, a
+    setup script, a program that migrates before it decides how many engines
+    to hold. The keywords are :class:`EngineConfig` fields, as for
+    :func:`open_engine`, and the database is the one they name -- or, left
+    unsaid, the one ``DATABASE_URL`` names.
+    """
+    with open_engine(config, **settings) as engine:
+        return engine.migrate()
+
+
+__all__ = ["Engine", "KnowledgeBase", "migrate_database", "open_engine"]

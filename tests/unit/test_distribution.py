@@ -205,3 +205,27 @@ def _core_requirements(wheel) -> list[str]:
 
 def _requirements_for(wheel, extra: str) -> list[str]:
     return [line for line in _requirements(wheel) if f'extra == "{extra}"' in line]
+
+
+# ------------------------------------------------------------ the chunker
+def test_the_wheel_says_where_amsc_comes_from(wheel):
+    """``amsc-poc`` is on no index, so a bare name in ``Requires-Dist`` is a
+    wheel nobody can install. The metadata carries a direct reference to the
+    pinned commit -- the same one ``requirements.txt`` names -- which is what
+    ``pip install <this wheel>`` follows on a machine with neither checkout.
+    ``tests/integration/test_clean_install.py`` then does exactly that."""
+    import re
+
+    # setuptools writes the reference as ``amsc-poc@ git+...`` -- no space
+    # before the ``@`` -- so the name is everything up to the first operator.
+    amsc = [line for line in _requirements(wheel)
+            if re.split(r"[\s<>=!@\[;]", line, maxsplit=1)[0].lower() == "amsc-poc"]
+    assert len(amsc) == 1, f"amsc-poc is declared {len(amsc)} times: {amsc}"
+    assert "extra ==" not in amsc[0], "the chunker is core, not an extra"
+    found = re.search(r"@\s*git\+https://\S+?@([0-9a-f]{40})", amsc[0])
+    assert found, f"the wheel requires {amsc[0]!r}, which pip cannot resolve"
+
+    pinned = re.search(r"amsc-poc\s*@\s*git\+\S+?@([0-9a-f]{40})",
+                       (REPO / "requirements.txt").read_text(encoding="utf-8"))
+    assert pinned and found.group(1) == pinned.group(1), (
+        "the wheel and requirements.txt pin different amsc commits")

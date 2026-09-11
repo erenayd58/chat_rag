@@ -1,12 +1,18 @@
-"""Promote the sibling ``chunk`` checkout's commit into ``requirements.txt``.
+"""Promote the sibling ``chunk`` checkout's commit into both pins.
 
 `chat_rag` installs the chunking library from an **immutable commit**, which
 is the right dependency model and a tedious release step: commit in `chunk`,
 push, copy a forty-character sha out of `git log`, paste it into
-`requirements.txt`, run the pin tests. The sha is the part a human should
-never be moving by hand -- a typo, a truncation or a lost newline all fail
-somewhere later and less clearly (`test_amsc_pin.py` exists because two of
-those three happened).
+`requirements.txt` *and* `pyproject.toml`, run the pin tests. The sha is the
+part a human should never be moving by hand -- a typo, a truncation or a lost
+newline all fail somewhere later and less clearly (`test_amsc_pin.py` exists
+because two of those three happened), and two copies of it are two chances.
+
+Two files name the commit because two things install it: `requirements.txt`
+is the repository's own install and the image's, and `pyproject.toml` is the
+wheel's metadata -- the direct reference that lets a consumer's `pip install`
+resolve `amsc-poc` with neither checkout present. They are held equal by
+`test_amsc_pin.py`, and this tool is what moves them together.
 
     python tools/promote_chunk_pin.py                # HEAD of ../chunk
     python tools/promote_chunk_pin.py --rev abc1234  # a particular revision
@@ -23,10 +29,11 @@ What it does, in this order, stopping at the first failure:
    fetch it, and it will pass on this machine and on no other. ``--push``
    pushes the checkout's current branch to its upstream first, which is the
    only network call this tool ever makes and only when asked;
-4. rewrite the one ``amsc-poc @ git+...@<sha>`` line, leaving the URL, the
-   rest of the line and every other line exactly as they were;
-5. run the pin tests (``tests/unit/test_amsc_pin.py``), and restore the old
-   line if they fail, so a bad promotion never survives the command.
+4. rewrite the one ``amsc-poc @ git+...@<sha>`` requirement in each file,
+   leaving the URL, the rest of the line and every other line exactly as they
+   were;
+5. run the pin tests (``tests/unit/test_amsc_pin.py``), and restore both
+   files if they fail, so a bad promotion never survives the command.
 
 It does not commit, tag, or push this repository: it prints the `git` command
 for the change it made and leaves the decision to the developer. Nothing else
@@ -45,9 +52,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENTS = ROOT / "requirements.txt"
+PYPROJECT = ROOT / "pyproject.toml"
 
 #: The requirement line, split so the sha can be replaced and nothing else.
 PIN_LINE = re.compile(r"^(?P<head>amsc-poc\s*@\s*\S+?@)(?P<sha>[0-9a-f]{7,40})(?P<tail>\s*)$", re.M)
+#: The same requirement as ``pyproject.toml`` writes it: one quoted entry of
+#: the ``dependencies`` list. The quotes are the anchors.
+WHEEL_PIN = re.compile(r'(?P<head>"amsc-poc\s*@\s*\S+?@)(?P<sha>[0-9a-f]{7,40})(?P<tail>")')
 
 
 class Failure(Exception):
@@ -121,6 +132,21 @@ def rewrite(text: str, commit: str) -> str:
     return PIN_LINE.sub(lambda m: m.group("head") + commit + m.group("tail"), text, count=1)
 
 
+def current_wheel_pin(text: str) -> str:
+    match = WHEEL_PIN.search(text)
+    if not match:
+        raise Failure(
+            'pyproject.toml has no `"amsc-poc @ git+<url>@<sha>"` dependency; '
+            "fix it by hand before promoting a pin"
+        )
+    return match.group("sha")
+
+
+def rewrite_wheel(text: str, commit: str) -> str:
+    """Replace only the sha of the one dependency entry."""
+    return WHEEL_PIN.sub(lambda m: m.group("head") + commit + m.group("tail"), text, count=1)
+
+
 def validate(python: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [python, "-m", "pytest", "-q", "tests/unit/test_amsc_pin.py"],
@@ -176,33 +202,38 @@ def main(argv: list[str] | None = None) -> int:
         print(f"on remote     {', '.join(branches)}")
 
         text = REQUIREMENTS.read_text(encoding="utf-8")
+        wheel_text = PYPROJECT.read_text(encoding="utf-8")
         before = current_pin(text)
-        if before == commit:
+        wheel_before = current_wheel_pin(wheel_text)
+        if before == commit and wheel_before == commit:
             print(f"pin           already {commit[:7]}; nothing to change")
             return 0
-        print(f"pin           {before[:7]} -> {commit[:7]}")
+        print(f"pin           {before[:7]} -> {commit[:7]}  ({REQUIREMENTS.name})")
+        print(f"              {wheel_before[:7]} -> {commit[:7]}  ({PYPROJECT.name})")
         if args.check:
             print("check         nothing written (--check)")
             return 0
 
         REQUIREMENTS.write_text(rewrite(text, commit), encoding="utf-8", newline="\n")
-        print(f"wrote         {REQUIREMENTS.name}")
+        PYPROJECT.write_text(rewrite_wheel(wheel_text, commit), encoding="utf-8", newline="\n")
+        print(f"wrote         {REQUIREMENTS.name}, {PYPROJECT.name}")
 
         if not args.no_validate:
             result = validate(args.python)
             if result.returncode != 0:
                 REQUIREMENTS.write_text(text, encoding="utf-8", newline="\n")
+                PYPROJECT.write_text(wheel_text, encoding="utf-8", newline="\n")
                 sys.stdout.write(result.stdout)
                 sys.stderr.write(result.stderr)
                 raise Failure(
-                    f"the pin tests fail against {commit[:7]}; requirements.txt has "
-                    "been put back. Usually this means the product imports an amsc "
-                    "symbol that revision does not have yet."
+                    f"the pin tests fail against {commit[:7]}; requirements.txt and "
+                    "pyproject.toml have been put back. Usually this means the "
+                    "product imports an amsc symbol that revision does not have yet."
                 )
             print("validated     tests/unit/test_amsc_pin.py")
 
         print(
-            "\nnext          git -C . add requirements.txt && "
+            "\nnext          git -C . add requirements.txt pyproject.toml && "
             f'git -C . commit -m "build: pin amsc-poc to {commit[:7]}"'
         )
         return 0

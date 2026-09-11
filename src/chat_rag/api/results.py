@@ -200,6 +200,36 @@ class Health:
 
 
 @dataclass(frozen=True)
+class Migration:
+    """What :meth:`Engine.migrate` did to the schema.
+
+    ``outcome`` is one of three words. ``created``: the database was empty
+    and has the schema now. ``upgraded``: it was at an earlier revision and is
+    at head now. ``current``: it was already at head and nothing was applied
+    -- said as its own answer rather than as silence, because a program that
+    runs this at every start needs "nothing to do" to look different from
+    "did not run". ``before`` is ``None`` for an empty database.
+    """
+
+    before: Optional[str] = None
+    after: Optional[str] = None
+    outcome: str = "current"
+
+    @property
+    def changed(self) -> bool:
+        """Whether anything was applied."""
+        return self.outcome != "current"
+
+    @classmethod
+    def of(cls, report: Mapping[str, Any]) -> "Migration":
+        return cls(
+            before=report.get("before"),
+            after=report.get("after"),
+            outcome=report.get("outcome") or "current",
+        )
+
+
+@dataclass(frozen=True)
 class Method:
     """One chunking method, as this deployment can offer it.
 
