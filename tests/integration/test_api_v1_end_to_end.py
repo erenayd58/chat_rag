@@ -61,11 +61,8 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(RAGPipeline, "_create_embedding",
                         lambda self: DeterministicEmbedding())
 
-    # The packager writes into the test's own directory, and its worker is
-    # drained on the way in and out so nothing it queued outlives the test.
-    analysis.state().queue.join()
-    with analysis.state().lock:
-        analysis.state().inflight.clear()
+    # The packager writes into the test's own directory; its worker is drained
+    # on the way out, below, so nothing it queued outlives the test.
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
 
     services = build_services()
@@ -74,10 +71,15 @@ def api(tmp_path, monkeypatch):
         client.llm = llm
         yield client
     services.ingest_jobs.close(timeout=PATIENCE_SECONDS)
+    # This container's own packager, drained before its pipelines go. Outside
+    # the activation ``analysis.state()`` is the process default's, which is
+    # never the one a container built here owns -- draining that one waited
+    # on an empty queue while this one went on building into the next test.
+    with services.activate():
+        analysis.state().queue.join()
+        with analysis.state().lock:
+            analysis.state().inflight.clear()
     services.pipeline_cache.clear()
-    analysis.state().queue.join()
-    with analysis.state().lock:
-        analysis.state().inflight.clear()
 
 
 def _created(response):

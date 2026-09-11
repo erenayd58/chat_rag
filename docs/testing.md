@@ -46,6 +46,18 @@ Two things follow, and both are deliberate:
   truncated before every test. A test that used to isolate itself by pointing a
   store at its own `tmp_path` still passes that path — the stores still accept
   it — and gets a fresh database instead.
+* **a test's background work ends with the test.** The ingest workers and the
+  Viewer packager are daemon threads that write rows, and each belongs to the
+  runtime of the container that started it — every `build_services()` and
+  every `Engine` in a test is one. The session registers every runtime and
+  every job manager as it is built and does not let a test end until all of
+  them are idle, then checks that again immediately before it truncates; a
+  wait that runs out fails the test by name. Without this, a build a test left
+  running met the next test's `TRUNCATE` as a PostgreSQL deadlock. A fixture
+  that drains a container's packager itself must do so inside
+  `services.activate()`: outside it, `analysis.state()` is the process
+  default's queue, which is never the one a container built in a test owns
+  (`tests/storage/test_session_isolation.py` holds the session to this).
 
 ```bash
 # chat_rag (this repo) — the venv's interpreter, from the repo root

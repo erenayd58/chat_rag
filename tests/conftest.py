@@ -34,6 +34,17 @@ The database is named by ``CHAT_RAG_TEST_DATABASE_URL``, defaulting to the
 service in ``docker-compose.test.yml``; it is never a developer's own, and the
 session refuses to run rather than guessing at one (``docs/testing.md``).
 
+Empty tables are only an isolation if nothing is still writing to them. Two
+kinds of thread outlive the call that started them and both write rows: the
+ingest job manager's workers and the Viewer packager's worker. Each belongs to
+a ``Runtime``, a test builds one of those per container it composes, and a
+test that returned while its worker was mid-build left a daemon thread
+writing into what was about to be the next test's database -- which the next
+``TRUNCATE`` met as a PostgreSQL deadlock, about once a run. So every runtime
+and every job manager built in this process is known to the session, no test
+is over until all of them are idle, and the truncate checks that again before
+it runs (see *background work* below).
+
 A second kind of isolation is needed for the same reason, one level down. The
 application publishes its configuration *into the environment*: ``config.paths``
 applies the ``.env`` file by writing the values it accepts into ``os.environ``,
@@ -59,6 +70,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 
 import pytest
@@ -236,6 +248,13 @@ def _database():
     storage.dispose()
 
 
+#: How long the truncate may wait for a table lock before it is a failure.
+#: Nothing of this session's holds one by the time it runs (see
+#: ``_quiescent_background``), so a wait this long is a leak, and a leak
+#: named is worth more than a hang.
+LOCK_TIMEOUT_MS = 10_000
+
+
 @pytest.fixture(autouse=True)
 def _empty_tables(_database):
     """Give every test empty tables.
@@ -244,17 +263,64 @@ def _empty_tables(_database):
     schema. Truncating rather than dropping keeps the schema the migrations
     built, so no test can pass against a table that ``create_all`` would have
     made differently.
+
+    ``TRUNCATE`` takes an exclusive lock on every table it names, one table
+    at a time, so it cannot share the database with a writer: a packaging
+    build that holds the ``contents`` row it is updating and lazy-loads
+    ``content_variants`` meets a truncate that holds ``content_variants`` and
+    is waiting for ``contents``, and PostgreSQL kills one of the two. The
+    previous test's teardown waited for every worker of this process to go
+    idle; that condition is checked again here, where it is relied on, and
+    the lock wait is bounded so a writer this session does not know about --
+    an unclosed session in a test, a second suite on the same database -- is
+    reported by name rather than waited on.
     """
     from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
 
     from chat_rag import storage
     from chat_rag.storage.models import ALL_TABLES
 
-    with storage.engine().begin() as connection:
-        connection.execute(text(
-            "TRUNCATE TABLE " + ", ".join(ALL_TABLES) + " RESTART IDENTITY CASCADE"
-        ))
+    busy = _background_work()
+    if busy:
+        pytest.fail("background work is still running as this test starts, "
+                    "and would race the table truncate: " + "; ".join(busy))
+
+    statement = "TRUNCATE TABLE " + ", ".join(ALL_TABLES) + " RESTART IDENTITY CASCADE"
+    try:
+        with storage.engine().begin() as connection:
+            connection.execute(text(f"SET LOCAL lock_timeout = {LOCK_TIMEOUT_MS}"))
+            connection.execute(text(statement))
+    except OperationalError as error:
+        # 55P03 is the lock timeout above; 40P01 is a deadlock PostgreSQL
+        # resolved by killing this side. Both mean another connection was
+        # inside these tables, which is exactly what must not happen here.
+        if getattr(error.orig, "sqlstate", None) not in ("55P03", "40P01"):
+            raise
+        pytest.fail(f"could not empty the tables: {error.orig}\n"
+                    f"other connections in this database: {_other_connections()}")
     yield
+
+
+def _other_connections() -> str:
+    """Every other backend on the test database that is not idle, for the
+    failure message above. Read on a fresh connection, because the one
+    that failed is inside an aborted transaction."""
+    from sqlalchemy import text
+
+    from chat_rag import storage
+
+    try:
+        with storage.engine().connect() as connection:
+            rows = connection.execute(text(
+                "SELECT pid, state, left(query, 160) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+                "AND state <> 'idle' ORDER BY pid"
+            )).all()
+    except Exception as error:  # noqa: BLE001 - this is a diagnostic
+        return f"(could not read pg_stat_activity: {error})"
+    return "; ".join(f"pid {pid} [{state}] {query!r}" for pid, state, query in rows) \
+        or "(none visible now)"
 
 
 @pytest.fixture
@@ -385,3 +451,167 @@ def session_state_root() -> str:
     """Where this session's cwd-relative state lives, for tests that want to
     assert something landed there rather than in the checkout."""
     return SESSION_ROOT
+
+
+# --------------------------------------------------------- background work
+#
+# Two kinds of thread outlive the call that started them, and both write to
+# the database: the ingest job manager's workers and the Viewer packager's
+# worker. Each belongs to a ``Runtime``, and a test builds as many of those
+# as it builds containers -- every ``build_services()`` and every ``Engine``
+# is one, with its own queue and its own daemon worker. A test that returned
+# while its worker was still building left that thread writing rows into what
+# was about to be the next test's database, and the next test's ``TRUNCATE``
+# met it head on: the build holds the ``contents`` row it is updating and
+# lazy-loads ``content_variants``, the truncate holds ``content_variants`` and
+# waits for ``contents``, and PostgreSQL kills whichever side it notices
+# first. ``deadlock detected`` at the start of an unrelated test, about once
+# a run.
+#
+# The fixtures that meant to prevent this drained ``analysis.state()`` -- the
+# *process default's* packager -- which is never the one a ``build_services()``
+# in a test owns: the default is installed long before, by whatever first
+# touched the database (the session's own schema build, or ``import asgi``
+# at collection). So the drain waited on an empty queue while the real one
+# went on building. Nothing here changes what the product does; a runtime
+# and a manager are registered as they are constructed, and that is all.
+#
+# What makes the cleanup deterministic is that no test is over until every
+# runtime and every job manager in this process is idle -- nothing queued,
+# nothing running, nothing building -- and that ``_empty_tables`` checks the
+# same condition again immediately before it truncates. The wait is bounded,
+# and a wait that runs out fails the test naming the thread. It is never a
+# retry and never a sleep.
+
+import functools  # noqa: E402
+import weakref  # noqa: E402
+
+from chat_rag.components.ingest.jobs import IngestManager  # noqa: E402
+from chat_rag.runtime import Runtime  # noqa: E402
+
+#: Every runtime and every ingest manager constructed in this process. Weak,
+#: so the registry keeps nothing alive that a test did not.
+_RUNTIMES: "weakref.WeakSet[Runtime]" = weakref.WeakSet()
+_MANAGERS: "weakref.WeakSet[IngestManager]" = weakref.WeakSet()
+_REGISTRY_LOCK = threading.Lock()
+
+#: How long a test's teardown waits for its own background work. Generous on
+#: purpose: an end-to-end test packages real chunkers on a real worker, and a
+#: job a test left blocked runs out at its own guard first.
+QUIESCE_TIMEOUT_SECONDS = 60.0
+
+
+def _registered(cls, registry) -> None:
+    """Record every instance of ``cls`` in ``registry`` as it is built."""
+    construct = cls.__init__
+
+    @functools.wraps(construct)
+    def __init__(self, *args, **kwargs):
+        construct(self, *args, **kwargs)
+        with _REGISTRY_LOCK:
+            registry.add(self)
+
+    cls.__init__ = __init__
+
+
+_registered(Runtime, _RUNTIMES)
+_registered(IngestManager, _MANAGERS)
+
+
+def _managers() -> list:
+    with _REGISTRY_LOCK:
+        return list(_MANAGERS)
+
+
+def _packagers() -> list:
+    """The packager state of every runtime that has built one.
+
+    Read directly rather than through ``Runtime.packager``, which builds the
+    state on first use: a runtime that never packaged anything has no worker
+    to wait for, and asking it here would give it a queue it never asked for.
+    """
+    with _REGISTRY_LOCK:
+        runtimes = list(_RUNTIMES)
+    return [runtime._packager for runtime in runtimes if runtime._packager is not None]
+
+
+def _background_work() -> list[str]:
+    """What is queued, running or building right now, one line each."""
+    found = []
+    for manager in _managers():
+        capacity = manager.snapshot()
+        if capacity["running"] or capacity["queued"]:
+            jobs = [job["job_id"] for job in manager.list(active_only=True)]
+            found.append(f"ingest jobs {jobs} ({capacity['running']} running, "
+                         f"{capacity['queued']} queued)")
+    for packager in _packagers():
+        # ``inflight`` is every key ``enqueue`` accepted and the worker has
+        # not finished with; it is the packager's own notion of pending, and
+        # unlike the queue's task count it is not moved by a test that puts
+        # a probe on the queue by hand.
+        with packager.lock:
+            building = sorted(packager.inflight)
+        if building:
+            found.append(f"viewer analyses {building}")
+    return found
+
+
+def _quiesce(deadline: float) -> None:
+    """Wait until every job manager and every packager in the process is idle.
+
+    Ingest first: a job's last act is to stage its document for the packager,
+    so a packaging queue can grow only while a job is running, and a packager
+    that is idle after every job has finished stays idle.
+    """
+    for manager in _managers():
+        if not manager.drain(timeout=max(0.0, deadline - time.monotonic())):
+            pytest.fail("this test's ingest jobs were still running "
+                        f"{QUIESCE_TIMEOUT_SECONDS:.0f}s after it ended: "
+                        + "; ".join(_background_work()))
+    for packager in _packagers():
+        # The worker discards a key from ``inflight`` and then calls
+        # ``task_done``, which notifies this condition; so waiting on it and
+        # re-reading ``inflight`` sees every finished build without ever
+        # blocking on a task count a test moved by hand.
+        queue = packager.queue
+        with queue.all_tasks_done:
+            while True:
+                with packager.lock:
+                    building = sorted(packager.inflight)
+                if not building:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    pytest.fail("this test's Viewer packaging was still building "
+                                f"{building} {QUIESCE_TIMEOUT_SECONDS:.0f}s after it ended")
+                queue.all_tasks_done.wait(remaining)
+
+
+@pytest.fixture(autouse=True)
+def _quiescent_background(_database):
+    """No test ends while a worker of this process is still writing.
+
+    Defined last among the autouse fixtures on purpose, because they are torn
+    down in the reverse of that order: the test's own fixtures have already
+    stopped what they meant to stop, and whatever is still running is what
+    this waits for -- before the process caches are reset and the environment
+    is handed back, so a build that is finishing does so under the settings
+    it was started with.
+
+    The pools go with the wait. A runtime a test built and did not close keeps
+    its idle connections open for the life of the process; this suite was
+    found holding eighty of PostgreSQL's hundred by the time the unit tests
+    ran. The process default keeps its pool, because it is every later test's
+    as well.
+    """
+    yield
+    _quiesce(time.monotonic() + QUIESCE_TIMEOUT_SECONDS)
+
+    from chat_rag import runtime as runtime_module
+
+    shared = runtime_module.default()
+    with _REGISTRY_LOCK:
+        runtimes = list(_RUNTIMES)
+    for runtime in runtimes:
+        if runtime is not shared and runtime._database is not None:
+            runtime._database.dispose()

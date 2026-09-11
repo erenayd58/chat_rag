@@ -53,9 +53,6 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(RAGPipeline, "_create_embedding",
                         lambda self: DeterministicEmbedding())
 
-    analysis.state().queue.join()
-    with analysis.state().lock:
-        analysis.state().inflight.clear()
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
     analysis_query.reset()
 
@@ -66,10 +63,15 @@ def api(tmp_path, monkeypatch):
         yield client
     analysis_query.reset()
     services.ingest_jobs.close(timeout=PATIENCE_SECONDS)
+    # This container's own packager, drained before its pipelines go. Outside
+    # the activation ``analysis.state()`` is the process default's, which is
+    # never the one a container built here owns -- draining that one waited
+    # on an empty queue while this one went on building into the next test.
+    with services.activate():
+        analysis.state().queue.join()
+        with analysis.state().lock:
+            analysis.state().inflight.clear()
     services.pipeline_cache.clear()
-    analysis.state().queue.join()
-    with analysis.state().lock:
-        analysis.state().inflight.clear()
 
 
 # ------------------------------------------------------------------ helpers

@@ -82,6 +82,14 @@ class Deployment:
             self.client.__exit__(None, None, None)
         if self.services is not None:
             self.services.ingest_jobs.close(timeout=PATIENCE_SECONDS)
+            # This process's own packager, before its successor resumes the
+            # same documents: two workers building one content at once is
+            # not what a restart is. Outside the activation ``analysis.state()``
+            # is the process default's, which is never this container's.
+            with self.services.activate():
+                analysis.state().queue.join()
+                with analysis.state().lock:
+                    analysis.state().inflight.clear()
             self.services.pipeline_cache.clear()
         self.client = self.services = None
 
@@ -100,9 +108,6 @@ def deployment(tmp_path, monkeypatch):
     monkeypatch.setattr(RAGPipeline, "_create_embedding",
                         lambda self: DeterministicEmbedding())
 
-    analysis.state().queue.join()
-    with analysis.state().lock:
-        analysis.state().inflight.clear()
     # The packager's directory outlives the "process" the way a real one does.
     monkeypatch.setattr(analysis, "root", lambda: tmp_path / "viewer-live")
 
@@ -110,9 +115,6 @@ def deployment(tmp_path, monkeypatch):
     running.start(resume=False)
     yield running
     running.stop()
-    analysis.state().queue.join()
-    with analysis.state().lock:
-        analysis.state().inflight.clear()
 
 
 def _ok(response):
